@@ -10,6 +10,7 @@
 #include <signal.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
+#include <poll.h>
 #include <fcntl.h>
 #include <errno.h>
 
@@ -173,4 +174,99 @@ void pty_resize(PTY *pty, int rows, int cols) {
     if (pty->child_pid > 0) {
         kill(pty->child_pid, SIGWINCH);
     }
+}
+
+/* Signal flag for interactive session */
+static volatile sig_atomic_t pty_running = 1;
+
+static void pty_signal_handler(int sig) {
+    (void)sig;
+    pty_running = 0;
+}
+
+int pty_spawn_interactive(int rows, int cols) {
+    /* Use terminal size if 0 passed */
+    if (rows <= 0 || cols <= 0) {
+        struct winsize ws;
+        if (ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) == 0) {
+            rows = ws.ws_row;
+            cols = ws.ws_col;
+        } else {
+            rows = 24;
+            cols = 80;
+        }
+    }
+
+    /* Set up signal handlers */
+    struct sigaction sa;
+    sa.sa_handler = pty_signal_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+
+    /* Enable raw mode */
+    enable_raw_mode();
+
+    /* Create the PTY */
+    PTY *pty = pty_create(rows, cols);
+    if (!pty) {
+        disable_raw_mode();
+        return -1;
+    }
+
+    pty_running = 1;
+    char buf[4096];
+    int exit_code = 0;
+
+    struct pollfd pfds[2];
+    pfds[0].fd = STDIN_FILENO;
+    pfds[0].events = POLLIN;
+    pfds[1].fd = pty->master_fd;
+    pfds[1].events = POLLIN;
+
+    while (pty_running) {
+        int ret = poll(pfds, 2, 100);
+
+        if (ret < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+
+        /* Forward stdin to PTY */
+        if (pfds[0].revents & POLLIN) {
+            ssize_t n = read(STDIN_FILENO, buf, sizeof(buf));
+            if (n <= 0) break;
+            pty_write(pty, buf, n);
+        }
+
+        /* Forward PTY output to stdout */
+        if (pfds[1].revents & POLLIN) {
+            ssize_t n = pty_read(pty, buf, sizeof(buf));
+            if (n < 0) break;
+            if (n > 0) {
+                write(STDOUT_FILENO, buf, n);
+            }
+        }
+
+        /* Check for hangup/error on PTY */
+        if (pfds[1].revents & (POLLHUP | POLLERR)) {
+            break;
+        }
+
+        /* Check if child exited */
+        int status;
+        pid_t result = waitpid(pty->child_pid, &status, WNOHANG);
+        if (result > 0) {
+            if (WIFEXITED(status)) {
+                exit_code = WEXITSTATUS(status);
+            }
+            break;
+        }
+    }
+
+    pty_destroy(pty);
+    disable_raw_mode();
+
+    return exit_code;
 }

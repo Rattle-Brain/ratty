@@ -55,4 +55,18 @@ const char *get_user_shell(void);
 void enable_raw_mode(void);
 void disable_raw_mode(void);
 
+/*
+ * Spawn an interactive PTY session.
+ *
+ * This is the main entry point for splits/tabs. It:
+ * - Enables raw mode
+ * - Creates a PTY with the given dimensions
+ * - Runs the I/O loop (stdin <-> shell)
+ * - Cleans up when the shell exits or on signal
+ *
+ * Returns the shell's exit code, or -1 on error.
+ * When the calling process dies, the PTY dies with it.
+ */
+int pty_spawn_interactive(int rows, int cols);
+
 #endif /* PTY_H */
