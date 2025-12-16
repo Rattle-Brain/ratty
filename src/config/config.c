@@ -284,8 +284,6 @@ Action string_to_action(const char *str) {
     if (strcmp(str, "split_horizontal") == 0) return ACTION_SPLIT_HORIZONTAL;
     if (strcmp(str, "split_vertical") == 0) return ACTION_SPLIT_VERTICAL;
     if (strcmp(str, "close_split") == 0) return ACTION_CLOSE_SPLIT;
-    if (strcmp(str, "focus_next_split") == 0) return ACTION_FOCUS_NEXT_SPLIT;
-    if (strcmp(str, "focus_prev_split") == 0) return ACTION_FOCUS_PREV_SPLIT;
     if (strcmp(str, "focus_up") == 0) return ACTION_FOCUS_UP;
     if (strcmp(str, "focus_down") == 0) return ACTION_FOCUS_DOWN;
     if (strcmp(str, "focus_left") == 0) return ACTION_FOCUS_LEFT;
