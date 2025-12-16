@@ -1,0 +1,64 @@
+# Ratty Terminal Emulator Configuration File
+
+# Keybindings
+# Format: "key+mods: action"
+# Available modifiers: ctrl, shift, alt, super
+# Use + to combine modifiers
+keybindings:
+  # Tab management
+  "ctrl+shift+t": new_tab
+  "ctrl+shift+w": close_tab
+  "ctrl+tab": next_tab
+  "ctrl+shift+tab": prev_tab
+
+  # Direct tab access (Ctrl+1 through Ctrl+9)
+  "ctrl+1": goto_tab_1
+  "ctrl+2": goto_tab_2
+  "ctrl+3": goto_tab_3
+  "ctrl+4": goto_tab_4
+  "ctrl+5": goto_tab_5
+  "ctrl+6": goto_tab_6
+  "ctrl+7": goto_tab_7
+  "ctrl+8": goto_tab_8
+  "ctrl+9": goto_tab_9
+
+  # Split management
+  "ctrl+\\": split_horizontal
+  "ctrl+-": split_vertical
+  "ctrl+w": close_split
+
+  # Split navigation
+  "ctrl+shift+up": focus_up
+  "ctrl+shift+down": focus_down
+  "ctrl+shift+left": focus_left
+  "ctrl+shift+right": focus_right
+
+  # Window
+  "ctrl+shift+q": quit
+  "f11": fullscreen
+
+  # Clipboard
+  "ctrl+shift+c": copy
+  "ctrl+shift+v": paste
+
+  # Scrollback
+  "shift+pageup": scroll_up
+  "shift+pagedown": scroll_down
+  "ctrl+shift+k": clear_scrollback
+
+# Colors (will be used later)
+colors:
+  # TODO: Define color scheme
+  background: "#1e1e1e"
+  foreground: "#d4d4d4"
+
+# Font (will be used later)
+font:
+  family: "Monospace"
+  size: 12
+
+# Window (will be used later)
+window:
+  width: 800
+  height: 600
+  opacity: 1.0
