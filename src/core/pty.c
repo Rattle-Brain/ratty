@@ -184,6 +184,15 @@ static void pty_signal_handler(int sig) {
     pty_running = 0;
 }
 
+void setup_interrupt_handler(void) {
+    struct sigaction sa;
+    sa.sa_handler = pty_signal_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+}
+
 int pty_spawn_interactive(int rows, int cols) {
     /* Use terminal size if 0 passed */
     if (rows <= 0 || cols <= 0) {
@@ -198,12 +207,7 @@ int pty_spawn_interactive(int rows, int cols) {
     }
 
     /* Set up signal handlers */
-    struct sigaction sa;
-    sa.sa_handler = pty_signal_handler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGTERM, &sa, NULL);
+    setup_interrupt_handler();
 
     /* Enable raw mode */
     enable_raw_mode();
@@ -226,6 +230,7 @@ int pty_spawn_interactive(int rows, int cols) {
     pfds[1].events = POLLIN;
 
     while (pty_running) {
+        // poll(array_of_pollfd, num_of_elements, timeout_ms)
         int ret = poll(pfds, 2, 100);
 
         if (ret < 0) {
@@ -270,3 +275,4 @@ int pty_spawn_interactive(int rows, int cols) {
 
     return exit_code;
 }
+
