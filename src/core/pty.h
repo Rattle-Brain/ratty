@@ -1,6 +1,8 @@
 /*
- * Pseudo Terminal (PTY) spawns a shell (bash, sh, zsh, fish, etc)
- * defaulted by the user or sh if obtaining the default shell fails
+ * Pseudo Terminal (PTY) - C++ RAII wrapper for shell spawning
+ *
+ * Spawns a shell (bash, sh, zsh, fish, etc) defaulted by the user
+ * or sh if obtaining the default shell fails
  *
  * Author: Rattle-Brain
  */
@@ -9,11 +11,10 @@
 #define PTY_H
 
 #include <pwd.h>
-#include <stdlib.h>
-#include <stdio.h>
 #include <sys/types.h>
 #include <termios.h>
 #include <unistd.h>
+#include <string>
 
 #if defined(__linux__)
   #include <pty.h>
@@ -24,49 +25,87 @@
 /*
  * PTY - Pseudo Terminal handle
  *
+ * RAII wrapper for a pseudo-terminal that manages the lifecycle of a shell process.
  * Encapsulates everything needed to communicate with a shell:
  * - master_fd: File descriptor for reading/writing to the shell
  * - child_pid: PID of the shell process (for signals, waiting)
  * - rows/cols: Terminal dimensions (for resize signals)
  */
-typedef struct {
-    int master_fd;           /* Master side file descriptor */
-    pid_t child_pid;         /* Shell process PID */
-    int rows;                /* Terminal rows */
-    int cols;                /* Terminal columns */
-    struct termios orig;     /* Original terminal settings (for restore) */
-} PTY;
+class PTY {
+public:
+    /*
+     * Create a PTY with specified dimensions
+     * Forks a new shell process and sets up the pseudo-terminal
+     */
+    PTY(int rows, int cols);
 
-/* Lifecycle */
-PTY *pty_create(int rows, int cols);
-void pty_destroy(PTY *pty);
+    /*
+     * Destructor - cleans up file descriptors and terminates child process
+     */
+    ~PTY();
 
-/* I/O */
-ssize_t pty_read(PTY *pty, char *buf, size_t len);
-ssize_t pty_write(PTY *pty, const char *buf, size_t len);
+    // Delete copy constructor and copy assignment (not copyable)
+    PTY(const PTY&) = delete;
+    PTY& operator=(const PTY&) = delete;
 
-/* Resize */
-void pty_resize(PTY *pty, int rows, int cols);
+    // Allow move semantics
+    PTY(PTY&& other) noexcept;
+    PTY& operator=(PTY&& other) noexcept;
 
-/* Utilities */
-const char *get_user_shell(void);
+    /*
+     * Read from PTY (non-blocking)
+     * Returns number of bytes read, 0 if no data, -1 on error
+     */
+    ssize_t read(char* buf, size_t len);
 
-/* Legacy raw mode functions (for standalone PTY testing) */
-void enable_raw_mode(void);
-void disable_raw_mode(void);
+    /*
+     * Write to PTY
+     * Returns number of bytes written, -1 on error
+     */
+    ssize_t write(const char* buf, size_t len);
 
-/*
- * Spawn an interactive PTY session.
- *
- * This is the main entry point for splits/tabs. It:
- * - Enables raw mode
- * - Creates a PTY with the given dimensions
- * - Runs the I/O loop (stdin <-> shell)
- * - Cleans up when the shell exits or on signal
- *
- * Returns the shell's exit code, or -1 on error.
- * When the calling process dies, the PTY dies with it.
- */
-int pty_spawn_interactive(int rows, int cols);
+    /*
+     * Resize the terminal
+     * Sends TIOCSWINSZ ioctl and SIGWINCH signal to shell
+     */
+    void resize(int rows, int cols);
+
+    /*
+     * Get the master file descriptor
+     * Use this for integrating with event loops (select, poll, epoll, Qt notifiers)
+     */
+    int masterFd() const { return master_fd_; }
+
+    /*
+     * Get the child process PID
+     */
+    pid_t childPid() const { return child_pid_; }
+
+    /*
+     * Get current dimensions
+     */
+    int rows() const { return rows_; }
+    int cols() const { return cols_; }
+
+    /*
+     * Check if PTY is valid
+     */
+    bool isValid() const { return master_fd_ >= 0 && child_pid_ > 0; }
+
+    /*
+     * Get the user's default shell
+     * Checks $SHELL env var, then password database, fallback to /bin/sh
+     */
+    static std::string getUserShell();
+
+private:
+    int master_fd_;       // Master side file descriptor
+    pid_t child_pid_;     // Shell process PID
+    int rows_;            // Terminal rows
+    int cols_;            // Terminal columns
+
+    // Helper for cleanup
+    void cleanup();
+};
 
 #endif /* PTY_H */
