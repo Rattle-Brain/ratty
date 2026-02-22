@@ -1,0 +1,41 @@
+file(REMOVE_RECURSE
+  "CMakeFiles/ratty_autogen.dir/AutogenUsed.txt"
+  "CMakeFiles/ratty_autogen.dir/ParseCache.txt"
+  "ratty_autogen"
+  "CMakeFiles/ratty.dir/ratty_autogen/3YJK5W5UP7/qrc_shaders.cpp.o"
+  "CMakeFiles/ratty.dir/ratty_autogen/3YJK5W5UP7/qrc_shaders.cpp.o.d"
+  "CMakeFiles/ratty.dir/ratty_autogen/mocs_compilation.cpp.o"
+  "CMakeFiles/ratty.dir/ratty_autogen/mocs_compilation.cpp.o.d"
+  "CMakeFiles/ratty.dir/src/config/config.cpp.o"
+  "CMakeFiles/ratty.dir/src/config/config.cpp.o.d"
+  "CMakeFiles/ratty.dir/src/core/pty.cpp.o"
+  "CMakeFiles/ratty.dir/src/core/pty.cpp.o.d"
+  "CMakeFiles/ratty.dir/src/main.cpp.o"
+  "CMakeFiles/ratty.dir/src/main.cpp.o.d"
+  "CMakeFiles/ratty.dir/src/render/font_manager.cpp.o"
+  "CMakeFiles/ratty.dir/src/render/font_manager.cpp.o.d"
+  "CMakeFiles/ratty.dir/src/render/gl_renderer.cpp.o"
+  "CMakeFiles/ratty.dir/src/render/gl_renderer.cpp.o.d"
+  "CMakeFiles/ratty.dir/src/render/glyph_atlas.cpp.o"
+  "CMakeFiles/ratty.dir/src/render/glyph_atlas.cpp.o.d"
+  "CMakeFiles/ratty.dir/src/ui/input_handler.cpp.o"
+  "CMakeFiles/ratty.dir/src/ui/input_handler.cpp.o.d"
+  "CMakeFiles/ratty.dir/src/ui/main_window.cpp.o"
+  "CMakeFiles/ratty.dir/src/ui/main_window.cpp.o.d"
+  "CMakeFiles/ratty.dir/src/ui/split_container.cpp.o"
+  "CMakeFiles/ratty.dir/src/ui/split_container.cpp.o.d"
+  "CMakeFiles/ratty.dir/src/ui/terminal_tab.cpp.o"
+  "CMakeFiles/ratty.dir/src/ui/terminal_tab.cpp.o.d"
+  "CMakeFiles/ratty.dir/src/ui/terminal_widget.cpp.o"
+  "CMakeFiles/ratty.dir/src/ui/terminal_widget.cpp.o.d"
+  "ratty"
+  "ratty.pdb"
+  "ratty_autogen/3YJK5W5UP7/qrc_shaders.cpp"
+  "ratty_autogen/mocs_compilation.cpp"
+  "ratty_autogen/timestamp"
+)
+
+# Per-language clean rules from dependency scanning.
+foreach(lang CXX)
+  include(CMakeFiles/ratty.dir/cmake_clean_${lang}.cmake OPTIONAL)
+endforeach()

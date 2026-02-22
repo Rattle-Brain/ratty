@@ -1,23 +1,27 @@
-#ifndef CONFIG_H
-#define CONFIG_H
-
-#include <stdint.h>
-#include <stdbool.h>
-
 /*
- * Configuration system
+ * Config - Configuration management with QSettings
  *
- * Parses default_config.yaml and loads settings.
- * For now, focuses on keybindings. Will expand later for colors, fonts, etc.
+ * Manages:
+ * - Keybindings (action -> QKeySequence mapping)
+ * - Appearance (colors, fonts)
+ * - Window settings
  */
 
-#define CONFIG_MAX_KEYBINDINGS 128
-#define CONFIG_MAX_KEY_STRING 64
+#ifndef CONFIG_CONFIG_H
+#define CONFIG_CONFIG_H
 
-typedef enum {
+#include <QSettings>
+#include <QKeySequence>
+#include <QHash>
+#include <QColor>
+#include <QString>
+#include <functional>
+
+/* Actions that can be bound to keys */
+enum Action {
     ACTION_NONE = 0,
 
-    /* Tab management */
+    // Tab management
     ACTION_NEW_TAB,
     ACTION_CLOSE_TAB,
     ACTION_NEXT_TAB,
@@ -32,7 +36,7 @@ typedef enum {
     ACTION_GOTO_TAB_8,
     ACTION_GOTO_TAB_9,
 
-    /* Split management */
+    // Split management
     ACTION_SPLIT_HORIZONTAL,
     ACTION_SPLIT_VERTICAL,
     ACTION_CLOSE_SPLIT,
@@ -41,52 +45,93 @@ typedef enum {
     ACTION_FOCUS_LEFT,
     ACTION_FOCUS_RIGHT,
 
-    /* Window */
+    // Window
     ACTION_QUIT,
     ACTION_FULLSCREEN,
 
-    /* Clipboard */
+    // Clipboard
     ACTION_COPY,
     ACTION_PASTE,
 
-    /* Scrollback */
+    // Scrollback
     ACTION_SCROLL_UP,
     ACTION_SCROLL_DOWN,
     ACTION_CLEAR_SCROLLBACK,
+};
 
-} Action;
+class Config {
+public:
+    // Singleton access
+    static Config& instance();
 
-typedef struct {
-    int key;           /* GLFW key code */
-    int mods;          /* Modifier mask (Ctrl, Shift, Alt) */
-    Action action;
-} KeyBinding;
+    // Load/Save
+    void load();
+    void save();
+    void loadDefaults();
 
-typedef struct {
-    /* Keybindings */
-    KeyBinding keybindings[CONFIG_MAX_KEYBINDINGS];
-    int keybinding_count;
+    // Keybindings
+    Action lookupAction(const QKeySequence& keySequence) const;
+    void bindKey(const QKeySequence& keySequence, Action action);
+    QKeySequence getKeybinding(Action action) const;
 
-    /* TODO: Colors, fonts, window settings, etc. */
+    // Appearance - Colors
+    QColor backgroundColor() const { return backgroundColor_; }
+    QColor foregroundColor() const { return foregroundColor_; }
+    QColor cursorColor() const { return cursorColor_; }
+    QColor selectionBackground() const { return selectionBackground_; }
 
-} Config;
+    void setBackgroundColor(const QColor& color) { backgroundColor_ = color; }
+    void setForegroundColor(const QColor& color) { foregroundColor_ = color; }
+    void setCursorColor(const QColor& color) { cursorColor_ = color; }
+    void setSelectionBackground(const QColor& color) { selectionBackground_ = color; }
 
-/* Global config instance */
-extern Config *global_config;
+    // Appearance - Font
+    QString fontFamily() const { return fontFamily_; }
+    int fontSize() const { return fontSize_; }
 
-/* Lifecycle */
-Config *config_create(void);
-void config_destroy(Config *config);
+    void setFontFamily(const QString& family) { fontFamily_ = family; }
+    void setFontSize(int size) { fontSize_ = size; }
 
-/* Loading */
-bool config_load_from_file(Config *config, const char *path);
-bool config_load_default(Config *config);
+    // Window settings
+    int windowWidth() const { return windowWidth_; }
+    int windowHeight() const { return windowHeight_; }
+    bool startFullscreen() const { return startFullscreen_; }
 
-/* Keybinding queries */
-Action config_lookup_keybinding(Config *config, int key, int mods);
+    void setWindowWidth(int width) { windowWidth_ = width; }
+    void setWindowHeight(int height) { windowHeight_ = height; }
+    void setStartFullscreen(bool fullscreen) { startFullscreen_ = fullscreen; }
 
-/* Helpers */
-const char *action_to_string(Action action);
-Action string_to_action(const char *str);
+    // Helpers
+    static QString actionToString(Action action);
+    static Action stringToAction(const QString& str);
 
-#endif /* CONFIG_H */
+private:
+    Config();
+    ~Config();
+
+    // No copy
+    Config(const Config&) = delete;
+    Config& operator=(const Config&) = delete;
+
+    void setupDefaultKeybindings();
+
+    QSettings settings_;
+
+    // Keybindings: keySequence -> action
+    QHash<QKeySequence, Action> keybindings_;
+
+    // Appearance
+    QColor backgroundColor_;
+    QColor foregroundColor_;
+    QColor cursorColor_;
+    QColor selectionBackground_;
+    QString fontFamily_;
+    int fontSize_;
+
+    // Window
+    int windowWidth_;
+    int windowHeight_;
+    bool startFullscreen_;
+};
+
+#endif /* CONFIG_CONFIG_H */

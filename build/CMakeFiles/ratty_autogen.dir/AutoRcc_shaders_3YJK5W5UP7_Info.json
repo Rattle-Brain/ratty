@@ -1,0 +1,28 @@
+{
+	"BUILD_DIR" : "/Users/dalvarez/Documents/repos/ratty/build/ratty_autogen",
+	"CMAKE_BINARY_DIR" : "/Users/dalvarez/Documents/repos/ratty/build",
+	"CMAKE_CURRENT_BINARY_DIR" : "/Users/dalvarez/Documents/repos/ratty/build",
+	"CMAKE_CURRENT_SOURCE_DIR" : "/Users/dalvarez/Documents/repos/ratty",
+	"CMAKE_SOURCE_DIR" : "/Users/dalvarez/Documents/repos/ratty",
+	"CROSS_CONFIG" : false,
+	"GENERATOR" : "Unix Makefiles",
+	"INCLUDE_DIR" : "/Users/dalvarez/Documents/repos/ratty/build/ratty_autogen/include",
+	"INPUTS" : 
+	[
+		"/Users/dalvarez/Documents/repos/ratty/resources/shaders/rect.frag",
+		"/Users/dalvarez/Documents/repos/ratty/resources/shaders/text.frag",
+		"/Users/dalvarez/Documents/repos/ratty/resources/shaders/rect.vert",
+		"/Users/dalvarez/Documents/repos/ratty/resources/shaders/text.vert"
+	],
+	"LOCK_FILE" : "/Users/dalvarez/Documents/repos/ratty/build/CMakeFiles/ratty_autogen.dir/AutoRcc_shaders_3YJK5W5UP7_Lock.lock",
+	"MULTI_CONFIG" : false,
+	"OPTIONS" : [ "-name", "shaders" ],
+	"OUTPUT_CHECKSUM" : "3YJK5W5UP7",
+	"OUTPUT_NAME" : "qrc_shaders.cpp",
+	"RCC_EXECUTABLE" : "/opt/homebrew/opt/qt@6/share/qt/libexec/rcc",
+	"RCC_LIST_OPTIONS" : [ "--list" ],
+	"SETTINGS_FILE" : "/Users/dalvarez/Documents/repos/ratty/build/CMakeFiles/ratty_autogen.dir/AutoRcc_shaders_3YJK5W5UP7_Used.txt",
+	"SOURCE" : "/Users/dalvarez/Documents/repos/ratty/resources/shaders.qrc",
+	"USE_BETTER_GRAPH" : true,
+	"VERBOSITY" : 0
+}
