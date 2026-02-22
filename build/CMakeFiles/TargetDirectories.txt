@@ -1,5 +1,0 @@
-/Users/dalvarez/Documents/repos/ratty/build/CMakeFiles/ratty.dir
-/Users/dalvarez/Documents/repos/ratty/build/CMakeFiles/edit_cache.dir
-/Users/dalvarez/Documents/repos/ratty/build/CMakeFiles/rebuild_cache.dir
-/Users/dalvarez/Documents/repos/ratty/build/CMakeFiles/ratty_autogen_timestamp_deps.dir
-/Users/dalvarez/Documents/repos/ratty/build/CMakeFiles/ratty_autogen.dir
