@@ -97,6 +97,31 @@ make
   cmake -S . -B build -DQt6_DIR=/path/to/qt6/lib/cmake/Qt6
   ```
 
+### Generating compile_commands.json for LSP/IDE Support
+
+The `compile_commands.json` file helps Language Server Protocols (LSP) and IDEs understand your project structure, including header locations and library dependencies. This prevents false errors and enables accurate code completion, navigation, and diagnostics.
+
+**Method 1: Using Bear (recommended)**
+```bash
+# Install bear if not already installed
+# macOS: brew install bear
+# Linux: sudo apt install bear
+
+# Generate compile_commands.json in the project root
+bear -- make
+```
+
+**Method 2: Using CMake (if Method 1 doesn't work)**
+```bash
+# Generate compile_commands.json in the current directory
+cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON .
+
+# Build the project
+make
+```
+
+Most LSP implementations (clangd, ccls) will automatically detect `compile_commands.json` in the project root directory.
+
 ### Troubleshooting
 
 - **Qt6 not found**: Ensure Qt6 is installed and `Qt6_DIR` points to the correct location
