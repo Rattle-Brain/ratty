@@ -355,20 +355,21 @@ void GLRenderer::drawRectOutline(float x, float y, float width, float height, co
 void GLRenderer::flushTextBatch() {
     if (!initialized_ || batch_.textVertices.isEmpty()) return;
 
-    // Activate texture unit 0 and bind the atlas texture
-    gl_->glActiveTexture(GL_TEXTURE0);
-    gl_->glBindTexture(GL_TEXTURE_2D, glyphAtlas_->textureId());
-
     // Bind shader and set uniforms
     textShader_->bind();
     textShader_->setUniformValue("u_projection", projection_);
 
-    // Set sampler uniform to texture unit 0 (use native OpenGL on macOS)
+    // Activate texture unit 0 and bind the atlas texture
+    // Use native OpenGL on macOS for consistency with texture creation
     #ifdef Q_OS_MACOS
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, glyphAtlas_->textureId());
         if (textTextureUniformLoc_ >= 0) {
             glUniform1i(textTextureUniformLoc_, 0);
         }
     #else
+        gl_->glActiveTexture(GL_TEXTURE0);
+        gl_->glBindTexture(GL_TEXTURE_2D, glyphAtlas_->textureId());
         textShader_->setUniformValue("u_texture", 0);
     #endif
 

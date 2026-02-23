@@ -1,0 +1,80 @@
+[
+{
+  "directory": "/Users/dalvarez/Documents/repos/ratty",
+  "command": "/usr/bin/clang++ -DQT_CORE_LIB -DQT_GUI_LIB -DQT_NO_DEBUG -DQT_OPENGLWIDGETS_LIB -DQT_OPENGL_LIB -DQT_WIDGETS_LIB -I/Users/dalvarez/Documents/repos/ratty/ratty_autogen/include -I/Users/dalvarez/Documents/repos/ratty/src -isystem /opt/homebrew/include/freetype2 -isystem /opt/homebrew/lib/QtCore.framework/Headers -iframework /opt/homebrew/lib -isystem /opt/homebrew/share/qt/mkspecs/macx-clang -isystem /opt/homebrew/include -isystem /opt/homebrew/lib/QtWidgets.framework/Headers -isystem /opt/homebrew/lib/QtGui.framework/Headers -isystem /opt/homebrew/lib/QtOpenGL.framework/Headers -isystem /opt/homebrew/lib/QtOpenGLWidgets.framework/Headers -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -Wpedantic -o CMakeFiles/ratty.dir/ratty_autogen/mocs_compilation.cpp.o -c /Users/dalvarez/Documents/repos/ratty/ratty_autogen/mocs_compilation.cpp",
+  "file": "/Users/dalvarez/Documents/repos/ratty/ratty_autogen/mocs_compilation.cpp",
+  "output": "CMakeFiles/ratty.dir/ratty_autogen/mocs_compilation.cpp.o"
+},
+{
+  "directory": "/Users/dalvarez/Documents/repos/ratty",
+  "command": "/usr/bin/clang++ -DQT_CORE_LIB -DQT_GUI_LIB -DQT_NO_DEBUG -DQT_OPENGLWIDGETS_LIB -DQT_OPENGL_LIB -DQT_WIDGETS_LIB -I/Users/dalvarez/Documents/repos/ratty/ratty_autogen/include -I/Users/dalvarez/Documents/repos/ratty/src -isystem /opt/homebrew/include/freetype2 -isystem /opt/homebrew/lib/QtCore.framework/Headers -iframework /opt/homebrew/lib -isystem /opt/homebrew/share/qt/mkspecs/macx-clang -isystem /opt/homebrew/include -isystem /opt/homebrew/lib/QtWidgets.framework/Headers -isystem /opt/homebrew/lib/QtGui.framework/Headers -isystem /opt/homebrew/lib/QtOpenGL.framework/Headers -isystem /opt/homebrew/lib/QtOpenGLWidgets.framework/Headers -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -Wpedantic -o CMakeFiles/ratty.dir/src/main.cpp.o -c /Users/dalvarez/Documents/repos/ratty/src/main.cpp",
+  "file": "/Users/dalvarez/Documents/repos/ratty/src/main.cpp",
+  "output": "CMakeFiles/ratty.dir/src/main.cpp.o"
+},
+{
+  "directory": "/Users/dalvarez/Documents/repos/ratty",
+  "command": "/usr/bin/clang++ -DQT_CORE_LIB -DQT_GUI_LIB -DQT_NO_DEBUG -DQT_OPENGLWIDGETS_LIB -DQT_OPENGL_LIB -DQT_WIDGETS_LIB -I/Users/dalvarez/Documents/repos/ratty/ratty_autogen/include -I/Users/dalvarez/Documents/repos/ratty/src -isystem /opt/homebrew/include/freetype2 -isystem /opt/homebrew/lib/QtCore.framework/Headers -iframework /opt/homebrew/lib -isystem /opt/homebrew/share/qt/mkspecs/macx-clang -isystem /opt/homebrew/include -isystem /opt/homebrew/lib/QtWidgets.framework/Headers -isystem /opt/homebrew/lib/QtGui.framework/Headers -isystem /opt/homebrew/lib/QtOpenGL.framework/Headers -isystem /opt/homebrew/lib/QtOpenGLWidgets.framework/Headers -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -Wpedantic -o CMakeFiles/ratty.dir/src/core/pty.cpp.o -c /Users/dalvarez/Documents/repos/ratty/src/core/pty.cpp",
+  "file": "/Users/dalvarez/Documents/repos/ratty/src/core/pty.cpp",
+  "output": "CMakeFiles/ratty.dir/src/core/pty.cpp.o"
+},
+{
+  "directory": "/Users/dalvarez/Documents/repos/ratty",
+  "command": "/usr/bin/clang++ -DQT_CORE_LIB -DQT_GUI_LIB -DQT_NO_DEBUG -DQT_OPENGLWIDGETS_LIB -DQT_OPENGL_LIB -DQT_WIDGETS_LIB -I/Users/dalvarez/Documents/repos/ratty/ratty_autogen/include -I/Users/dalvarez/Documents/repos/ratty/src -isystem /opt/homebrew/include/freetype2 -isystem /opt/homebrew/lib/QtCore.framework/Headers -iframework /opt/homebrew/lib -isystem /opt/homebrew/share/qt/mkspecs/macx-clang -isystem /opt/homebrew/include -isystem /opt/homebrew/lib/QtWidgets.framework/Headers -isystem /opt/homebrew/lib/QtGui.framework/Headers -isystem /opt/homebrew/lib/QtOpenGL.framework/Headers -isystem /opt/homebrew/lib/QtOpenGLWidgets.framework/Headers -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -Wpedantic -o CMakeFiles/ratty.dir/src/ui/main_window.cpp.o -c /Users/dalvarez/Documents/repos/ratty/src/ui/main_window.cpp",
+  "file": "/Users/dalvarez/Documents/repos/ratty/src/ui/main_window.cpp",
+  "output": "CMakeFiles/ratty.dir/src/ui/main_window.cpp.o"
+},
+{
+  "directory": "/Users/dalvarez/Documents/repos/ratty",
+  "command": "/usr/bin/clang++ -DQT_CORE_LIB -DQT_GUI_LIB -DQT_NO_DEBUG -DQT_OPENGLWIDGETS_LIB -DQT_OPENGL_LIB -DQT_WIDGETS_LIB -I/Users/dalvarez/Documents/repos/ratty/ratty_autogen/include -I/Users/dalvarez/Documents/repos/ratty/src -isystem /opt/homebrew/include/freetype2 -isystem /opt/homebrew/lib/QtCore.framework/Headers -iframework /opt/homebrew/lib -isystem /opt/homebrew/share/qt/mkspecs/macx-clang -isystem /opt/homebrew/include -isystem /opt/homebrew/lib/QtWidgets.framework/Headers -isystem /opt/homebrew/lib/QtGui.framework/Headers -isystem /opt/homebrew/lib/QtOpenGL.framework/Headers -isystem /opt/homebrew/lib/QtOpenGLWidgets.framework/Headers -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -Wpedantic -o CMakeFiles/ratty.dir/src/ui/terminal_tab.cpp.o -c /Users/dalvarez/Documents/repos/ratty/src/ui/terminal_tab.cpp",
+  "file": "/Users/dalvarez/Documents/repos/ratty/src/ui/terminal_tab.cpp",
+  "output": "CMakeFiles/ratty.dir/src/ui/terminal_tab.cpp.o"
+},
+{
+  "directory": "/Users/dalvarez/Documents/repos/ratty",
+  "command": "/usr/bin/clang++ -DQT_CORE_LIB -DQT_GUI_LIB -DQT_NO_DEBUG -DQT_OPENGLWIDGETS_LIB -DQT_OPENGL_LIB -DQT_WIDGETS_LIB -I/Users/dalvarez/Documents/repos/ratty/ratty_autogen/include -I/Users/dalvarez/Documents/repos/ratty/src -isystem /opt/homebrew/include/freetype2 -isystem /opt/homebrew/lib/QtCore.framework/Headers -iframework /opt/homebrew/lib -isystem /opt/homebrew/share/qt/mkspecs/macx-clang -isystem /opt/homebrew/include -isystem /opt/homebrew/lib/QtWidgets.framework/Headers -isystem /opt/homebrew/lib/QtGui.framework/Headers -isystem /opt/homebrew/lib/QtOpenGL.framework/Headers -isystem /opt/homebrew/lib/QtOpenGLWidgets.framework/Headers -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -Wpedantic -o CMakeFiles/ratty.dir/src/ui/split_container.cpp.o -c /Users/dalvarez/Documents/repos/ratty/src/ui/split_container.cpp",
+  "file": "/Users/dalvarez/Documents/repos/ratty/src/ui/split_container.cpp",
+  "output": "CMakeFiles/ratty.dir/src/ui/split_container.cpp.o"
+},
+{
+  "directory": "/Users/dalvarez/Documents/repos/ratty",
+  "command": "/usr/bin/clang++ -DQT_CORE_LIB -DQT_GUI_LIB -DQT_NO_DEBUG -DQT_OPENGLWIDGETS_LIB -DQT_OPENGL_LIB -DQT_WIDGETS_LIB -I/Users/dalvarez/Documents/repos/ratty/ratty_autogen/include -I/Users/dalvarez/Documents/repos/ratty/src -isystem /opt/homebrew/include/freetype2 -isystem /opt/homebrew/lib/QtCore.framework/Headers -iframework /opt/homebrew/lib -isystem /opt/homebrew/share/qt/mkspecs/macx-clang -isystem /opt/homebrew/include -isystem /opt/homebrew/lib/QtWidgets.framework/Headers -isystem /opt/homebrew/lib/QtGui.framework/Headers -isystem /opt/homebrew/lib/QtOpenGL.framework/Headers -isystem /opt/homebrew/lib/QtOpenGLWidgets.framework/Headers -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -Wpedantic -o CMakeFiles/ratty.dir/src/ui/terminal_widget.cpp.o -c /Users/dalvarez/Documents/repos/ratty/src/ui/terminal_widget.cpp",
+  "file": "/Users/dalvarez/Documents/repos/ratty/src/ui/terminal_widget.cpp",
+  "output": "CMakeFiles/ratty.dir/src/ui/terminal_widget.cpp.o"
+},
+{
+  "directory": "/Users/dalvarez/Documents/repos/ratty",
+  "command": "/usr/bin/clang++ -DQT_CORE_LIB -DQT_GUI_LIB -DQT_NO_DEBUG -DQT_OPENGLWIDGETS_LIB -DQT_OPENGL_LIB -DQT_WIDGETS_LIB -I/Users/dalvarez/Documents/repos/ratty/ratty_autogen/include -I/Users/dalvarez/Documents/repos/ratty/src -isystem /opt/homebrew/include/freetype2 -isystem /opt/homebrew/lib/QtCore.framework/Headers -iframework /opt/homebrew/lib -isystem /opt/homebrew/share/qt/mkspecs/macx-clang -isystem /opt/homebrew/include -isystem /opt/homebrew/lib/QtWidgets.framework/Headers -isystem /opt/homebrew/lib/QtGui.framework/Headers -isystem /opt/homebrew/lib/QtOpenGL.framework/Headers -isystem /opt/homebrew/lib/QtOpenGLWidgets.framework/Headers -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -Wpedantic -o CMakeFiles/ratty.dir/src/ui/input_handler.cpp.o -c /Users/dalvarez/Documents/repos/ratty/src/ui/input_handler.cpp",
+  "file": "/Users/dalvarez/Documents/repos/ratty/src/ui/input_handler.cpp",
+  "output": "CMakeFiles/ratty.dir/src/ui/input_handler.cpp.o"
+},
+{
+  "directory": "/Users/dalvarez/Documents/repos/ratty",
+  "command": "/usr/bin/clang++ -DQT_CORE_LIB -DQT_GUI_LIB -DQT_NO_DEBUG -DQT_OPENGLWIDGETS_LIB -DQT_OPENGL_LIB -DQT_WIDGETS_LIB -I/Users/dalvarez/Documents/repos/ratty/ratty_autogen/include -I/Users/dalvarez/Documents/repos/ratty/src -isystem /opt/homebrew/include/freetype2 -isystem /opt/homebrew/lib/QtCore.framework/Headers -iframework /opt/homebrew/lib -isystem /opt/homebrew/share/qt/mkspecs/macx-clang -isystem /opt/homebrew/include -isystem /opt/homebrew/lib/QtWidgets.framework/Headers -isystem /opt/homebrew/lib/QtGui.framework/Headers -isystem /opt/homebrew/lib/QtOpenGL.framework/Headers -isystem /opt/homebrew/lib/QtOpenGLWidgets.framework/Headers -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -Wpedantic -o CMakeFiles/ratty.dir/src/render/font_manager.cpp.o -c /Users/dalvarez/Documents/repos/ratty/src/render/font_manager.cpp",
+  "file": "/Users/dalvarez/Documents/repos/ratty/src/render/font_manager.cpp",
+  "output": "CMakeFiles/ratty.dir/src/render/font_manager.cpp.o"
+},
+{
+  "directory": "/Users/dalvarez/Documents/repos/ratty",
+  "command": "/usr/bin/clang++ -DQT_CORE_LIB -DQT_GUI_LIB -DQT_NO_DEBUG -DQT_OPENGLWIDGETS_LIB -DQT_OPENGL_LIB -DQT_WIDGETS_LIB -I/Users/dalvarez/Documents/repos/ratty/ratty_autogen/include -I/Users/dalvarez/Documents/repos/ratty/src -isystem /opt/homebrew/include/freetype2 -isystem /opt/homebrew/lib/QtCore.framework/Headers -iframework /opt/homebrew/lib -isystem /opt/homebrew/share/qt/mkspecs/macx-clang -isystem /opt/homebrew/include -isystem /opt/homebrew/lib/QtWidgets.framework/Headers -isystem /opt/homebrew/lib/QtGui.framework/Headers -isystem /opt/homebrew/lib/QtOpenGL.framework/Headers -isystem /opt/homebrew/lib/QtOpenGLWidgets.framework/Headers -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -Wpedantic -o CMakeFiles/ratty.dir/src/render/glyph_atlas.cpp.o -c /Users/dalvarez/Documents/repos/ratty/src/render/glyph_atlas.cpp",
+  "file": "/Users/dalvarez/Documents/repos/ratty/src/render/glyph_atlas.cpp",
+  "output": "CMakeFiles/ratty.dir/src/render/glyph_atlas.cpp.o"
+},
+{
+  "directory": "/Users/dalvarez/Documents/repos/ratty",
+  "command": "/usr/bin/clang++ -DQT_CORE_LIB -DQT_GUI_LIB -DQT_NO_DEBUG -DQT_OPENGLWIDGETS_LIB -DQT_OPENGL_LIB -DQT_WIDGETS_LIB -I/Users/dalvarez/Documents/repos/ratty/ratty_autogen/include -I/Users/dalvarez/Documents/repos/ratty/src -isystem /opt/homebrew/include/freetype2 -isystem /opt/homebrew/lib/QtCore.framework/Headers -iframework /opt/homebrew/lib -isystem /opt/homebrew/share/qt/mkspecs/macx-clang -isystem /opt/homebrew/include -isystem /opt/homebrew/lib/QtWidgets.framework/Headers -isystem /opt/homebrew/lib/QtGui.framework/Headers -isystem /opt/homebrew/lib/QtOpenGL.framework/Headers -isystem /opt/homebrew/lib/QtOpenGLWidgets.framework/Headers -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -Wpedantic -o CMakeFiles/ratty.dir/src/render/gl_renderer.cpp.o -c /Users/dalvarez/Documents/repos/ratty/src/render/gl_renderer.cpp",
+  "file": "/Users/dalvarez/Documents/repos/ratty/src/render/gl_renderer.cpp",
+  "output": "CMakeFiles/ratty.dir/src/render/gl_renderer.cpp.o"
+},
+{
+  "directory": "/Users/dalvarez/Documents/repos/ratty",
+  "command": "/usr/bin/clang++ -DQT_CORE_LIB -DQT_GUI_LIB -DQT_NO_DEBUG -DQT_OPENGLWIDGETS_LIB -DQT_OPENGL_LIB -DQT_WIDGETS_LIB -I/Users/dalvarez/Documents/repos/ratty/ratty_autogen/include -I/Users/dalvarez/Documents/repos/ratty/src -isystem /opt/homebrew/include/freetype2 -isystem /opt/homebrew/lib/QtCore.framework/Headers -iframework /opt/homebrew/lib -isystem /opt/homebrew/share/qt/mkspecs/macx-clang -isystem /opt/homebrew/include -isystem /opt/homebrew/lib/QtWidgets.framework/Headers -isystem /opt/homebrew/lib/QtGui.framework/Headers -isystem /opt/homebrew/lib/QtOpenGL.framework/Headers -isystem /opt/homebrew/lib/QtOpenGLWidgets.framework/Headers -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -Wpedantic -o CMakeFiles/ratty.dir/src/config/config.cpp.o -c /Users/dalvarez/Documents/repos/ratty/src/config/config.cpp",
+  "file": "/Users/dalvarez/Documents/repos/ratty/src/config/config.cpp",
+  "output": "CMakeFiles/ratty.dir/src/config/config.cpp.o"
+},
+{
+  "directory": "/Users/dalvarez/Documents/repos/ratty",
+  "command": "/usr/bin/clang++ -DQT_CORE_LIB -DQT_GUI_LIB -DQT_NO_DEBUG -DQT_OPENGLWIDGETS_LIB -DQT_OPENGL_LIB -DQT_WIDGETS_LIB -I/Users/dalvarez/Documents/repos/ratty/ratty_autogen/include -I/Users/dalvarez/Documents/repos/ratty/src -isystem /opt/homebrew/include/freetype2 -isystem /opt/homebrew/lib/QtCore.framework/Headers -iframework /opt/homebrew/lib -isystem /opt/homebrew/share/qt/mkspecs/macx-clang -isystem /opt/homebrew/include -isystem /opt/homebrew/lib/QtWidgets.framework/Headers -isystem /opt/homebrew/lib/QtGui.framework/Headers -isystem /opt/homebrew/lib/QtOpenGL.framework/Headers -isystem /opt/homebrew/lib/QtOpenGLWidgets.framework/Headers -O3 -DNDEBUG -std=gnu++17 -arch arm64 -Wall -Wextra -Wpedantic -o CMakeFiles/ratty.dir/ratty_autogen/3YJK5W5UP7/qrc_shaders.cpp.o -c /Users/dalvarez/Documents/repos/ratty/ratty_autogen/3YJK5W5UP7/qrc_shaders.cpp",
+  "file": "/Users/dalvarez/Documents/repos/ratty/ratty_autogen/3YJK5W5UP7/qrc_shaders.cpp",
+  "output": "CMakeFiles/ratty.dir/ratty_autogen/3YJK5W5UP7/qrc_shaders.cpp.o"
+}
+]

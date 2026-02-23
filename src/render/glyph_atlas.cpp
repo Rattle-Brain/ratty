@@ -59,7 +59,12 @@ GlyphAtlas::GlyphAtlas(QOpenGLFunctions* gl, int initialSize)
             qDebug() << "GlyphAtlas: Successfully bound texture" << textureId_;
         }
 
-        // Set texture parameters
+        // Allocate single-channel texture (GL_RED for grayscale glyphs - saves 75% memory!)
+        QByteArray zeros(size_ * size_, 0);  // Single channel
+        qDebug() << "GlyphAtlas: Creating" << size_ << "x" << size_ << "GL_RED texture";
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, size_, size_, 0, GL_RED, GL_UNSIGNED_BYTE, zeros.constData());
+
+        // Set texture parameters AFTER allocating storage
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -67,27 +72,20 @@ GlyphAtlas::GlyphAtlas(QOpenGLFunctions* gl, int initialSize)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
 
-        // Allocate zero-initialized texture data
-        QByteArray zeros(size_ * size_ * 4, 0);  // RGBA
-        qDebug() << "GlyphAtlas: Creating" << size_ << "x" << size_ << "texture (GL_RGBA8=" << GL_RGBA8 << ")";
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, size_, size_, 0, GL_RGBA, GL_UNSIGNED_BYTE, zeros.constData());
+        // CRITICAL FIX: Set texture swizzle AFTER texture storage allocation
+        // This tells macOS Metal how to map GL_RED to shader's vec4 sampler
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_RED);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_RED);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_ONE);
+        qDebug() << "GlyphAtlas: Set texture swizzle (R,R,R,1) for GL_RED";
 
         // Check for errors
         GLenum error = glGetError();
         if (error != GL_NO_ERROR) {
-            qWarning() << "GlyphAtlas: glTexImage2D error:" << error << "- trying GL_RGBA instead";
-            // Clear error
-            while (glGetError() != GL_NO_ERROR);
-            // Try with GL_RGBA (unsized format)
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, size_, size_, 0, GL_RGBA, GL_UNSIGNED_BYTE, zeros.constData());
-            error = glGetError();
-            if (error != GL_NO_ERROR) {
-                qWarning() << "GlyphAtlas: Still getting error with GL_RGBA:" << error;
-            } else {
-                qDebug() << "GlyphAtlas: GL_RGBA worked! Texture ID:" << textureId_;
-            }
+            qWarning() << "GlyphAtlas: glTexImage2D error:" << error;
         } else {
-            qDebug() << "GlyphAtlas: GL_RGBA8 worked! Texture ID:" << textureId_;
+            qDebug() << "GlyphAtlas: GL_RED texture created successfully, ID:" << textureId_;
         }
 
         glBindTexture(GL_TEXTURE_2D, 0);
@@ -193,33 +191,23 @@ bool GlyphAtlas::allocate(int width, int height, AtlasRegion& out) {
 void GlyphAtlas::upload(const AtlasRegion& region, const uint8_t* bitmap) {
     if (!bitmap || !gl_) return;
 
-    // Convert grayscale bitmap to RGBA (white color with alpha)
-    int size = region.width * region.height;
-    QVector<uint8_t> rgbaData(size * 4);
-
-    for (int i = 0; i < size; ++i) {
-        rgbaData[i * 4 + 0] = 255;           // R
-        rgbaData[i * 4 + 1] = 255;           // G
-        rgbaData[i * 4 + 2] = 255;           // B
-        rgbaData[i * 4 + 3] = bitmap[i];     // A (grayscale value)
-    }
-
+    // Upload grayscale bitmap directly to GL_RED texture (no conversion needed!)
     // WORKAROUND for Apple Silicon Qt bug: Use native OpenGL directly
     #ifdef Q_OS_MACOS
         glBindTexture(GL_TEXTURE_2D, textureId_);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);  // Single-channel data
         glTexSubImage2D(GL_TEXTURE_2D, 0,
                        region.x, region.y,
                        region.width, region.height,
-                       GL_RGBA, GL_UNSIGNED_BYTE, rgbaData.constData());
+                       GL_RED, GL_UNSIGNED_BYTE, bitmap);
         glBindTexture(GL_TEXTURE_2D, 0);
     #else
         gl_->glBindTexture(GL_TEXTURE_2D, textureId_);
-        gl_->glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        gl_->glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
         gl_->glTexSubImage2D(GL_TEXTURE_2D, 0,
                             region.x, region.y,
                             region.width, region.height,
-                            GL_RGBA, GL_UNSIGNED_BYTE, rgbaData.constData());
+                            GL_RED, GL_UNSIGNED_BYTE, bitmap);
         gl_->glBindTexture(GL_TEXTURE_2D, 0);
     #endif
 }
@@ -297,21 +285,21 @@ void GlyphAtlas::clear() {
     allocatedPixels_ = 0;
     glyphs_.clear();
 
-    // Clear the texture to transparent
-    QByteArray zeros(size_ * size_ * 4, 0);  // RGBA
+    // Clear the texture to zero (single-channel)
+    QByteArray zeros(size_ * size_, 0);  // GL_RED single channel
 
     // WORKAROUND for Apple Silicon Qt bug: Use native OpenGL directly
     #ifdef Q_OS_MACOS
         glBindTexture(GL_TEXTURE_2D, textureId_);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
                        size_, size_,
-                       GL_RGBA, GL_UNSIGNED_BYTE, zeros.constData());
+                       GL_RED, GL_UNSIGNED_BYTE, zeros.constData());
         glBindTexture(GL_TEXTURE_2D, 0);
     #else
         gl_->glBindTexture(GL_TEXTURE_2D, textureId_);
         gl_->glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
                             size_, size_,
-                            GL_RGBA, GL_UNSIGNED_BYTE, zeros.constData());
+                            GL_RED, GL_UNSIGNED_BYTE, zeros.constData());
         gl_->glBindTexture(GL_TEXTURE_2D, 0);
     #endif
 
@@ -346,24 +334,42 @@ bool GlyphAtlas::grow() {
     allocatedPixels_ = 0;
     glyphs_.clear();
 
-    gl_->glGenTextures(1, &textureId_);
-    gl_->glBindTexture(GL_TEXTURE_2D, textureId_);
-
-    // WORKAROUND for Apple Silicon Qt bug: Use native OpenGL directly with GL_RGBA8
+    // WORKAROUND for Apple Silicon Qt bug: Use native OpenGL directly
     #ifdef Q_OS_MACOS
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, newSize, newSize, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glGenTextures(1, &textureId_);
+        glBindTexture(GL_TEXTURE_2D, textureId_);
+
+        QByteArray zeros(newSize * newSize, 0);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, newSize, newSize, 0, GL_RED, GL_UNSIGNED_BYTE, zeros.constData());
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+
+        // Set texture swizzle for single-channel texture
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_RED);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_RED);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_ONE);
+
+        glBindTexture(GL_TEXTURE_2D, 0);
     #else
-        gl_->glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, newSize, newSize, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        gl_->glGenTextures(1, &textureId_);
+        gl_->glBindTexture(GL_TEXTURE_2D, textureId_);
+
+        gl_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        gl_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        gl_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        gl_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        gl_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+        gl_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+
+        gl_->glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, newSize, newSize, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
+        gl_->glBindTexture(GL_TEXTURE_2D, 0);
     #endif
-
-    gl_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    gl_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    gl_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    gl_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    gl_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-    gl_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
-
-    gl_->glBindTexture(GL_TEXTURE_2D, 0);
 
     qDebug() << "GlyphAtlas: Grew to" << newSize << "x" << newSize;
 

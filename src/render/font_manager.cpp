@@ -9,6 +9,9 @@
 #include FT_FREETYPE_H
 #include FT_GLYPH_H
 #include FT_SYNTHESIS_H
+#include <QFontDatabase>
+#include <QFontInfo>
+#include <QFont>
 
 // GlyphBitmap implementation
 GlyphBitmap::GlyphBitmap()

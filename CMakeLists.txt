@@ -1,4 +1,10 @@
 cmake_minimum_required(VERSION 3.16)
+
+# Set Clang as the default compiler if not already specified
+if(NOT CMAKE_CXX_COMPILER)
+    set(CMAKE_CXX_COMPILER "clang++")
+endif()
+
 project(ratty VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
