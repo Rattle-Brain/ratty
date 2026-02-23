@@ -1,3 +1,5 @@
+<img src="resources/images/ratty-logo.png" alt="Ratty Logo" align="right" width="200"/>
+
 # Ratty
 
 A GPU-accelerated terminal emulator built with modern C++ and OpenGL.
