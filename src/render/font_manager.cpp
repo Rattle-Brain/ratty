@@ -12,6 +12,8 @@
 #include <QFontDatabase>
 #include <QFontInfo>
 #include <QFont>
+#include <QString>
+#include <QStringList>
 
 // GlyphBitmap implementation
 GlyphBitmap::GlyphBitmap()
@@ -231,31 +233,62 @@ bool FontManager::load(const std::string& path, FontStyle style, int sizePt, int
 bool FontManager::loadDefault(int sizePt, int dpi) {
     if (!ftLibrary_) return false;
 
-    // Try common monospace fonts in order of preference
-    const char* fontPaths[] = {
-        // macOS
-        "/System/Library/Fonts/Monaco.ttf",
-        "/System/Library/Fonts/Menlo.ttc",
-        "/Library/Fonts/SF-Mono-Regular.otf",
-        "/System/Library/Fonts/SFNSMono.ttf",
-        // Linux
-        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-        "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-        "/usr/share/fonts/truetype/freefont/FreeMono.ttf",
-        "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf",
-        // Fallback
-        "/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf",
-        nullptr
-    };
+    // Use Qt's font database to find the system's default monospace font
+    QFont monoFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    QFontInfo fontInfo(monoFont);
+    QString fontFamily = fontInfo.family();
 
-    for (int i = 0; fontPaths[i] != nullptr; i++) {
-        if (load(fontPaths[i], FontStyleRegular, sizePt, dpi)) {
-            return true;
+    // Fallback to common monospace families if system font not found
+    if (fontFamily.isEmpty()) {
+        QStringList monoFamilies;
+        monoFamilies << "Monospace" << "Courier" << "Monaco" << "Menlo"
+                     << "DejaVu Sans Mono" << "Liberation Mono" << "Consolas";
+
+        QStringList availableFamilies = QFontDatabase::families();
+        for (const QString& family : monoFamilies) {
+            if (availableFamilies.contains(family)) {
+                fontFamily = family;
+                break;
+            }
         }
     }
 
-    fprintf(stderr, "FontManager: No default monospace font found\n");
+    if (fontFamily.isEmpty()) {
+        fprintf(stderr, "FontManager: No monospace font family found in system\n");
+        return false;
+    }
+
+    // Use fc-match to get the actual font file path (works on macOS and Linux)
+    QString fcMatchCmd = QString("fc-match -f %{file} \"%1:style=Regular\"").arg(fontFamily);
+    FILE* pipe = popen(fcMatchCmd.toUtf8().constData(), "r");
+    if (!pipe) {
+        fprintf(stderr, "FontManager: Failed to run fc-match command\n");
+        return false;
+    }
+
+    char buffer[1024];
+    QString fontPath;
+    if (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        fontPath = QString::fromUtf8(buffer).trimmed();
+    }
+    pclose(pipe);
+
+    if (fontPath.isEmpty()) {
+        fprintf(stderr, "FontManager: fc-match returned empty path for family: %s\n",
+                fontFamily.toUtf8().constData());
+        return false;
+    }
+
+    fprintf(stdout, "FontManager: Loading system font: %s from %s\n",
+            fontFamily.toUtf8().constData(),
+            fontPath.toUtf8().constData());
+
+    if (load(fontPath.toStdString(), FontStyleRegular, sizePt, dpi)) {
+        return true;
+    }
+
+    fprintf(stderr, "FontManager: Failed to load font file: %s\n",
+            fontPath.toUtf8().constData());
     return false;
 }
 
