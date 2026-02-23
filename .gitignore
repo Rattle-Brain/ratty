@@ -1,5 +1,9 @@
 # Build
-build/**
+build
+CMake*
+cmake_*
+ratty*
+compile_commands.json
 
 # Prerequisites
 *.d
