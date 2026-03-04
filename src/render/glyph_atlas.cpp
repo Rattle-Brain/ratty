@@ -74,6 +74,7 @@ GlyphAtlas::GlyphAtlas(QOpenGLFunctions* gl, int initialSize)
 
         // CRITICAL FIX: Set texture swizzle AFTER texture storage allocation
         // This tells macOS Metal how to map GL_RED to shader's vec4 sampler
+        // REQUIRES: OpenGL 3.3+ (GL_ARB_texture_swizzle)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_RED);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_RED);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
@@ -349,7 +350,7 @@ bool GlyphAtlas::grow() {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
 
-        // Set texture swizzle for single-channel texture
+        // Set texture swizzle for single-channel texture (requires OpenGL 3.3+)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_RED);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_RED);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);

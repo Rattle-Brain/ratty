@@ -3,12 +3,15 @@
  */
 
 #include "terminal_widget.h"
+#include "../config/config.h"
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QSurfaceFormat>
 #include <QClipboard>
 #include <QApplication>
+#include <QScreen>
+#include <QGuiApplication>
 #include <QDebug>
 
 TerminalWidget::TerminalWidget(QWidget* parent)
@@ -17,14 +20,13 @@ TerminalWidget::TerminalWidget(QWidget* parent)
     , ptyNotifier_(nullptr)
     , rows_(DEFAULT_ROWS)
     , cols_(DEFAULT_COLS)
-    , currentLine_(0)
     , focusedBorder_(false)
     , cursorVisible_(true)
     , blinkTimer_(nullptr)
 {
-    // Request OpenGL 3.2 Core Profile
+    // Request OpenGL 3.3 Core Profile (minimum required for texture swizzling)
     QSurfaceFormat format;
-    format.setVersion(3, 2);
+    format.setVersion(3, 3);
     format.setProfile(QSurfaceFormat::CoreProfile);
     format.setDepthBufferSize(24);
     format.setStencilBufferSize(8);
@@ -35,7 +37,7 @@ TerminalWidget::TerminalWidget(QWidget* parent)
     setMouseTracking(true);
 
     // Set minimum size based on font metrics (will be updated after GL init)
-    setMinimumSize(400, 300);
+    setMinimumSize(400, 150);
 
     // Cursor blink timer
     blinkTimer_ = new QTimer(this);
@@ -51,6 +53,25 @@ TerminalWidget::~TerminalWidget() {
 void TerminalWidget::initializeGL() {
     initializeOpenGLFunctions();
 
+    // Validate OpenGL version
+    QOpenGLContext* ctx = context();
+    if (!ctx) {
+        qCritical() << "TerminalWidget: No OpenGL context available";
+        return;
+    }
+
+    QSurfaceFormat fmt = ctx->format();
+    int major = fmt.majorVersion();
+    int minor = fmt.minorVersion();
+    qDebug() << "TerminalWidget: OpenGL version" << major << "." << minor;
+    qDebug() << "TerminalWidget: Profile:" << (fmt.profile() == QSurfaceFormat::CoreProfile ? "Core" : "Compatibility");
+
+    if (major < 3 || (major == 3 && minor < 3)) {
+        qCritical() << "TerminalWidget: OpenGL 3.3 or higher required, got" << major << "." << minor;
+        qCritical() << "TerminalWidget: Your system may not support the required OpenGL version";
+        return;
+    }
+
     // Create renderer (it will get OpenGL functions from the current context)
     renderer_ = std::make_unique<GLRenderer>();
     if (!renderer_->initialize()) {
@@ -58,14 +79,28 @@ void TerminalWidget::initializeGL() {
         return;
     }
 
-    // Load default font
-    if (!renderer_->loadDefaultFont(14, 96)) {
+    // Load default font with config and screen DPI
+    Config& config = Config::instance();
+    int fontSize = config.fontSize();
+
+    // Get actual screen DPI for proper font rendering
+    // Qt's logicalDotsPerInch accounts for system DPI scaling
+    QScreen* screen = QGuiApplication::primaryScreen();
+    int dpi = screen ? static_cast<int>(screen->logicalDotsPerInch()) : 96;
+
+    qDebug() << "TerminalWidget: Loading font size" << fontSize << "at" << dpi << "DPI";
+
+    if (!renderer_->loadDefaultFont(fontSize, dpi)) {
         qCritical() << "TerminalWidget: Failed to load default font";
         return;
     }
 
     // Calculate terminal size
     calculateTerminalSize();
+
+    // Create terminal emulator
+    emulator_ = std::make_unique<TerminalEmulator>(rows_, cols_);
+    qDebug() << "TerminalWidget: Created emulator with" << rows_ << "x" << cols_;
 
     // Create PTY
     createPTY();
@@ -78,6 +113,12 @@ void TerminalWidget::resizeGL(int w, int h) {
 
     // Recalculate terminal size
     calculateTerminalSize();
+
+    // Resize emulator
+    if (emulator_) {
+        emulator_->resize(rows_, cols_);
+        qDebug() << "TerminalWidget: Resized emulator to" << rows_ << "x" << cols_;
+    }
 
     // Resize PTY
     if (pty_ && pty_->isValid()) {
@@ -139,6 +180,11 @@ void TerminalWidget::renderContent() {
         return;
     }
 
+    if (!emulator_) {
+        qWarning() << "TerminalWidget: Emulator not initialized";
+        return;
+    }
+
     FontMetrics metrics = renderer_->getFontMetrics();
 
     if (metrics.cellWidth <= 0 || metrics.cellHeight <= 0) {
@@ -146,78 +192,76 @@ void TerminalWidget::renderContent() {
         return;
     }
 
+    // Get colors from config
+    Config& config = Config::instance();
+    QColor backgroundColor = config.backgroundColor();
+    QColor cursorColor = config.cursorColor();
+
     // Begin frame
     renderer_->beginFrame(width(), height());
 
-    // Clear background
-    renderer_->clear(QColor(30, 30, 30));
+    // Clear background using config color
+    renderer_->clear(backgroundColor);
 
-    // Draw focus border if focused
-    if (focusedBorder_) {
-        renderer_->drawRectOutline(0, 0, width(), height(), QColor(100, 149, 237), 2.0f);
-    }
+    // Note: Focus border removed - only needed when multiple splits exist
+    // TODO: Re-enable subtle border only when there are multiple terminal panes
 
-    // Draw raw buffer content (line-wrapped)
-    // This is a simplified display until terminal emulation is implemented
-    if (!rawBuffer_.isEmpty()) {
-        QColor textColor(220, 220, 220);
-        float y = metrics.ascender + 5;  // Add padding from top
-        int lineCount = 0;
+    // Render terminal grid
+    for (int row = 0; row < emulator_->rows(); ++row) {
+        for (int col = 0; col < emulator_->cols(); ++col) {
+            const Cell& cell = emulator_->cellAt(row, col);
 
-        // Split into lines for display
-        QStringList displayLines;
-        QString currentLine;
+            float x = col * metrics.cellWidth;
+            float y = row * metrics.cellHeight;
 
-        for (QChar ch : rawBuffer_) {
-            if (ch == '\n') {
-                displayLines.append(currentLine);
-                currentLine.clear();
-            } else if (ch == '\r') {
-                // Ignore carriage return for now
-                continue;
-            } else if (ch.isPrint() || ch == '\t') {
-                currentLine.append(ch);
+            // Get colors (apply inverse if needed)
+            QColor fgColor = cell.attrs.foreground;
+            QColor bgColor = cell.attrs.background;
 
-                // Wrap if too long
-                if (currentLine.length() >= cols_) {
-                    displayLines.append(currentLine);
-                    currentLine.clear();
+            if (cell.attrs.inverse) {
+                std::swap(fgColor, bgColor);
+            }
+
+            // Draw background if not default
+            if (bgColor != backgroundColor) {
+                renderer_->drawRect(x, y, metrics.cellWidth, metrics.cellHeight, bgColor);
+            }
+
+            // Draw character if not space
+            if (cell.ch != ' ') {
+                // Make bold text brighter
+                if (cell.attrs.bold) {
+                    fgColor = fgColor.lighter(130);
+                }
+
+                float textY = y + metrics.ascender;
+                renderer_->drawText(QString(cell.ch), x, textY, fgColor);
+
+                // Draw underline if needed
+                if (cell.attrs.underline) {
+                    float underlineY = y + metrics.cellHeight - 2;
+                    renderer_->drawRect(x, underlineY, metrics.cellWidth, 1, fgColor);
                 }
             }
         }
+    }
 
-        if (!currentLine.isEmpty()) {
-            displayLines.append(currentLine);
+    // Draw cursor using config color with transparency
+    if (cursorVisible_) {
+        int cursorRow = emulator_->cursorRow();
+        int cursorCol = emulator_->cursorCol();
+
+        if (cursorRow >= 0 && cursorRow < emulator_->rows() &&
+            cursorCol >= 0 && cursorCol < emulator_->cols()) {
+
+            float cursorX = cursorCol * metrics.cellWidth;
+            float cursorY = cursorRow * metrics.cellHeight;
+
+            // Draw cursor as semi-transparent block using config color
+            QColor cursorDrawColor = cursorColor;
+            cursorDrawColor.setAlpha(128);  // Semi-transparent
+            renderer_->drawRect(cursorX, cursorY, metrics.cellWidth, metrics.cellHeight, cursorDrawColor);
         }
-
-        // Display only the last N lines that fit on screen
-        int startLine = qMax(0, displayLines.size() - rows_);
-        for (int i = startLine; i < displayLines.size() && lineCount < rows_; ++i, ++lineCount) {
-            renderer_->drawText(displayLines[i], 5, y, textColor);  // Add padding from left
-            y += metrics.cellHeight;
-        }
-
-        // Draw cursor at the end
-        if (cursorVisible_) {
-            int cursorLine = lineCount;
-            int cursorCol = currentLine.length();
-
-            float cursorX = 5 + cursorCol * metrics.cellWidth;
-            float cursorY = metrics.ascender + 5 + cursorLine * metrics.cellHeight - metrics.ascender;
-
-            renderer_->drawRect(cursorX, cursorY, metrics.cellWidth, metrics.cellHeight,
-                              QColor(220, 220, 220, 128));
-        }
-    } else {
-        // Display welcome message
-        QColor textColor(100, 149, 237);
-        float y = height() / 2.0f;
-
-        // Draw background test rect to verify rendering works
-        renderer_->drawRect(10, y - 30, 300, 40, QColor(50, 50, 50));
-        renderer_->drawText("Ratty Terminal - Ready", 15, y, textColor);
-
-        qDebug() << "TerminalWidget: Drawing welcome message at" << y << "size:" << width() << "x" << height();
     }
 
     // End frame
@@ -230,24 +274,28 @@ void TerminalWidget::setFocusedBorder(bool focused) {
 }
 
 void TerminalWidget::onPTYDataReady() {
-    if (!pty_ || !pty_->isValid()) return;
+    if (!pty_ || !pty_->isValid() || !emulator_) return;
 
     char buffer[4096];
     ssize_t n = pty_->read(buffer, sizeof(buffer));
 
     if (n > 0) {
         QString text = QString::fromUtf8(buffer, n);
-        rawBuffer_.append(text);
 
-        // Limit buffer size to prevent memory issues
-        if (rawBuffer_.length() > 100000) {
-            rawBuffer_ = rawBuffer_.right(50000);
-        }
+        // Process data through terminal emulator
+        emulator_->processData(text);
 
         update();
     } else if (n < 0) {
         qWarning() << "TerminalWidget: PTY read error";
         ptyNotifier_->setEnabled(false);
+    } else if (n == 0) {
+        // Check if the child process has exited
+        if (pty_->hasChildExited()) {
+            qDebug() << "TerminalWidget: PTY session ended (child exited)";
+            ptyNotifier_->setEnabled(false);
+            emit sessionEnded();
+        }
     }
 }
 
@@ -295,17 +343,9 @@ void TerminalWidget::focusOutEvent(QFocusEvent* event) {
 }
 
 void TerminalWidget::copySelection() {
-    // TODO: Implement text selection and copy when terminal emulation is added
-    // For now, copy the last line of raw buffer as a placeholder
-    if (!rawBuffer_.isEmpty()) {
-        QStringList lines = rawBuffer_.split('\n');
-        if (!lines.isEmpty()) {
-            QString lastLine = lines.last();
-            QClipboard* clipboard = QApplication::clipboard();
-            clipboard->setText(lastLine);
-            qDebug() << "TerminalWidget: Copied to clipboard:" << lastLine.left(50);
-        }
-    }
+    // TODO: Implement text selection
+    // For now, just log that copy was requested
+    qDebug() << "TerminalWidget: Copy requested (selection not yet implemented)";
 }
 
 void TerminalWidget::paste() {

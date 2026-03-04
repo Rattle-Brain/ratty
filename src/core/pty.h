@@ -93,6 +93,12 @@ public:
     bool isValid() const { return master_fd_ >= 0 && child_pid_ > 0; }
 
     /*
+     * Check if the child process has exited
+     * Returns true if the process has exited, false otherwise
+     */
+    bool hasChildExited() const;
+
+    /*
      * Get the user's default shell
      * Checks $SHELL env var, then password database, fallback to /bin/sh
      */

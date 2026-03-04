@@ -1,5 +1,5 @@
 /*
- * Config - Configuration management with QSettings
+ * Config - Configuration management with YAML
  *
  * Manages:
  * - Keybindings (action -> QKeySequence mapping)
@@ -10,12 +10,10 @@
 #ifndef CONFIG_CONFIG_H
 #define CONFIG_CONFIG_H
 
-#include <QSettings>
 #include <QKeySequence>
 #include <QHash>
 #include <QColor>
 #include <QString>
-#include <functional>
 
 /* Actions that can be bound to keys */
 enum Action {
@@ -61,6 +59,13 @@ enum Action {
 
 class Config {
 public:
+    // Default configuration values (fallback if YAML fails)
+    static constexpr int DEFAULT_FONT_SIZE = 12;
+    static constexpr int DEFAULT_WINDOW_WIDTH = 1280;
+    static constexpr int DEFAULT_WINDOW_HEIGHT = 720;
+    static constexpr float DEFAULT_WINDOW_OPACITY = 1.0f;
+    static constexpr bool DEFAULT_FULLSCREEN = false;
+
     // Singleton access
     static Config& instance();
 
@@ -95,10 +100,12 @@ public:
     // Window settings
     int windowWidth() const { return windowWidth_; }
     int windowHeight() const { return windowHeight_; }
+    float windowOpacity() const { return windowOpacity_; }
     bool startFullscreen() const { return startFullscreen_; }
 
     void setWindowWidth(int width) { windowWidth_ = width; }
     void setWindowHeight(int height) { windowHeight_ = height; }
+    void setWindowOpacity(float opacity) { windowOpacity_ = opacity; }
     void setStartFullscreen(bool fullscreen) { startFullscreen_ = fullscreen; }
 
     // Helpers
@@ -114,8 +121,8 @@ private:
     Config& operator=(const Config&) = delete;
 
     void setupDefaultKeybindings();
-
-    QSettings settings_;
+    QString findConfigFile();
+    QKeySequence parseKeySequence(const QString& yamlKey);
 
     // Keybindings: keySequence -> action
     QHash<QKeySequence, Action> keybindings_;
@@ -131,6 +138,7 @@ private:
     // Window
     int windowWidth_;
     int windowHeight_;
+    float windowOpacity_;
     bool startFullscreen_;
 };
 

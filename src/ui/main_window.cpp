@@ -3,7 +3,8 @@
  */
 
 #include "main_window.h"
-#include "terminal_tab.h"
+#include "split_container.h"
+#include "terminal_widget.h"
 #include "../config/config.h"
 #include <QKeyEvent>
 #include <QCloseEvent>
@@ -14,14 +15,9 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , tab_widget_(nullptr)
 {
-    // Load configuration
-    Config::instance().load();
-
+    // Config is already loaded in main.cpp before this is created
     setupUi();
     setupActions();
-
-    // Apply window size from config
-    resize(Config::instance().windowWidth(), Config::instance().windowHeight());
 
     // Create initial tab
     addTab();
@@ -32,7 +28,16 @@ MainWindow::~MainWindow() {
 
 void MainWindow::setupUi() {
     setWindowTitle("Ratty Terminal");
-    resize(1024, 768);
+
+    // Apply all window configuration from config
+    Config& config = Config::instance();
+    resize(config.windowWidth(), config.windowHeight());
+    setWindowOpacity(config.windowOpacity());
+
+    // Apply fullscreen setting
+    if (config.startFullscreen()) {
+        setWindowState(Qt::WindowFullScreen);
+    }
 
     // Create tab widget
     tab_widget_ = new QTabWidget(this);
@@ -56,8 +61,16 @@ void MainWindow::addTab(const QString& title) {
         return;
     }
 
-    TerminalTab* tab = new TerminalTab(this);
-    int index = tab_widget_->addTab(tab, title);
+    // Create a root split container with a single terminal (leaf node)
+    // The split tree is only created when the user actually splits
+    SplitContainer* splitRoot = SplitContainer::createLeaf(this);
+    splitRoot->setFocused(true);
+
+    // Connect session ended signal
+    connect(splitRoot, &SplitContainer::sessionEnded,
+            this, &MainWindow::onSplitSessionEnded);
+
+    int index = tab_widget_->addTab(splitRoot, title);
     tab_widget_->setCurrentIndex(index);
 
     qDebug() << "Added tab" << index << ":" << title;
@@ -117,12 +130,12 @@ int MainWindow::tabCount() const {
     return tab_widget_->count();
 }
 
-TerminalTab* MainWindow::currentTab() const {
-    return qobject_cast<TerminalTab*>(tab_widget_->currentWidget());
+SplitContainer* MainWindow::currentTab() const {
+    return qobject_cast<SplitContainer*>(tab_widget_->currentWidget());
 }
 
-TerminalTab* MainWindow::tabAt(int index) const {
-    return qobject_cast<TerminalTab*>(tab_widget_->widget(index));
+SplitContainer* MainWindow::tabAt(int index) const {
+    return qobject_cast<SplitContainer*>(tab_widget_->widget(index));
 }
 
 void MainWindow::keyPressEvent(QKeyEvent* event) {
@@ -168,22 +181,54 @@ void MainWindow::keyPressEvent(QKeyEvent* event) {
     }
 
     case ACTION_SPLIT_HORIZONTAL: {
-        TerminalTab* tab = currentTab();
-        if (tab) tab->splitHorizontal();
+        SplitContainer* root = currentTab();
+        if (!root) return;
+
+        // Find the focused terminal and split it
+        SplitContainer* focused = root->findFocused();
+        if (focused) {
+            SplitContainer* newRoot = focused->splitHorizontal();
+            // If the split created a new root, replace the tab widget
+            if (newRoot && !newRoot->parent()) {
+                int index = tab_widget_->currentIndex();
+                tab_widget_->removeTab(index);
+                tab_widget_->insertTab(index, newRoot, "Terminal");
+                tab_widget_->setCurrentIndex(index);
+            }
+        }
         event->accept();
         return;
     }
 
     case ACTION_SPLIT_VERTICAL: {
-        TerminalTab* tab = currentTab();
-        if (tab) tab->splitVertical();
+        SplitContainer* root = currentTab();
+        if (!root) return;
+
+        // Find the focused terminal and split it
+        SplitContainer* focused = root->findFocused();
+        if (focused) {
+            SplitContainer* newRoot = focused->splitVertical();
+            // If the split created a new root, replace the tab widget
+            if (newRoot && !newRoot->parent()) {
+                int index = tab_widget_->currentIndex();
+                tab_widget_->removeTab(index);
+                tab_widget_->insertTab(index, newRoot, "Terminal");
+                tab_widget_->setCurrentIndex(index);
+            }
+        }
         event->accept();
         return;
     }
 
     case ACTION_CLOSE_SPLIT: {
-        TerminalTab* tab = currentTab();
-        if (tab) tab->closeSplit();
+        SplitContainer* root = currentTab();
+        if (!root) return;
+
+        // Find the focused terminal and close it
+        SplitContainer* focused = root->findFocused();
+        if (focused && focused != root) {
+            focused->closeSplit();
+        }
         event->accept();
         return;
     }
@@ -203,24 +248,24 @@ void MainWindow::keyPressEvent(QKeyEvent* event) {
         return;
 
     case ACTION_COPY: {
-        TerminalTab* tab = currentTab();
-        if (tab) {
-            // Get the focused terminal widget from the tab
-            // For now, this is a simplified implementation
-            // In the future, this should find the focused split's terminal
-            qDebug() << "Copy action triggered";
+        SplitContainer* root = currentTab();
+        if (root) {
+            SplitContainer* focused = root->findFocused();
+            if (focused && focused->terminal()) {
+                focused->terminal()->copySelection();
+            }
         }
         event->accept();
         return;
     }
 
     case ACTION_PASTE: {
-        TerminalTab* tab = currentTab();
-        if (tab) {
-            // Get the focused terminal widget from the tab
-            // For now, this is a simplified implementation
-            // In the future, this should find the focused split's terminal
-            qDebug() << "Paste action triggered";
+        SplitContainer* root = currentTab();
+        if (root) {
+            SplitContainer* focused = root->findFocused();
+            if (focused && focused->terminal()) {
+                focused->terminal()->paste();
+            }
         }
         event->accept();
         return;
@@ -244,4 +289,81 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 
 void MainWindow::onTabCloseRequested(int index) {
     closeTab(index);
+}
+
+void MainWindow::onSplitSessionEnded(SplitContainer* split) {
+    if (!split) return;
+
+    qDebug() << "MainWindow: Handling session end for split";
+
+    // Find which tab contains this split
+    int tabIndex = -1;
+    SplitContainer* tabRoot = nullptr;
+    for (int i = 0; i < tab_widget_->count(); ++i) {
+        SplitContainer* root = tabAt(i);
+        if (!root) continue;
+
+        // Check if this split is the root or a descendant
+        if (root == split || isDescendant(root, split)) {
+            tabIndex = i;
+            tabRoot = root;
+            break;
+        }
+    }
+
+    if (tabIndex < 0) {
+        qWarning() << "MainWindow: Could not find tab containing split";
+        return;
+    }
+
+    // Case 1: This is the root split (only split in the tab)
+    if (split == tabRoot) {
+        qDebug() << "MainWindow: Closing tab" << tabIndex << "(last split in tab)";
+
+        // If this is the last tab, close the window
+        if (tab_widget_->count() == 1) {
+            qDebug() << "MainWindow: Last tab closed, closing window";
+            close();
+            return;
+        }
+
+        // Otherwise just close this tab
+        closeTab(tabIndex);
+        return;
+    }
+
+    // Case 2: This is a split within a split tree
+    qDebug() << "MainWindow: Closing split (not root)";
+
+    // Close the split (this will restructure the tree)
+    if (split->closeSplit()) {
+        // If closeSplit succeeded, the tree was restructured
+        // We need to check if the new root changed
+        // (This happens when the parent was the old root)
+        SplitContainer* currentRoot = tabAt(tabIndex);
+        if (currentRoot != tabRoot) {
+            // Root changed, need to update tab widget
+            qDebug() << "MainWindow: Split tree root changed, updating tab";
+            tab_widget_->removeTab(tabIndex);
+            tab_widget_->insertTab(tabIndex, currentRoot, "Terminal");
+            tab_widget_->setCurrentIndex(tabIndex);
+
+            // Connect session ended signal to new root
+            connect(currentRoot, &SplitContainer::sessionEnded,
+                    this, &MainWindow::onSplitSessionEnded);
+        }
+    }
+}
+
+// Helper to check if a split is a descendant of a container
+bool MainWindow::isDescendant(SplitContainer* container, SplitContainer* split) {
+    if (!container || !split) return false;
+    if (container == split) return true;
+
+    if (container->isContainer()) {
+        return isDescendant(container->child1(), split) ||
+               isDescendant(container->child2(), split);
+    }
+
+    return false;
 }

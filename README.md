@@ -35,7 +35,7 @@ Ratty is a Unix-based terminal emulator focused on performance and GPU-accelerat
 ### Required
 
 - **CMake** >= 3.16
-- **Clang** C++ compiler with C++17 support
+- **Clang 20** C++ compiler with C++20 support
 - **Make** or another CMake-supported build system
 - **Qt6** (Core, Widgets, OpenGL, OpenGLWidgets modules)
 - **FreeType** >= 2.0 for font rendering
@@ -46,15 +46,17 @@ Ratty is a Unix-based terminal emulator focused on performance and GPU-accelerat
 
 #### macOS
 - Xcode Command Line Tools or full Xcode installation recommended
+- Clang 20 can be installed via Homebrew: `brew install llvm@20`
 - Qt6 can be installed via Homebrew: `brew install qt@6`
 - FreeType can be installed via Homebrew: `brew install freetype`
 
 #### Linux
-- Install development packages for Qt6 and FreeType via your distribution's package manager
+- Install development packages for Qt6, Clang 20, and FreeType via your distribution's package manager
 - Example for Ubuntu/Debian:
   ```bash
-  sudo apt install build-essential cmake clang qt6-base-dev libfreetype6-dev libgl1-mesa-dev
+  sudo apt install build-essential cmake clang-20 qt6-base-dev libfreetype6-dev libgl1-mesa-dev
   ```
+- Note: You may need to add the LLVM repository for Clang 20
 
 ## Building from Source
 
@@ -68,8 +70,8 @@ cd ratty
 # Create build directory
 mkdir -p build && cd build
 
-# Configure with CMake (using Clang)
-cmake -DCMAKE_CXX_COMPILER=clang++ ..
+# Configure with CMake (Clang 20 is set by default)
+cmake ..
 
 # Build
 make
@@ -82,8 +84,9 @@ make
 
 1. **Configure the project**
    ```bash
-   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++
+   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
    ```
+   Note: The project is configured to use Clang 20 by default. To use a different compiler, specify `-DCMAKE_CXX_COMPILER=<path-to-compiler>`
 
 2. **Build the executable**
    ```bash
@@ -163,7 +166,7 @@ Contributions are welcome! Here's how to get started:
 
 ### Coding Guidelines
 
-- **C++ Standard**: Use C++17 features appropriately
+- **C++ Standard**: Use C++20 features appropriately
 - **Code Style**: Follow the existing style in the codebase
   - Use 4 spaces for indentation
   - Place braces on the same line for control structures

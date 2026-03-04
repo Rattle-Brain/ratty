@@ -73,7 +73,8 @@ bool GLRenderer::initialize() {
         return false;
     }
 
-    // Bind attribute locations before linking (required for GLSL 150)
+    // Bind attribute locations before linking (alternative to layout qualifiers)
+    // Note: GLSL 330+ shaders use explicit layout(location=N) in shader code
     textShader_->bindAttributeLocation("a_position", 0);
     textShader_->bindAttributeLocation("a_texcoord", 1);
     textShader_->bindAttributeLocation("a_color", 2);
@@ -126,7 +127,8 @@ bool GLRenderer::initialize() {
         return false;
     }
 
-    // Bind attribute locations before linking (required for GLSL 150)
+    // Bind attribute locations before linking (alternative to layout qualifiers)
+    // Note: GLSL 330+ shaders use explicit layout(location=N) in shader code
     rectShader_->bindAttributeLocation("a_position", 0);
     rectShader_->bindAttributeLocation("a_color", 1);
 

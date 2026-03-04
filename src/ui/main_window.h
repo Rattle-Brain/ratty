@@ -10,7 +10,7 @@
 #include <QMainWindow>
 #include <QTabWidget>
 
-class TerminalTab;
+class SplitContainer;
 
 #define WINDOW_MAX_TABS 32
 
@@ -32,8 +32,8 @@ public:
 
     // Queries
     int tabCount() const;
-    TerminalTab* currentTab() const;
-    TerminalTab* tabAt(int index) const;
+    SplitContainer* currentTab() const;
+    SplitContainer* tabAt(int index) const;
 
 protected:
     void keyPressEvent(QKeyEvent* event) override;
@@ -41,10 +41,12 @@ protected:
 
 private slots:
     void onTabCloseRequested(int index);
+    void onSplitSessionEnded(SplitContainer* split);
 
 private:
     void setupUi();
     void setupActions();
+    bool isDescendant(SplitContainer* container, SplitContainer* split);
 
     QTabWidget* tab_widget_;
 };

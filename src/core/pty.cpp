@@ -180,3 +180,15 @@ void PTY::resize(int rows, int cols) {
         kill(child_pid_, SIGWINCH);
     }
 }
+
+bool PTY::hasChildExited() const {
+    if (child_pid_ <= 0) return true;
+
+    int status;
+    pid_t result = waitpid(child_pid_, &status, WNOHANG);
+
+    // result > 0 means child has exited
+    // result == 0 means child is still running
+    // result < 0 means error (likely child doesn't exist)
+    return result != 0;
+}

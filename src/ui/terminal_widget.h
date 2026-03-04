@@ -17,6 +17,7 @@
 #include <QTimer>
 #include <memory>
 #include "../core/pty.h"
+#include "../core/terminal_emulator.h"
 #include "../render/gl_renderer.h"
 #include "input_handler.h"
 
@@ -34,6 +35,10 @@ public:
     // Clipboard operations
     void copySelection();
     void paste();
+
+signals:
+    // Emitted when the PTY session ends (user exits shell)
+    void sessionEnded();
 
 protected:
     // QOpenGLWidget overrides
@@ -64,25 +69,23 @@ private:
     // Renderer
     std::unique_ptr<GLRenderer> renderer_;
 
+    // Terminal emulator
+    std::unique_ptr<TerminalEmulator> emulator_;
+
     // Input handling
     InputHandler inputHandler_;
 
-    // Terminal state (simplified - until full emulation is implemented)
-    QVector<QString> lines_;
+    // Terminal state
     int rows_;
     int cols_;
-    int currentLine_;
     bool focusedBorder_;
 
     // Cursor
     bool cursorVisible_;
     QTimer* blinkTimer_;
 
-    // Raw buffer (for displaying PTY output before terminal emulation)
-    QString rawBuffer_;
-
-    static constexpr int DEFAULT_ROWS = 24;
-    static constexpr int DEFAULT_COLS = 80;
+    static constexpr int DEFAULT_ROWS = 16;
+    static constexpr int DEFAULT_COLS = 40;
     static constexpr int CURSOR_BLINK_MS = 500;
 };
 

@@ -30,6 +30,10 @@ SplitContainer* SplitContainer::createLeaf(QWidget* parent) {
     // Create terminal widget
     split->terminal_ = new TerminalWidget(split);
 
+    // Connect terminal session ended signal
+    QObject::connect(split->terminal_, &TerminalWidget::sessionEnded,
+                     split, &SplitContainer::onTerminalSessionEnded);
+
     // Set up layout
     QVBoxLayout* layout = new QVBoxLayout(split);
     layout->addWidget(split->terminal_);
@@ -69,6 +73,12 @@ SplitContainer* SplitContainer::createContainer(SplitType type,
     child2->setParent(container->splitter_);
     child1->parent_ = container;
     child2->parent_ = container;
+
+    // Forward sessionEnded signals from children to parent
+    QObject::connect(child1, &SplitContainer::sessionEnded,
+                     container, &SplitContainer::sessionEnded);
+    QObject::connect(child2, &SplitContainer::sessionEnded,
+                     container, &SplitContainer::sessionEnded);
 
     container->splitter_->addWidget(child1);
     container->splitter_->addWidget(child2);
@@ -253,4 +263,10 @@ void SplitContainer::resizeEvent(QResizeEvent* event) {
 
     // Qt's layout system handles resizing automatically
     // No need for manual geometry recalculation like in C version
+}
+
+void SplitContainer::onTerminalSessionEnded() {
+    qDebug() << "SplitContainer: Terminal session ended";
+    // Emit signal to notify parent (MainWindow or parent split)
+    emit sessionEnded(this);
 }

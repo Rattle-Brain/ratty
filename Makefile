@@ -251,6 +251,30 @@ src/core/pty.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/src/core/pty.cpp.s
 .PHONY : src/core/pty.cpp.s
 
+src/core/terminal_emulator.o: src/core/terminal_emulator.cpp.o
+.PHONY : src/core/terminal_emulator.o
+
+# target to build an object file
+src/core/terminal_emulator.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/src/core/terminal_emulator.cpp.o
+.PHONY : src/core/terminal_emulator.cpp.o
+
+src/core/terminal_emulator.i: src/core/terminal_emulator.cpp.i
+.PHONY : src/core/terminal_emulator.i
+
+# target to preprocess a source file
+src/core/terminal_emulator.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/src/core/terminal_emulator.cpp.i
+.PHONY : src/core/terminal_emulator.cpp.i
+
+src/core/terminal_emulator.s: src/core/terminal_emulator.cpp.s
+.PHONY : src/core/terminal_emulator.s
+
+# target to generate assembly for a file
+src/core/terminal_emulator.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/src/core/terminal_emulator.cpp.s
+.PHONY : src/core/terminal_emulator.cpp.s
+
 src/main.o: src/main.cpp.o
 .PHONY : src/main.o
 
@@ -419,30 +443,6 @@ src/ui/split_container.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/src/ui/split_container.cpp.s
 .PHONY : src/ui/split_container.cpp.s
 
-src/ui/terminal_tab.o: src/ui/terminal_tab.cpp.o
-.PHONY : src/ui/terminal_tab.o
-
-# target to build an object file
-src/ui/terminal_tab.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/src/ui/terminal_tab.cpp.o
-.PHONY : src/ui/terminal_tab.cpp.o
-
-src/ui/terminal_tab.i: src/ui/terminal_tab.cpp.i
-.PHONY : src/ui/terminal_tab.i
-
-# target to preprocess a source file
-src/ui/terminal_tab.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/src/ui/terminal_tab.cpp.i
-.PHONY : src/ui/terminal_tab.cpp.i
-
-src/ui/terminal_tab.s: src/ui/terminal_tab.cpp.s
-.PHONY : src/ui/terminal_tab.s
-
-# target to generate assembly for a file
-src/ui/terminal_tab.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/src/ui/terminal_tab.cpp.s
-.PHONY : src/ui/terminal_tab.cpp.s
-
 src/ui/terminal_widget.o: src/ui/terminal_widget.cpp.o
 .PHONY : src/ui/terminal_widget.o
 
@@ -490,6 +490,9 @@ help:
 	@echo "... src/core/pty.o"
 	@echo "... src/core/pty.i"
 	@echo "... src/core/pty.s"
+	@echo "... src/core/terminal_emulator.o"
+	@echo "... src/core/terminal_emulator.i"
+	@echo "... src/core/terminal_emulator.s"
 	@echo "... src/main.o"
 	@echo "... src/main.i"
 	@echo "... src/main.s"
@@ -511,9 +514,6 @@ help:
 	@echo "... src/ui/split_container.o"
 	@echo "... src/ui/split_container.i"
 	@echo "... src/ui/split_container.s"
-	@echo "... src/ui/terminal_tab.o"
-	@echo "... src/ui/terminal_tab.i"
-	@echo "... src/ui/terminal_tab.s"
 	@echo "... src/ui/terminal_widget.o"
 	@echo "... src/ui/terminal_widget.i"
 	@echo "... src/ui/terminal_widget.s"

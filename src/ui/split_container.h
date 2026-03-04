@@ -73,8 +73,16 @@ public:
     SplitContainer* child2() const { return child2_; }
     TerminalWidget* terminal() const { return terminal_; }
 
+signals:
+    // Emitted when a terminal session in this split ends
+    // Passes 'this' pointer so parent knows which split to close
+    void sessionEnded(SplitContainer* split);
+
 protected:
     void resizeEvent(QResizeEvent* event) override;
+
+private slots:
+    void onTerminalSessionEnded();
 
 private:
     // Private constructor - use createLeaf() static factory
