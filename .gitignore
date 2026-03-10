@@ -1,7 +1,11 @@
 # Build
+.qt
+.cache
 build
-CMake*
-cmake_*
+CMakeCache.txt
+CMakeFiles/
+cmake-build-*/
+cmake_install.cmake
 ratty*
 compile_commands.json
 
