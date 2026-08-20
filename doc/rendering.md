@@ -1,0 +1,288 @@
+# Rendering
+
+
+## Physical pixels, and why it matters
+
+This is the single most important thing in the render layer.
+
+`QOpenGLWidget` hands `resizeGL()` the widget's size in **logical** pixels, but
+sets the GL viewport to the **device-pixel** size of its backing framebuffer
+immediately before every `paintGL()`. Measured on a Retina MacBook:
+
+```
+resizeGL args:   400 200   |  widget logical size: 400 200  |  devicePixelRatio: 2
+paintGL viewport set by Qt: 0 0 800 400
+logicalDotsPerInch: 72     |  physicalDotsPerInch: 127.5
+```
+
+So a projection built from `width()`/`height()` covers a quarter of the
+framebuffer's area and the GPU stretches everything 2× to fill it. On top of
+that, `logicalDotsPerInch` is **72** on macOS, so rasterizing a 12 pt font "at
+screen DPI" produced a 12-pixel em box — which was then magnified to cover 24
+physical pixels.
+
+The rules that follow:
+
+1. `GLRenderer::beginFrame()` takes the framebuffer size in device pixels and
+   builds a matching orthographic projection.
+2. `TerminalWidget` computes every geometry value as
+   `logical × devicePixelRatioF()`.
+3. The font is rasterized at `points × (logicalDpi / 72) × devicePixelRatio`,
+   which is how Qt sizes its own text.
+4. Glyph quads land on integer pixel coordinates, and the atlas uses
+   `GL_NEAREST`. With integer positions, fragment centres land exactly on texel
+   centres, so the rasterized coverage is reproduced verbatim.
+5. `resizeGL()` no longer calls `glViewport()` at all — Qt has already set it,
+   correctly, and the widget's logical size was the wrong value to use.
+6. No multisampling. MSAA cannot improve an alpha-blended glyph quad (there is no
+   geometric edge to smooth — the shape lives in the texture's alpha) and only
+   adds a resolve blit.
+
+Measured effect on the same display, rasterizing `g` from Menlo:
+
+| | em box | cell | `g` bitmap | pixels of coverage | antialiased-edge pixels |
+|---|---|---|---|---|---|
+| before (12 pt @ 72 dpi, then stretched 2×) | 12 px | 7×15 | 7×10 | 70 | 56 % |
+| after (13 pt × dpr 2) | 26 px | 16×32 | 13×21 | 273 | 36 % |
+
+Roughly four times the coverage data, a smaller proportion of it spent on soft
+edges, and no resampling pass on top.
+
+Moving the window to a screen with a different ratio is handled: `resizeGL()`
+compares the current scale against the one the font was last rasterized at and
+re-rasterizes when they differ.
+
+## `FontManager`
+
+One `FT_Face` per style (regular / bold / italic / bold-italic) of a single
+monospaced family, rasterized at an explicit pixel size.
+
+The API takes **pixels**, not points-plus-DPI. The caller already knows how many
+physical pixels a cell needs, and the old point/DPI API existed mainly as a place
+to feed the wrong DPI into.
+
+Font resolution asks `fc-match` for the file *and the face index*, which matters
+because macOS ships collections: all four styles of Menlo live in
+`/System/Library/Fonts/Menlo.ttc` at indices 0–3. A style whose face cannot be
+found is synthesized with `FT_GlyphSlot_Embolden` / `FT_GlyphSlot_Oblique`.
+
+#### Resolution order, and why it is careful
+
+`loadFamily()` takes a *list* of families and tries them in order:
+
+1. **Each configured preference**, accepted only if fontconfig resolves it to
+   that same family. This check is essential: `fc-match` never fails, it
+   substitutes — asking for a font that is not installed returns something else
+   entirely. On this machine `fc-match "No Such Font"` answers **Verdana**, a
+   proportional font, which is unusable in a character grid. `FontFile::family`
+   carries the resolved name so the caller can tell.
+2. **The platform's monospaced default**, where substitution is welcome because
+   the platform's answer *is* the intended fallback. The query adds fontconfig's
+   `:spacing=100` constraint so the answer is actually monospaced.
+3. **A per-platform list of known font paths**, for a system with no fontconfig
+   at all.
+
+Getting the platform default right needed care too. `QFontDatabase::systemFont(
+QFontDatabase::FixedFont).family()` returns the generic `"monospace"`, which is
+exactly the right thing to hand to fontconfig — but passing it through
+`QFontInfo` first resolves it against the font engine, which on macOS answers
+`.AppleSystemUIFont`. Feeding *that* to fontconfig produced Verdana again. The
+family name is therefore taken straight off the `QFont`, with
+`QFontDatabase::isFixedPitch()` as the secondary source.
+
+Finally, every candidate is verified after loading: `regularFaceIsMonospaced()`
+compares the unscaled advances of `i` and `W` and rejects the face if they
+differ. Font metadata can lie; two glyphs of visibly different width cannot. Even
+an explicit request for a proportional family is refused and falls through to the
+system monospace, which is the right call for a terminal.
+
+#### The fallback chain
+
+No single monospaced font covers what a terminal has to draw, so the primary
+family is backed by a lazily grown list of others.
+
+The motivating case is concrete. A patched "Nerd Font" build can carry twelve
+thousand glyphs — every Powerline separator and file-type icon — and still have
+**no box-drawing characters at all**, because the family it was patched from
+never had them. Every TUI builds its borders, tree guides and separators out of
+U+2500–U+257F, so without fallback a full-screen editor renders as a field of
+empty `.notdef` boxes. Colour emoji are a second case: they only ever live in a
+separate font, and one that stores bitmaps rather than outlines.
+
+`resolveFaceSet()` answers "which family serves this code point", once per code
+point, and caches the answer (including misses, since discovery shells out):
+
+1. The primary family, if it has the glyph.
+2. Families named in `font.fallback`, then the platform's monospaced default,
+   then a list of known colour-emoji families. Loaded on first need.
+3. Otherwise, ask fontconfig which font covers the code point
+   (`:charset=<hex>`, monospaced-preferred).
+
+Steps 2 and 3 both **verify coverage after loading** rather than trusting the
+answer, and both reject placeholder families. That check is not paranoia:
+`fc-match ":charset=1F600"` on macOS answers `.LastResort`, a font whose glyphs
+are literally empty boxes, and a charset query for box drawing answers
+proportional Verdana.
+
+The platform monospace deliberately sits ahead of the emoji fonts, because it is
+what supplies the arrows, geometric shapes and check marks a patched icon font
+most often lacks.
+
+Fallback faces are rescaled by `matchFallbackSize()` so their line height matches
+the primary cell. Different families draw a different proportion of the em, and
+leaving them at the same em size left glyphs a pixel or two short of the cell.
+
+#### Colour glyphs
+
+A colour emoji font is bitmap-only with fixed strikes. `FT_LOAD_COLOR` (and
+crucially *not* `FT_LOAD_NO_BITMAP`) yields a `FT_PIXEL_MODE_BGRA` bitmap;
+`FT_Set_Char_Size` picks the nearest strike and scales it, so no manual strike
+selection is needed. Colour faces are sized from
+`min(cellHeight, 2 × cellWidth)` because emoji are double-width and span two
+cells — sizing them from the line height alone made them bleed into the next row.
+
+FreeType hands back *premultiplied* BGRA. `rasterizeFrom()` un-premultiplies and
+swaps to RGBA so colour and coverage glyphs share one straight-alpha blend mode,
+and marks the result with `GlyphBitmap::isColor`.
+
+#### Presentation-aware resolution
+
+`GlyphPresentation` (`Auto` / `Text` / `Emoji`) is threaded from the cell's
+`CellFlagEmojiPresentation` through `drawGlyph()` and the atlas key down to
+`resolveFaceSet()`, because the same code point can legitimately be cached twice
+— once monochrome, once in colour.
+
+Presentation sets the search *order*, not a hard filter: if no font of the
+preferred kind has the glyph, one of the other kind still beats a `.notdef` box.
+Two details earn their keep:
+
+- A colour request **skips the primary font**. The primary is the monospaced text
+  font, and its flat glyph is exactly what the selector asked us not to use.
+- fontconfig discovery runs **inside** the strict pass. No monospaced font on a
+  stock macOS carries U+26A0, so a text-presentation request would otherwise
+  settle for the colour emoji — precisely what U+FE0E asks us not to do.
+
+`FaceSet::hasRenderableGlyph()` requires the face to actually *draw* something,
+not merely to have a cmap entry. Colour emoji fonts map regional indicators and
+keycap digits to **empty** glyphs, because the real flag or keycap is only
+reachable by shaping the whole sequence; choosing such a face would render
+nothing at all. With the check, a keycap falls through to the plain digit and a
+flag to a visible box.
+
+Rasterization uses `FT_LOAD_TARGET_LIGHT` with `FT_RENDER_MODE_LIGHT`: light
+hinting snaps stems vertically without touching horizontal metrics, which is what
+a monospaced grid needs.
+
+`computeMetrics()` derives the cell from a representative glyph (`M`, `0`, `x`)
+rather than `max_advance`, because many monospaced fonts carry oversized advances
+for box-drawing or fullwidth glyphs, which would leave a visible gap between
+columns. Any leftover line gap is split evenly above and below so glyphs sit
+optically centred.
+
+## Box drawing is geometric, not from a font
+
+Line and block characters (U+2500–U+259F) are drawn from the cell geometry by
+`render/box_drawing.cpp`, ahead of any font lookup.
+
+They have to *tile*: a vertical line must meet the one in the row below with no
+seam, and a horizontal line must span the cell exactly. No font can guarantee
+that once a fallback is involved, because families disagree about how much of the
+em their box glyphs occupy — the fallback arrives a pixel or two short and borders
+look dashed. Scaling the fallback to compensate only trades gaps for overhang.
+
+A line character is fully described by the weight of its four arms
+(none/light/heavy/double), which turns ~150 code points into one table and one
+draw routine. Each arm runs from its cell edge *past* the centre by half the
+perpendicular stroke, so corners and tees have no notch. Blocks, eighths,
+quadrants and the three shades are handled separately; shades use an ordered 2×2
+dither, which reads as an even tone at cell sizes.
+
+The output is an ordinary 8-bit coverage mask, so it caches in the atlas and
+renders through exactly the same path as a font glyph. Rounded corners
+(U+256D–U+2570) are drawn square, and the diagonals (U+2571–U+2573) fall through
+to the font.
+
+## `GlyphAtlas`
+
+One `GL_RGBA8` texture with a shelf (row-based) packing allocator and a
+`codepoint | style → CachedGlyph` cache. A whole screen of text is one draw call.
+
+RGBA rather than a single coverage channel, because colour emoji have to live
+here too. A coverage mask is widened to `(255, 255, 255, coverage)` on upload and
+tinted by the shader; a colour glyph is stored as-is and drawn untinted, selected
+per-vertex by `CachedGlyph::isColor`. One texture and one draw call for both is
+considerably simpler than maintaining two atlases, and 4 MiB for a 1024 px atlas
+is not worth optimising. It also removed the `GL_TEXTURE_SWIZZLE_*` dance that
+the single-channel format needed.
+
+Filtering is `GL_NEAREST` deliberately (see [physical pixels](#physical-pixels-and-why-it-matters)). A 1-pixel gutter between
+glyphs keeps rounding from ever picking up a neighbour.
+
+Two things this class now handles that it previously only claimed to:
+
+- **Growth is wired up.** `glyph()` grows the texture (or, at the 4096 cap, flushes
+  the cache) when an allocation fails, so callers never see a "texture full"
+  error. The old `grow()`/`isFull()` pair was never called from anywhere.
+- **Mid-frame rebuilds are safe.** Rebuilding invalidates every UV already
+  batched for the frame. A `generation()` counter lets `GLRenderer` notice,
+  discard the stale batch and report `needsRepaint()`, and `TerminalWidget`
+  schedules one more paint. Without this, a frame that happened to trigger growth
+  would draw garbage.
+
+The file also lost about sixty lines of duplicated `#ifdef Q_OS_MACOS` "Apple
+Silicon workaround" that called the native GL entry points directly. The actual
+problem those branches were working around was the missing swizzle for the
+single-channel format, not Qt's wrappers, so there is now one code path.
+
+## `GLRenderer`
+
+Batched 2D drawing with three explicit layers:
+
+| Layer | API | Contents |
+|---|---|---|
+| 1 | `fillBackground()` | cell backgrounds, underlines, strikethrough |
+| 2 | `drawGlyph()` | glyphs |
+| 3 | `fillOverlay()`, `strokeOverlay()` | cursor, selection, focus indicators |
+
+`endFrame()` flushes them bottom-up. Draw order is therefore a property of the
+API rather than of the order in which the grid loop happens to submit calls —
+which is the permanent fix for cell backgrounds painting over their own
+characters.
+
+`drawGlyph()` takes a code point, not a `QString`. The old `drawText(QString, …)`
+was called once per cell from the grid loop, allocating a one-character `QString`
+for every cell of every frame.
+
+Vertex buffers grow geometrically on demand rather than being capped at a fixed
+size, and use `StreamDraw`.
+
+## `TerminalRenderer`
+
+The only place that knows how a grid maps onto pixels. `computeLayout()` derives
+rows, columns and centring padding from the font metrics and the viewport;
+`paint()` walks the grid and emits draw calls.
+
+Worth noting:
+
+- **Background runs are merged.** Horizontally adjacent cells sharing a
+  background become one quad, so a full-width coloured bar costs 6 vertices
+  instead of 6 per column. The common case — everything on the default
+  background — emits nothing at all, because the frame was already cleared to
+  that colour.
+- **Bold and italic select a real font style** via `fontStyleFor(bold, italic)`.
+  Previously every cell was drawn with the regular face and bold was faked by
+  lightening the foreground colour, so bold text was merely brighter.
+- **Wide-character trailers are skipped**, so a double-width glyph is not
+  double-struck.
+- **Leftover pixels are split evenly** between left/right and top/bottom, so a
+  window that is not an exact multiple of the cell size does not look
+  off-centre.
+- **Padding insets the grid** from the window edge by `window.padding` logical
+  pixels (default 4), scaled to physical pixels by the widget. The padding is
+  subtracted before rows and columns are computed, and any remainder is then
+  shared as above, so both edges keep their gap. Padding is clamped so it can
+  never cost the last row or column on a very small window — the gap is given up
+  before the content is.
+
+---
+
