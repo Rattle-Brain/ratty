@@ -209,6 +209,11 @@ SplitContainer* MainWindow::focusedPane() const {
     return leaf;
 }
 
+TerminalWidget* MainWindow::focusedTerminal() const {
+    SplitContainer* pane = focusedPane();
+    return pane ? pane->terminal() : nullptr;
+}
+
 void MainWindow::onPaneSessionEnded(SplitContainer* pane) {
     if (!pane) return;
 
@@ -277,14 +282,10 @@ bool MainWindow::handleAction(Action action) {
         return true;
 
     case ACTION_COPY:
-        if (SplitContainer* pane = focusedPane(); pane && pane->terminal()) {
-            pane->terminal()->copySelection();
-        }
+        if (TerminalWidget* terminal = focusedTerminal()) terminal->copySelection();
         return true;
     case ACTION_PASTE:
-        if (SplitContainer* pane = focusedPane(); pane && pane->terminal()) {
-            pane->terminal()->paste();
-        }
+        if (TerminalWidget* terminal = focusedTerminal()) terminal->paste();
         return true;
 
     case ACTION_INCREASE_FONT_SIZE: changeFontSize(+1); return true;
@@ -292,10 +293,13 @@ bool MainWindow::handleAction(Action action) {
     case ACTION_RESET_FONT_SIZE:    changeFontSize(0); return true;
 
     case ACTION_SCROLL_UP:
+        if (TerminalWidget* terminal = focusedTerminal()) terminal->scrollPages(+1);
+        return true;
     case ACTION_SCROLL_DOWN:
+        if (TerminalWidget* terminal = focusedTerminal()) terminal->scrollPages(-1);
+        return true;
     case ACTION_CLEAR_SCROLLBACK:
-        /* Bound so they do not leak into the shell, but inert until the
-         * scrollback buffer exists. See todo-ratty.md. */
+        if (TerminalWidget* terminal = focusedTerminal()) terminal->clearScrollback();
         return true;
 
     case ACTION_NONE:

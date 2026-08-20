@@ -1,0 +1,17 @@
+<!--
+  The Nerd Fonts symbols font, bundled so that a TUI's file-type icons render on
+  a machine with no icon font installed. This is what kitty and Ghostty do, and
+  the reason they show icons where a terminal relying on the system's fonts shows
+  empty boxes: the glyphs live in private-use code points that no stock font
+  carries.
+
+  Symbols only (no Latin, no box drawing, no spaces), so it can never take over a
+  character the primary or platform font should be serving.
+
+  MIT licensed; see fonts/LICENSE-SymbolsNerdFont.txt.
+-->
+<RCC>
+    <qresource prefix="/fonts">
+        <file>fonts/SymbolsNerdFontMono-Regular.ttf</file>
+    </qresource>
+</RCC>

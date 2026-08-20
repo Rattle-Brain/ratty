@@ -39,6 +39,7 @@ endif()
 set(RATTY_SOURCES
     src/main.cpp
 
+    src/core/mouse.cpp
     src/core/palette.cpp
     src/core/pty.cpp
     src/core/screen.cpp
@@ -68,6 +69,7 @@ set(RATTY_HEADERS
     src/core/cell.h
     src/core/unicode.h
     src/core/cursor.h
+    src/core/mouse.h
     src/core/palette.h
     src/core/pty.h
     src/core/screen.h
@@ -96,6 +98,7 @@ set(RATTY_HEADERS
 set(RATTY_RESOURCES
     resources/shaders.qrc
     resources/config.qrc
+    resources/fonts.qrc
     resources/themes.qrc
     resources/keybindings.qrc
 )

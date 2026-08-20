@@ -178,6 +178,34 @@ inline bool isZeroWidth(char32_t ch) {
     return unicode_detail::inRanges(ch, unicode_detail::kZeroWidth);
 }
 
+/*
+ * A space that occupies its columns and paints nothing: Unicode's Zs category.
+ *
+ * Worth a predicate of its own because a *blank* glyph and a *missing* glyph are
+ * indistinguishable to a coverage test -- both have an empty outline -- so a
+ * renderer that asks the font chain for U+00A0 gets told no font has it and
+ * falls back to drawing .notdef. `tree` indents with two NO-BREAK SPACEs per
+ * level, which is how its output turned into a field of empty boxes.
+ *
+ * U+200B and the other zero-width spaces are not here: they take no columns at
+ * all and are handled by isZeroWidth().
+ */
+constexpr bool isSpaceSeparator(char32_t ch) {
+    switch (ch) {
+    case 0x0020:   // SPACE
+    case 0x00A0:   // NO-BREAK SPACE
+    case 0x1680:   // OGHAM SPACE MARK
+    case 0x202F:   // NARROW NO-BREAK SPACE
+    case 0x205F:   // MEDIUM MATHEMATICAL SPACE
+    case 0x3000:   // IDEOGRAPHIC SPACE (double-width, still blank)
+        return true;
+    default:
+        /* U+2000..U+200A: EN QUAD through HAIR SPACE, figure and punctuation
+         * spaces among them. */
+        return ch >= 0x2000 && ch <= 0x200A;
+    }
+}
+
 /* True when `ch` is emoji by default, so it needs no selector. */
 inline bool hasEmojiPresentationByDefault(char32_t ch) {
     if (ch < 0x231A) return false;

@@ -1,6 +1,6 @@
 # RaTTY — state of the art and roadmap
 
-Last updated for **v0.2.0**.
+Last updated for **v0.2.0**, plus the scrollback and mouse work that followed it.
 
 This file tracks what works, what is broken, and what comes next. Items marked
 🔍 have a design note in
@@ -16,15 +16,15 @@ on HiDPI displays, the VT parser handles what a modern shell and most TUI
 applications emit, and the terminal model is separated cleanly enough from Qt and
 OpenGL to be tested headlessly.
 
-The two things a user notices as missing are **scrollback** and **text
-selection**.
+Scrollback and mouse reporting landed after v0.2.0. The one thing a user still
+notices as missing is **text selection**.
 
 ```
 Foundations ████████████████████ done
-VT emulation ██████████████████░░ good enough for shells + most TUIs
+VT emulation ███████████████████░ shells, most TUIs, mouse-driven ones included
 Rendering    ████████████████████ done (sharp, HiDPI-correct, emoji, box drawing)
 UI shell     ████████████████░░░░ tabs + splits work; no selection
-Polish       ████████░░░░░░░░░░░░ no scrollback, no mouse, no fallback fonts
+Polish       ██████████████░░░░░░ scrollback and mouse done; no selection
 ```
 
 ---
@@ -68,6 +68,20 @@ Polish       ████████░░░░░░░░░░░░ no scr
 - [x] Grapheme clustering for emoji sequences -- joiners, skin tones, regional
       indicator pairs, keycaps and tag sequences all occupy one cell
 - [x] O(1) scroll via a row indirection table
+- [x] **Scrollback**: rows leaving the top of the screen are kept in a bounded
+      history, with a view offset so rendering reads `history + viewport`. Only
+      full-screen scrolls contribute -- a `DECSTBM` region is a subwindow the
+      application manages itself -- and the alternate screen keeps none, so a
+      `vim` session never ends up in the shell's history. Rows dropped by a
+      vertical shrink are kept too. `ED 3` erases the saved lines only (xterm's
+      definition, which is a behaviour change: it used to clear the display too);
+      `RIS` discards them
+- [x] Any output and any keystroke snap the view back to the live screen
+- [x] **Mouse reporting**: `?9` (X10), `?1000` (click), `?1002` (drag), `?1003`
+      (any motion), with `?1005`/`?1006`/`?1015` coordinate encodings, `?1004`
+      focus in/out and `?1007` alternate scroll. Disabling a mode only takes
+      effect when it names the mode actually in force, since applications enable
+      several and reset them one at a time
 
 ### Rendering
 - [x] FreeType rasterization at an explicit **physical** pixel size
@@ -121,6 +135,12 @@ Polish       ████████░░░░░░░░░░░░ no scr
       as, plus a Shift-insensitive fallback for layouts where the digits are the
       shifted symbols
 - [x] Cursor styles (block / hollow / underline / bar); blink only when focused
+- [x] Mouse wheel scrolls the scrollback, `Shift+PageUp`/`PageDown` move a page,
+      `cmd`/`super`+`k` clears it; fractional trackpad notches accumulate
+- [x] The wheel drives a pager on the alternate screen through cursor keys, so
+      `less` and `man` scroll
+- [x] Shift bypasses an application's mouse grab, so the scrollback and
+      middle-click paste stay reachable inside a mouse-driven TUI
 - [x] Window title from `OSC`, per-tab
 
 ### Project
@@ -129,13 +149,14 @@ Polish       ████████░░░░░░░░░░░░ no scr
 - [x] A user config overrides only what it states; naming an action releases the
       default keys for it, and editing the inactive keybinding set is reported
 - [x] Full 256-colour palette, 16 base colours overridable by name
+- [x] `scrollback: lines / multiplier` and `mouse: alternate_scroll` settings
 - [x] Ten built-in colour themes as YAML resources (`ratty-dark`, `nord`,
       `dracula`, `gruvbox-dark`/`-light`, `solarized-dark`/`-light`,
       `tokyo-night`, `catppuccin-mocha`, `one-dark`), selected by `theme:`
 - [x] Colours staged per layer and merged built-in -> theme -> user, so a theme
       plus a per-colour override works in either file order
 - [x] `"none"` unbinds a default keybinding
-- [x] Headless test suites (terminal / input / splits) with `ctest`
+- [x] Headless test suites (terminal / mouse / input / splits) with `ctest`
 - [x] Warning-clean under `-Wall -Wextra -Wpedantic`
 - [x] No pinned compiler path in `CMakeLists.txt`
 - [x] Empty placeholder translation units removed
@@ -240,6 +261,25 @@ Recorded because the causes are instructive; full write-ups in
       and keycap digits exist in its cmap only as shaping inputs, so selecting
       that face drew nothing at all; coverage is now checked by rendering rather
       than by the cmap.
+- [x] **`tree`'s indentation was a field of empty boxes.** It indents with two
+      U+00A0 NO-BREAK SPACEs per level, and a *blank* glyph is indistinguishable
+      from a *missing* one to a coverage test that demands ink -- a test that has
+      to demand ink, since an emoji font's regional indicators are empty shaping
+      glyphs. Every font therefore "failed" to cover U+00A0 and the primary
+      font's `.notdef` box was drawn instead. Fixed with `isSpaceSeparator()`,
+      consulted by both the renderer and `FontManager::rasterize()`.
+- [x] **A TUI's file-type icons were empty boxes, while kitty showed them on the
+      same machine.** Not a system difference: kitty *ships*
+      `SymbolsNerdFontMono-Regular.ttf` inside its app bundle. A scan of all 371
+      installed font files, every face, finds only `.LastResort` for U+E8EB and
+      U+F375, so no fallback strategy could have found them. RaTTY now bundles the
+      same MIT-licensed font as a Qt resource, loaded through
+      `FT_New_Memory_Face` and adopted as the last loaded fallback
+- [x] **Icon code points drew boxes even when an installed font had them.**
+      Charset discovery asked `fc-match`, which never filters: for a code point
+      nothing good covers it answers `.LastResort`, a font of empty boxes, and
+      refusing that answer ended the search. Now enumerated with
+      `fc-list :charset=`, monospaced candidates first
 - [x] **A pinned compiler path** (`/opt/homebrew/opt/llvm@20/bin/clang++`) broke
       configuration on any other machine.
 
@@ -249,34 +289,28 @@ Recorded because the causes are instructive; full write-ups in
 
 Roughly in the order that gives the most user-visible benefit per unit of work.
 
-### 1. Scrollback buffer 🔍
-The single most missed feature.
+### 1. Text selection and clipboard 🔍
+Now the last big gap. The mouse plumbing it needs already exists: the widget
+hit-tests a position to a cell, and knows when the application does *not* want
+the mouse.
 
-- [ ] Turn `Screen`'s row indirection table into a ring buffer with history
-- [ ] `scrollUp` pushes the evicted row into history instead of clearing it
-- [ ] A view offset, so rendering reads `history + viewport`
-- [ ] Mouse wheel and `Shift+PageUp`/`PageDown` move the offset
-      (the actions are already bound and currently inert)
-- [ ] Any new output, and any keypress, snaps back to the live view
-- [ ] Configurable line limit; `Ctrl+Shift+K` clears it
-- [ ] Reflow on resize, or an explicit decision not to reflow
-
-### 2. Text selection and clipboard 🔍
 - [ ] Selection range in `TerminalWidget`; mouse press/drag/release
 - [ ] Word (double-click) and line (triple-click) selection
 - [ ] Rectangular selection with a modifier
 - [ ] Render using the overlay layer and `Palette::selectionBackground`
       (both already exist)
-- [ ] Grid→string conversion handling wide characters and trailing blanks
+- [ ] Grid→string conversion handling wide characters and trailing blanks,
+      reading through `Screen::viewAt()` so the scrollback is selectable
 - [ ] `Ctrl+Shift+C`; optional copy-on-select; primary selection on X11
 - [ ] `OSC 52` clipboard access
 
-### 3. Mouse reporting 🔍
-- [ ] `?1000` (click), `?1002` (drag), `?1003` (any motion)
-- [ ] `?1006` SGR extended coordinates
-- [ ] `?1004` focus in/out events
-- [ ] Pass through to the application when active; keep a modifier for local
-      selection
+### 2. Scrollback follow-ups 🔍
+The buffer works; these are the parts deliberately left out of it.
+
+- [ ] Reflow history rows on resize, which needs a "this row is a continuation"
+      bit that `Cell` does not carry today
+- [ ] Search within the scrollback -- blocked on the same missing bit
+- [ ] A scroll-position indicator, so it is visible that the view is not live
 
 ---
 
@@ -295,11 +329,16 @@ The single most missed feature.
 - [ ] Tab stops: `HTS`, `TBC` (tabs are hard-coded to every 8 columns)
 - [ ] Origin mode (`DECOM`), left/right margins (`DECLRMM`)
 - [ ] Soft reset (`DECSTR`), `DECRQM` mode queries
+- [ ] Pixel-resolution mouse reporting (`?1016`), which only graphics protocols
+      need
 - [ ] Overline (SGR 53), underline styles and colours (`4:3`, `58`)
 - [ ] `OSC 8` hyperlinks; `OSC 13`–`19` (highlight/pointer colours); `OSC 133`
       prompt marks; `OSC 52` clipboard
 
 ### Rendering
+- [ ] Scale a fallback glyph that is wider than its cell. A CJK font's
+      private-use glyph is a full square em, so an icon served from one bleeds
+      into the next column 🔍
 - [ ] Gamma-correct glyph blending 🔍 — light-on-dark text is currently slightly thin
 - [ ] Damage tracking 🔍 — `Screen::revision()` is the hook; per-row dirty flags next
 - [ ] Powerline separators drawn geometrically too (box drawing already is), so
@@ -312,7 +351,6 @@ The single most missed feature.
 
 ### UI
 - [ ] Persist window geometry 🔍
-- [ ] Search within the scrollback (depends on the scrollback buffer)
 - [ ] Drag a splitter and have the pty resize live (works, but unthrottled)
 - [ ] Move panes between tabs; detach a pane into a new window
 - [ ] URL detection and click-to-open

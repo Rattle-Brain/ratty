@@ -156,6 +156,12 @@ private:
     /* One family: up to four real faces, plus what kind of font it is. */
     struct FaceSet {
         std::array<FT_Face, FontStyleCount> styles{};
+        /*
+         * Backing bytes for a face loaded from memory rather than from a path,
+         * which is how the bundled symbols font is used. FreeType does not copy
+         * the buffer, so it has to outlive every face made from it.
+         */
+        std::vector<unsigned char> embedded;
         std::string family;
         /* Bitmap-only, colour font (an emoji font). Rasterized with
          * FT_LOAD_COLOR and sized from the cell rather than the em. */
@@ -190,6 +196,13 @@ private:
     static std::vector<FontFile> discoverFontsFor(char32_t codepoint);
 
     bool loadFaceInto(FaceSet& target, const FontFile& file, FontStyle style);
+    /*
+     * The symbols font compiled into the binary, adopted as a fallback for the
+     * private-use icon code points that no stock font carries. Terminals that
+     * show icons on a bare machine (kitty, Ghostty) all ship this font; relying
+     * on the system's is what leaves a TUI full of empty boxes.
+     */
+    void loadBundledSymbolsFallback();
     void applyPixelSize(const FaceSet& faces) const;
     void applyPixelSizeToFace(FT_Face face, bool isColorFont, double sizeScale) const;
     /* Choose `faces.sizeScale` so its line height matches the primary cell. */

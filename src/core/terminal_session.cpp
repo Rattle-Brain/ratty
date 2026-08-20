@@ -53,6 +53,38 @@ void TerminalSession::resize(int rows, int cols) {
     }
 }
 
+void TerminalSession::setScrollbackLines(int lines) {
+    emulator_.setScrollbackLines(lines);
+}
+
+bool TerminalSession::scrollViewBy(int lines) {
+    return emulator_.scrollViewBy(lines);
+}
+
+bool TerminalSession::scrollViewToBottom() {
+    return emulator_.scrollViewToBottom();
+}
+
+bool TerminalSession::scrollViewToTop() {
+    return emulator_.scrollViewToTop();
+}
+
+void TerminalSession::clearScrollback() {
+    emulator_.clearScrollback();
+}
+
+void TerminalSession::sendMouseReport(const MouseReport& report) {
+    const std::string encoded = encodeMouseReport(report, emulator_.mouseTracking(),
+                                                  emulator_.mouseEncoding());
+    if (encoded.empty()) return;
+    sendInput(QByteArray(encoded.data(), static_cast<qsizetype>(encoded.size())));
+}
+
+void TerminalSession::sendFocusEvent(bool focused) {
+    if (!emulator_.focusEvents()) return;
+    sendInput(focused ? QByteArray("\x1b[I") : QByteArray("\x1b[O"));
+}
+
 void TerminalSession::sendInput(const QByteArray& bytes) {
     if (bytes.isEmpty() || !pty_ || !pty_->isValid()) return;
     pty_->write(bytes.constData(), static_cast<size_t>(bytes.size()));

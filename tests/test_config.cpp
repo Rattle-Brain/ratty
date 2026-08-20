@@ -69,6 +69,13 @@ void testBundledDefaults() {
      * documented behaviour. Assert the second, not the first. */
     check::that(config.cursorBlink(), "the cursor blinks by default");
 
+    check::equal(config.scrollbackLines(), Config::DEFAULT_SCROLLBACK_LINES,
+                 "the bundled defaults state the documented scrollback size");
+    check::equal(config.scrollMultiplier(), Config::DEFAULT_SCROLL_MULTIPLIER,
+                 "and the wheel step");
+    check::that(config.alternateScroll(),
+                "the wheel drives a pager on the alternate screen by default");
+
     const CursorStyle shippedCursor = config.cursorStyle();
     loadWithUserConfig("cursor:\n  style: nonsense\n");
     check::that(Config::instance().cursorStyle() == shippedCursor,
@@ -103,6 +110,37 @@ window:
                  "an unmentioned window size kept its default");
     check::that(actionFor(Qt::MetaModifier, Qt::Key_T) == ACTION_NEW_TAB,
                 "unmentioned keybindings survived");
+}
+
+void testScrollbackAndMouseSettings() {
+    check::section("scrollback and mouse settings");
+
+    loadWithUserConfig(R"(
+scrollback:
+  lines: 500
+  multiplier: 7
+mouse:
+  alternate_scroll: false
+)");
+    const Config& config = Config::instance();
+
+    check::equal(config.scrollbackLines(), 500, "the overlaid scrollback size took effect");
+    check::equal(config.scrollMultiplier(), 7, "as did the wheel step");
+    check::that(!config.alternateScroll(), "and alternate scroll was turned off");
+
+    /* Zero is meaningful -- it disables the buffer -- so it must survive the
+     * clamp rather than being treated as "unset". */
+    loadWithUserConfig("scrollback:\n  lines: 0\n");
+    check::equal(Config::instance().scrollbackLines(), 0, "zero disables the scrollback");
+
+    /* Nonsense values fall back rather than producing a pane that keeps
+     * everything or scrolls a thousand rows per notch. */
+    loadWithUserConfig("scrollback:\n  lines: -5\n  multiplier: 0\n");
+    check::equal(Config::instance().scrollbackLines(), 0, "a negative size clamps to none");
+    check::equal(Config::instance().scrollMultiplier(), 1,
+                 "a wheel step below one clamps to one row");
+
+    loadWithUserConfig(nullptr);
 }
 
 void testColorsAndPalette() {
@@ -647,6 +685,7 @@ int main(int argc, char** argv) {
 
     testBundledDefaults();
     testOverlayChangesOnlyWhatItMentions();
+    testScrollbackAndMouseSettings();
     testColorsAndPalette();
     testUnquotedColourIsRejected();
     testKeybindingOverlay();

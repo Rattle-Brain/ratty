@@ -16,6 +16,7 @@
 class QTabWidget;
 class SplitContainer;
 class TabBar;
+class TerminalWidget;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -68,6 +69,8 @@ private:
 
     /* The focused pane of the current tab, or nullptr. */
     SplitContainer* focusedPane() const;
+    /* Its terminal, which is what most actions actually want. */
+    TerminalWidget* focusedTerminal() const;
 
     QTabWidget* tabWidget_ = nullptr;
     TabBar* tabBar_ = nullptr;

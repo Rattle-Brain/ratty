@@ -114,9 +114,10 @@ point, and caches the answer (including misses, since discovery shells out):
 
 1. The primary family, if it has the glyph.
 2. Families named in `font.fallback`, then the platform's monospaced default,
-   then a list of known colour-emoji families. Loaded on first need.
-3. Otherwise, ask fontconfig which font covers the code point
-   (`:charset=<hex>`, monospaced-preferred).
+   then a list of known colour-emoji families, then the **bundled symbols font**.
+   Loaded on first need.
+3. Otherwise, ask fontconfig which fonts cover the code point
+   (`fc-list :charset=<hex>`), monospaced candidates first.
 
 Steps 2 and 3 both **verify coverage after loading** rather than trusting the
 answer, and both reject placeholder families. That check is not paranoia:
@@ -124,9 +125,50 @@ answer, and both reject placeholder families. That check is not paranoia:
 are literally empty boxes, and a charset query for box drawing answers
 proportional Verdana.
 
+Step 3 uses `fc-list`, not `fc-match`, and the difference matters: **only
+`fc-list` filters**. `fc-match` always answers *something* — given a charset
+nothing good covers, its best guess is the placeholder — so rejecting that one
+answer used to end the search, and a private-use icon that an installed font
+really did carry was drawn as `.notdef` anyway. `fc-list` returns every font
+whose charset contains the code point, so the placeholder is one candidate among
+several. Monospaced candidates are tried first so a fallback's advance matches
+the grid, and the list is capped, since a common code point can be claimed by two
+hundred fonts and each candidate tried opens a face.
+
+A blank glyph is the one thing coverage testing cannot see. `hasRenderableGlyph`
+requires actual ink — it has to, because a colour-emoji font maps regional
+indicators to empty shaping-only glyphs, and selecting that face drew nothing at
+all. But a space *is* legitimately empty, so the chain reports that no font
+covers U+00A0 and the `.notdef` box follows. `isSpaceSeparator()` (Unicode's Zs
+category) settles it in two places: `TerminalRenderer` never asks for a glyph for
+one, and `FontManager::rasterize` returns an empty bitmap rather than `.notdef` if
+it is asked. `tree` indents with two NO-BREAK SPACEs per level, which is how its
+output became a field of rectangles.
+
 The platform monospace deliberately sits ahead of the emoji fonts, because it is
 what supplies the arrows, geometric shapes and check marks a patched icon font
 most often lacks.
+
+##### The bundled symbols font
+
+`resources/fonts/SymbolsNerdFontMono-Regular.ttf` is compiled into the binary and
+adopted as the last loaded fallback, through `FT_New_Memory_Face` (the `FaceSet`
+owns the bytes, because FreeType does not copy them).
+
+It is there because a TUI's file-type icons are **private-use code points**, and
+no stock font carries them. On a current macOS the only face claiming U+E8EB —
+`nvim-web-devicons`' YAML icon — is `.LastResort`, a font of literal empty boxes;
+a scan of all 371 installed font files, every face, finds nothing else. This is
+the entire reason kitty renders those icons where a terminal that trusts the
+system's fonts does not: kitty ships
+`Contents/Resources/kitty/fonts/SymbolsNerdFontMono-Regular.ttf`. Ghostty does the
+same. The font is MIT licensed, which is what makes that practical.
+
+It goes last among the loaded families, so a font the user names in
+`font.fallback` and the platform monospace both win, and it is skipped entirely
+when it *is* the primary family. It carries symbols only — no Latin, no box
+drawing, not even a space — so it cannot take over a character another font should
+be serving, which a test asserts.
 
 Fallback faces are rescaled by `matchFallbackSize()` so their line height matches
 the primary cell. Different families draw a different proportion of the em, and

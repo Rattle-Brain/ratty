@@ -9,6 +9,7 @@
 #include "core/cursor.h"
 #include "core/palette.h"
 #include "core/terminal_emulator.h"
+#include "core/unicode.h"
 #include "core/utf8.h"
 #include <string>
 
@@ -25,6 +26,18 @@ std::string rowText(const Screen& screen, int row) {
     std::string out;
     for (int col = 0; col < screen.cols(); ++col) {
         const char32_t ch = screen.at(row, col).ch;
+        out += (ch >= 32 && ch < 127) ? static_cast<char>(ch) : '?';
+    }
+    while (!out.empty() && out.back() == ' ') out.pop_back();
+    return out;
+}
+
+/* Text of one row *as displayed*, which is a history row when the view is
+ * scrolled back. */
+std::string viewRowText(const Screen& screen, int row) {
+    std::string out;
+    for (int col = 0; col < screen.cols(); ++col) {
+        const char32_t ch = screen.viewAt(row, col).ch;
         out += (ch >= 32 && ch < 127) ? static_cast<char>(ch) : '?';
     }
     while (!out.empty() && out.back() == ' ') out.pop_back();
@@ -572,6 +585,39 @@ void testWideCharacters() {
                  "the following character lands at col 2");
 }
 
+void testSpaceSeparators() {
+    check::section("spaces that are not U+0020");
+
+    /*
+     * `tree` indents with "|" plus two NO-BREAK SPACEs. They must occupy their
+     * columns and be stored as themselves -- the decision to paint nothing for
+     * them belongs to the renderer, not the model, or a later copy-to-clipboard
+     * would lose the character.
+     */
+    TerminalEmulator term(2, 10);
+    const std::string nbsp = "a\xc2\xa0\xc2\xa0" "b";
+    term.write(nbsp.data(), nbsp.size());
+
+    check::equal(static_cast<unsigned>(term.screen().at(0, 1).ch), 0xA0u,
+                 "a NO-BREAK SPACE is stored as itself");
+    check::equal(static_cast<unsigned>(term.screen().at(0, 3).ch), 0x62u,
+                 "and each one takes exactly one column");
+    check::that(isSpaceSeparator(0x00A0) && isSpaceSeparator(0x2007)
+                    && isSpaceSeparator(0x3000),
+                "the space separators are recognised as blank");
+    check::that(!isSpaceSeparator(0x2502) && !isSpaceSeparator(U'x'),
+                "and ordinary glyphs are not");
+
+    /* U+3000 is East Asian Wide: blank, but two columns of it. */
+    TerminalEmulator wide(2, 10);
+    const std::string ideographic = "\xe3\x80\x80" "z";
+    wide.write(ideographic.data(), ideographic.size());
+    check::that(wide.screen().at(0, 1).hasFlag(CellFlagWideTrailer),
+                "an IDEOGRAPHIC SPACE keeps its trailer cell");
+    check::equal(static_cast<unsigned>(wide.screen().at(0, 2).ch), 0x7Au,
+                 "so the next character lands two columns along");
+}
+
 void testResize() {
     check::section("resize");
 
@@ -585,6 +631,106 @@ void testResize() {
     term.resize(10, 20);
     check::equal(term.rows(), 10, "rows updated");
     check::that(term.screen().cursorRow() < term.rows(), "cursor stayed in range");
+}
+
+void testScrollbackCapture() {
+    check::section("scrollback: rows leaving the top are kept");
+
+    TerminalEmulator term(3, 10);
+    feed(term, "one\r\ntwo\r\nthree\r\nfour\r\nfive");
+
+    check::equal(term.historySize(), 2, "two rows scrolled off and were kept");
+    check::equal(rowText(term.screen(), 0), std::string("three"),
+                 "the live screen holds the last three rows");
+    check::equal(rowText(term.screen(), 2), std::string("five"), "and the newest at the bottom");
+
+    /* Nothing is displayed differently until the view is moved. */
+    check::equal(viewRowText(term.screen(), 0), std::string("three"),
+                 "with no offset the view is the live screen");
+
+    check::that(term.scrollViewBy(1), "scrolling back one row moves the view");
+    check::equal(viewRowText(term.screen(), 0), std::string("two"),
+                 "the row above the screen comes from the history");
+    check::equal(viewRowText(term.screen(), 1), std::string("three"),
+                 "the live rows follow it");
+    check::equal(term.screen().cursorRow(), 2,
+                 "the cursor stays where the application put it");
+
+    check::that(term.scrollViewBy(50), "scrolling past the oldest line still moves");
+    check::equal(term.viewOffset(), 2, "and clamps at the oldest line kept");
+    check::equal(viewRowText(term.screen(), 0), std::string("one"), "which is the first row printed");
+
+    check::that(!term.scrollViewBy(1), "already at the top, nothing moves");
+
+    /* New output snaps back, or text would arrive out of sight. */
+    feed(term, "!");
+    check::equal(term.viewOffset(), 0, "output returns the view to the live screen");
+    check::equal(rowText(term.screen(), 2), std::string("five!"), "and the text landed there");
+}
+
+void testScrollbackLimits() {
+    check::section("scrollback: limit, regions and the alternate screen");
+
+    TerminalEmulator term(2, 10);
+    term.setScrollbackLines(3);
+    for (int i = 0; i < 20; ++i) feed(term, "line\r\n");
+    check::equal(term.historySize(), 3, "the limit bounds what is kept");
+
+    /* A DECSTBM region is a subwindow the application scrolls itself; those
+     * rows are not history. */
+    TerminalEmulator region(4, 10);
+    feed(region, "\x1b[2;3r");           // scroll region rows 2-3
+    feed(region, "\x1b[3;1Ha\r\nb\r\nc\r\n");
+    check::equal(region.historySize(), 0, "scrolling inside a region keeps no history");
+
+    /* The alternate screen redraws rather than scrolls. */
+    TerminalEmulator alt(3, 10);
+    feed(alt, "\x1b[?1049h");
+    for (int i = 0; i < 10; ++i) feed(alt, "x\r\n");
+    check::equal(alt.historySize(), 0, "the alternate screen keeps no history");
+    check::that(alt.alternateScreenActive(), "and reports that it is active");
+    feed(alt, "\x1b[?1049l");
+    check::equal(alt.viewOffset(), 0, "leaving it returns to the live view");
+
+    /* ED 3 is "erase saved lines". */
+    TerminalEmulator erase(2, 10);
+    feed(erase, "a\r\nb\r\nc\r\nd\r\n");
+    check::that(erase.historySize() > 0, "history accumulated");
+    feed(erase, "aaa");
+    feed(erase, "\x1b[3J");
+    check::equal(erase.historySize(), 0, "ED 3 erases the saved lines");
+    check::equal(rowText(erase.screen(), 1), std::string("aaa"),
+                 "and leaves the display alone, as xterm does");
+
+    /* Zero disables it outright. */
+    TerminalEmulator off(2, 10);
+    off.setScrollbackLines(0);
+    for (int i = 0; i < 5; ++i) feed(off, "y\r\n");
+    check::equal(off.historySize(), 0, "a limit of zero keeps nothing");
+    check::that(!off.scrollViewBy(1), "and there is nowhere to scroll");
+}
+
+void testScrollbackResize() {
+    check::section("scrollback: shrinking keeps the rows it drops");
+
+    TerminalEmulator term(4, 10);
+    feed(term, "aa\r\nbb\r\ncc\r\ndd");
+    check::equal(term.historySize(), 0, "nothing has scrolled yet");
+
+    term.resize(2, 10);
+    check::equal(term.historySize(), 2, "the rows dropped from the top became history");
+    check::equal(rowText(term.screen(), 0), std::string("cc"), "the bottom rows stayed");
+
+    term.scrollViewBy(2);
+    check::equal(viewRowText(term.screen(), 0), std::string("aa"),
+                 "and the dropped rows are still readable");
+
+    /* History is not reflowed: a widened window leaves old rows as they were. */
+    term.scrollViewToBottom();
+    term.resize(2, 20);
+    term.scrollViewBy(2);
+    check::equal(viewRowText(term.screen(), 0), std::string("aa"),
+                 "a history row survives a width change unreflowed");
 }
 
 void testDeviceReports() {
@@ -620,6 +766,10 @@ int main() {
     testUtf8();
     testWideCharacters();
     testResize();
+    testSpaceSeparators();
+    testScrollbackCapture();
+    testScrollbackLimits();
+    testScrollbackResize();
     testDeviceReports();
     return check::report("test_terminal");
 }

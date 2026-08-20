@@ -124,6 +124,47 @@ into the new tree (`parentNode() != nullptr`) rather than assuming one is there.
 Callers read the tab's label *before* the surgery, because afterwards there may be
 no tab to read it from.
 
+## The mouse
+
+`TerminalWidget` decides, per event, whether the mouse belongs to the
+application or to the terminal:
+
+```
+application asked for the mouse (?1000/?1002/?1003)
+  and Shift is not held
+  and the view is not scrolled back      -> report it (core/mouse.h)
+otherwise
+  wheel, primary screen                  -> move the scrollback view
+  wheel, alternate screen                -> cursor keys, if ?1007 is on
+  middle click                           -> paste
+```
+
+Three of those conditions earn their place:
+
+**Shift is the local override**, as it is in xterm. Without it, a user running a
+mouse-driven TUI has no way to scroll the terminal's own scrollback or to paste.
+
+**Scrolled back, nothing is reported.** The row under the pointer is then a
+history row, and reporting its coordinates would tell the application about a
+position on a screen it cannot see.
+
+**Motion is reported per cell, not per pixel.** Mouse tracking is on for the
+whole widget, so `mouseMoveEvent` fires on every pixel of a drag; only a change
+of cell is worth a report, or a slow drag across one character floods the pty
+with identical sequences.
+
+The wheel accumulates fractional notches (`wheelRemainder_`). Trackpads and
+high-resolution wheels send small `angleDelta()` values, so taking each event on
+its own would either ignore them or scroll a whole notch per pixel.
+
+Alternate-screen wheel handling is worth stating plainly: a full-screen
+application repaints instead of scrolling, so there is no scrollback to move and
+the wheel would simply do nothing — which reads as a broken terminal in `less`.
+Translating a notch into cursor keys is what every other terminal does, and
+`DECRST 1007` lets an application opt out.
+
+---
+
 ## `InputHandler`
 
 Qt key events to VT bytes, with xterm's modifier encoding (`CSI 1 ; mod A`), so

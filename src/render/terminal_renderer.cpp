@@ -3,6 +3,7 @@
  */
 
 #include "terminal_renderer.h"
+#include "../core/unicode.h"
 #include <algorithm>
 
 TerminalRenderer::Layout TerminalRenderer::computeLayout(const FontMetrics& metrics,
@@ -84,7 +85,7 @@ void TerminalRenderer::paintBackgrounds(GLRenderer& renderer, const Screen& scre
         for (int col = 0; col < cols; ++col) {
             QColor fg;
             QColor bg;
-            palette.resolveCell(screen.at(row, col), fg, bg);
+            palette.resolveCell(screen.viewAt(row, col), fg, bg);
 
             const bool needsFill = (bg != defaultBackground);
 
@@ -114,7 +115,10 @@ void TerminalRenderer::paintGlyphs(GLRenderer& renderer, const Screen& screen,
         const int baselineY = cellTop + layout.baseline;
 
         for (int col = 0; col < cols; ++col) {
-            const Cell& cell = screen.at(row, col);
+            /* viewAt(), not at(): with the view scrolled back these rows come
+             * from the scrollback, while the cursor and everything the
+             * application writes still belong to the live grid. */
+            const Cell& cell = screen.viewAt(row, col);
 
             /* The trailing half of a wide character carries no glyph of its
              * own; drawing it would double-strike the left half. */
@@ -126,7 +130,14 @@ void TerminalRenderer::paintGlyphs(GLRenderer& renderer, const Screen& screen,
 
             const int cellLeft = layout.originX + col * layout.cellWidth;
 
-            if (!cell.isBlank()) {
+            /*
+             * A space paints nothing but its background. That includes the
+             * spaces that are not U+0020: asking the font chain for U+00A0 gets
+             * "no font covers this" -- a blank glyph fails a coverage test the
+             * same way a missing one does -- and the .notdef box that follows is
+             * what turned `tree`'s indentation into rows of empty rectangles.
+             */
+            if (!cell.isBlank() && !isSpaceSeparator(cell.ch)) {
                 /*
                  * Bold and italic now pick a real font style. Previously every
                  * cell was drawn with the regular face and bold was faked by
@@ -169,7 +180,12 @@ void TerminalRenderer::paintCursor(GLRenderer& renderer, const Screen& screen,
         return;
     }
 
-    const int row = screen.cursorRow();
+    /*
+     * The cursor is at a position on the *live* screen, which sits `viewOffset`
+     * rows below what is being displayed; scrolled far enough back it leaves the
+     * view entirely and must not be drawn.
+     */
+    const int row = screen.cursorRow() + screen.viewOffset();
     const int col = screen.cursorCol();
     if (row < 0 || row >= layout.rows || col < 0 || col >= layout.cols) return;
 

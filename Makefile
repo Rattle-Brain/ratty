@@ -237,6 +237,19 @@ test_terminal/fast:
 .PHONY : test_terminal/fast
 
 #=============================================================================
+# Target rules for targets named test_mouse
+
+# Build rule for target.
+test_mouse: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_mouse
+.PHONY : test_mouse
+
+# fast build rule for target.
+test_mouse/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse.dir/build.make tests/CMakeFiles/test_mouse.dir/build
+.PHONY : test_mouse/fast
+
+#=============================================================================
 # Target rules for targets named test_input
 
 # Build rule for target.
@@ -274,6 +287,19 @@ test_splits_gl: cmake_check_build_system
 test_splits_gl/fast:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_splits_gl.dir/build.make tests/CMakeFiles/test_splits_gl.dir/build
 .PHONY : test_splits_gl/fast
+
+#=============================================================================
+# Target rules for targets named test_scroll_gl
+
+# Build rule for target.
+test_scroll_gl: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_scroll_gl
+.PHONY : test_scroll_gl
+
+# fast build rule for target.
+test_scroll_gl/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_scroll_gl.dir/build.make tests/CMakeFiles/test_scroll_gl.dir/build
+.PHONY : test_scroll_gl/fast
 
 #=============================================================================
 # Target rules for targets named test_render
@@ -367,6 +393,32 @@ test_terminal_autogen/fast:
 .PHONY : test_terminal_autogen/fast
 
 #=============================================================================
+# Target rules for targets named test_mouse_autogen_timestamp_deps
+
+# Build rule for target.
+test_mouse_autogen_timestamp_deps: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_mouse_autogen_timestamp_deps
+.PHONY : test_mouse_autogen_timestamp_deps
+
+# fast build rule for target.
+test_mouse_autogen_timestamp_deps/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_autogen_timestamp_deps.dir/build.make tests/CMakeFiles/test_mouse_autogen_timestamp_deps.dir/build
+.PHONY : test_mouse_autogen_timestamp_deps/fast
+
+#=============================================================================
+# Target rules for targets named test_mouse_autogen
+
+# Build rule for target.
+test_mouse_autogen: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_mouse_autogen
+.PHONY : test_mouse_autogen
+
+# fast build rule for target.
+test_mouse_autogen/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_mouse_autogen.dir/build.make tests/CMakeFiles/test_mouse_autogen.dir/build
+.PHONY : test_mouse_autogen/fast
+
+#=============================================================================
 # Target rules for targets named test_input_autogen_timestamp_deps
 
 # Build rule for target.
@@ -443,6 +495,32 @@ test_splits_gl_autogen: cmake_check_build_system
 test_splits_gl_autogen/fast:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_splits_gl_autogen.dir/build.make tests/CMakeFiles/test_splits_gl_autogen.dir/build
 .PHONY : test_splits_gl_autogen/fast
+
+#=============================================================================
+# Target rules for targets named test_scroll_gl_autogen_timestamp_deps
+
+# Build rule for target.
+test_scroll_gl_autogen_timestamp_deps: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_scroll_gl_autogen_timestamp_deps
+.PHONY : test_scroll_gl_autogen_timestamp_deps
+
+# fast build rule for target.
+test_scroll_gl_autogen_timestamp_deps/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_scroll_gl_autogen_timestamp_deps.dir/build.make tests/CMakeFiles/test_scroll_gl_autogen_timestamp_deps.dir/build
+.PHONY : test_scroll_gl_autogen_timestamp_deps/fast
+
+#=============================================================================
+# Target rules for targets named test_scroll_gl_autogen
+
+# Build rule for target.
+test_scroll_gl_autogen: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_scroll_gl_autogen
+.PHONY : test_scroll_gl_autogen
+
+# fast build rule for target.
+test_scroll_gl_autogen/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_scroll_gl_autogen.dir/build.make tests/CMakeFiles/test_scroll_gl_autogen.dir/build
+.PHONY : test_scroll_gl_autogen/fast
 
 #=============================================================================
 # Target rules for targets named test_render_autogen_timestamp_deps
@@ -545,6 +623,30 @@ ratty_autogen/3YJK5W5UP7/qrc_config.s: ratty_autogen/3YJK5W5UP7/qrc_config.cpp.s
 ratty_autogen/3YJK5W5UP7/qrc_config.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/ratty_autogen/3YJK5W5UP7/qrc_config.cpp.s
 .PHONY : ratty_autogen/3YJK5W5UP7/qrc_config.cpp.s
+
+ratty_autogen/3YJK5W5UP7/qrc_fonts.o: ratty_autogen/3YJK5W5UP7/qrc_fonts.cpp.o
+.PHONY : ratty_autogen/3YJK5W5UP7/qrc_fonts.o
+
+# target to build an object file
+ratty_autogen/3YJK5W5UP7/qrc_fonts.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/ratty_autogen/3YJK5W5UP7/qrc_fonts.cpp.o
+.PHONY : ratty_autogen/3YJK5W5UP7/qrc_fonts.cpp.o
+
+ratty_autogen/3YJK5W5UP7/qrc_fonts.i: ratty_autogen/3YJK5W5UP7/qrc_fonts.cpp.i
+.PHONY : ratty_autogen/3YJK5W5UP7/qrc_fonts.i
+
+# target to preprocess a source file
+ratty_autogen/3YJK5W5UP7/qrc_fonts.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/ratty_autogen/3YJK5W5UP7/qrc_fonts.cpp.i
+.PHONY : ratty_autogen/3YJK5W5UP7/qrc_fonts.cpp.i
+
+ratty_autogen/3YJK5W5UP7/qrc_fonts.s: ratty_autogen/3YJK5W5UP7/qrc_fonts.cpp.s
+.PHONY : ratty_autogen/3YJK5W5UP7/qrc_fonts.s
+
+# target to generate assembly for a file
+ratty_autogen/3YJK5W5UP7/qrc_fonts.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/ratty_autogen/3YJK5W5UP7/qrc_fonts.cpp.s
+.PHONY : ratty_autogen/3YJK5W5UP7/qrc_fonts.cpp.s
 
 ratty_autogen/3YJK5W5UP7/qrc_keybindings.o: ratty_autogen/3YJK5W5UP7/qrc_keybindings.cpp.o
 .PHONY : ratty_autogen/3YJK5W5UP7/qrc_keybindings.o
@@ -713,6 +815,30 @@ src/config/theme.s: src/config/theme.cpp.s
 src/config/theme.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/src/config/theme.cpp.s
 .PHONY : src/config/theme.cpp.s
+
+src/core/mouse.o: src/core/mouse.cpp.o
+.PHONY : src/core/mouse.o
+
+# target to build an object file
+src/core/mouse.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/src/core/mouse.cpp.o
+.PHONY : src/core/mouse.cpp.o
+
+src/core/mouse.i: src/core/mouse.cpp.i
+.PHONY : src/core/mouse.i
+
+# target to preprocess a source file
+src/core/mouse.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/src/core/mouse.cpp.i
+.PHONY : src/core/mouse.cpp.i
+
+src/core/mouse.s: src/core/mouse.cpp.s
+.PHONY : src/core/mouse.s
+
+# target to generate assembly for a file
+src/core/mouse.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/src/core/mouse.cpp.s
+.PHONY : src/core/mouse.cpp.s
 
 src/core/palette.o: src/core/palette.cpp.o
 .PHONY : src/core/palette.o
@@ -1143,8 +1269,12 @@ help:
 	@echo "... test_config_autogen_timestamp_deps"
 	@echo "... test_input_autogen"
 	@echo "... test_input_autogen_timestamp_deps"
+	@echo "... test_mouse_autogen"
+	@echo "... test_mouse_autogen_timestamp_deps"
 	@echo "... test_render_autogen"
 	@echo "... test_render_autogen_timestamp_deps"
+	@echo "... test_scroll_gl_autogen"
+	@echo "... test_scroll_gl_autogen_timestamp_deps"
 	@echo "... test_splits_autogen"
 	@echo "... test_splits_autogen_timestamp_deps"
 	@echo "... test_splits_gl_autogen"
@@ -1157,7 +1287,9 @@ help:
 	@echo "... ratty_lib"
 	@echo "... test_config"
 	@echo "... test_input"
+	@echo "... test_mouse"
 	@echo "... test_render"
+	@echo "... test_scroll_gl"
 	@echo "... test_splits"
 	@echo "... test_splits_gl"
 	@echo "... test_tabbar"
@@ -1165,6 +1297,9 @@ help:
 	@echo "... ratty_autogen/3YJK5W5UP7/qrc_config.o"
 	@echo "... ratty_autogen/3YJK5W5UP7/qrc_config.i"
 	@echo "... ratty_autogen/3YJK5W5UP7/qrc_config.s"
+	@echo "... ratty_autogen/3YJK5W5UP7/qrc_fonts.o"
+	@echo "... ratty_autogen/3YJK5W5UP7/qrc_fonts.i"
+	@echo "... ratty_autogen/3YJK5W5UP7/qrc_fonts.s"
 	@echo "... ratty_autogen/3YJK5W5UP7/qrc_keybindings.o"
 	@echo "... ratty_autogen/3YJK5W5UP7/qrc_keybindings.i"
 	@echo "... ratty_autogen/3YJK5W5UP7/qrc_keybindings.s"
@@ -1186,6 +1321,9 @@ help:
 	@echo "... src/config/theme.o"
 	@echo "... src/config/theme.i"
 	@echo "... src/config/theme.s"
+	@echo "... src/core/mouse.o"
+	@echo "... src/core/mouse.i"
+	@echo "... src/core/mouse.s"
 	@echo "... src/core/palette.o"
 	@echo "... src/core/palette.i"
 	@echo "... src/core/palette.s"

@@ -96,3 +96,89 @@ replacement characters.
 
 ---
 
+## Empty boxes where the blanks should be
+
+**Symptom.** `tree` output arrived with two hollow rectangles at every
+indentation level, where other terminals show a vertical guide and blank space:
+
+```
+CMakeFiles
+├── 4.2.3
+□□  ├── CMakeCXXCompiler.cmake
+□□  ├── CMakeSystem.cmake
+```
+
+**Investigation.** Reading the bytes rather than the screen:
+
+```
+$ tree -L 3 CMakeFiles | hexdump -C
+e2 94 9c e2 94 80 e2 94 80 20 34 2e 32 2e 33 0a   ├── 4.2.3
+e2 94 82 c2 a0 c2 a0 20                           │ NBSP NBSP SPACE
+```
+
+`tree` 2.x indents with U+2502 and **two U+00A0 NO-BREAK SPACEs**. The `│` was
+fine — box drawing is geometric — so the two boxes were the two no-break spaces.
+Probing the font chain for them:
+
+```
+U+00A0  resolved=(none)  rasterized=1  12x19     <- the .notdef box
+```
+
+**Cause.** Coverage is tested with `FaceSet::hasRenderableGlyph()`, which demands
+an actual outline. It has to: a colour-emoji font maps regional indicators to
+empty shaping-only glyphs, and a face selected on cmap presence alone drew
+nothing at all. But **a space is legitimately blank**, so every font in the chain
+"failed" to cover U+00A0, and `rasterize()` fell through to its last resort — the
+primary font's `.notdef` box.
+
+The bug is that *blank* and *missing* are the same observation, and only the code
+point can tell them apart.
+
+**Fix.** `isSpaceSeparator()` in [`core/unicode.h`](../src/core/unicode.h),
+Unicode's Zs category, consulted in two places: `TerminalRenderer` does not ask
+for a glyph for one, and `FontManager::rasterize()` answers an empty bitmap rather
+than `.notdef` if it is asked anyway. The model still stores U+00A0 as itself, so
+a future selection copies the character the application actually sent.
+
+Pinned by `tests/test_render.cpp` (`testSpacesDrawNothing`) and
+`tests/test_terminal.cpp` (`testSpaceSeparators`).
+
+---
+
+## `fc-match` always answers, so the icon search stopped at the first no
+
+**Symptom.** File-type icons in a Telescope picker rendered as empty boxes, while
+the same code points rendered as *something* in another terminal on the same
+machine.
+
+**Investigation.** The icons are private-use code points from
+`nvim-web-devicons`. Asking fontconfig which fonts actually carry them:
+
+```
+$ fc-list ':charset=e855' family     # nvim's shader icon
+Heiti SC | Songti SC | Hiragino Sans GB | .LastResort
+$ fc-list ':charset=e8eb' family     # its yaml icon
+.LastResort
+```
+
+So U+E855 was available and U+E8EB genuinely was not — but RaTTY drew a box for
+both.
+
+**Cause.** Discovery asked `fc-match ":charset=e855:spacing=100"`. `fc-match`
+does not filter; it scores every font and returns its best guess, and for a
+charset nothing good covers that guess is `.LastResort` — a font of literal empty
+boxes, which the chain correctly refuses. Refusing it ended the search, so the
+three fonts that *did* have the glyph were never considered.
+
+**Fix.** Enumerate with `fc-list :charset=<hex>`, which filters to fonts whose
+charset really contains the code point, monospaced candidates first, capped, each
+still verified after loading. U+E855 now resolves to Heiti SC.
+
+**What this does not fix.** A code point no installed font carries is still a box,
+which is the honest answer — the bundled `font.fallback` now names the Nerd Fonts
+symbol families so that installing one is all it takes.
+
+Pinned by `tests/test_render.cpp` (`testDiscoveryLooksPastPlaceholderFonts`),
+which asks fontconfig what the machine actually has before asserting anything.
+
+---

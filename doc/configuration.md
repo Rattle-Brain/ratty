@@ -63,7 +63,7 @@ predictably rather than half-applying:
 ```yaml
 font:
   family: [DroidSansMono Nerd Font, Menlo]   # or a single name
-  fallback: []
+  fallback: []                               # rarely needed; see below
   size: 13
 
 cursor:
@@ -76,6 +76,13 @@ colors:
   cursor: "#dcdcdc"
   red: "#cd3131"
   bright_red: "#f14c4c"
+
+scrollback:
+  lines: 10000        # 0 turns the scrollback off
+  multiplier: 3       # lines moved per wheel notch
+
+mouse:
+  alternate_scroll: true
 
 window:
   width: 1280
@@ -97,10 +104,27 @@ keybindings:
   [the font documentation](rendering.md#fontmanager) for the resolution rules. `"Monospace"` or `""` means
   "ask the platform".
 - `font.fallback` names families to consult for code points the primary font
-  lacks, ahead of automatic discovery. Left empty, the platform's monospaced font
-  and any installed colour-emoji font are used.
+  lacks, ahead of automatic discovery, and a family that is not installed is
+  skipped. Left empty it is not needed: the platform's monospaced font, any
+  installed colour-emoji font, and the Nerd Fonts symbols font RaTTY *ships with*
+  are all tried anyway. That bundled font is what draws a TUI's file-type icons,
+  which live in private-use code points no stock font carries — the same reason
+  kitty and Ghostty ship it too.
 - `window.padding` is the gap between the text and the window edge, in logical
   pixels.
+- `scrollback.lines` is per pane and applies to the primary screen only — the
+  alternate screen keeps no history, because a full-screen application repaints
+  instead of scrolling. `0` disables the buffer, so the wheel and
+  `Shift+PageUp`/`PageDown` have nothing to move.
+- `scrollback.multiplier` is how many rows one wheel notch moves. Fractional
+  notches from a trackpad accumulate, so a slow drag still scrolls smoothly.
+- `mouse.alternate_scroll` translates a wheel notch into cursor keys when a
+  full-screen application is up and has not asked for the mouse, which is what
+  makes the wheel scroll `less` and `man`. An application can turn it off for
+  itself with `DECRST 1007`.
+- An application that asks for the mouse (`DECSET 1000`/`1002`/`1003`) receives
+  clicks, drags and wheel notches instead of the terminal acting on them. Hold
+  **Shift** to bypass that and scroll — or middle-click paste — locally anyway.
 - Cursor styles: `block`, `hollow`, `underline`, `bar`.
 - Binding an action to `"none"` **removes** a default binding — the only way for
   a user overlay to unbind something it did not create.

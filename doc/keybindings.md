@@ -80,6 +80,20 @@ punctuation, never letters, and the fallback runs only for keys it recognises, s
 `ctrl+shift+c` can never decay into `ctrl+c` and steal an interrupt from the
 shell. Both halves of that are asserted.
 
+### Scrolling
+
+`scroll_up` and `scroll_down` move the scrollback view by a page — one screenful
+less a row, so the line the eye stopped on survives the jump — and
+`clear_scrollback` discards the history of the focused pane. The defaults are
+`Shift+PageUp` / `Shift+PageDown` and `cmd+k` (`super+k` on Linux).
+
+They are bound in the keybinding files and dispatched by `MainWindow` like any
+other action, which also means they never reach the shell: `Shift+PageUp` would
+otherwise arrive as `CSI 5 ; 2 ~` and be interpreted by whatever is running.
+
+Any keystroke that produces terminal input returns the view to the live screen
+first. Scrolling back and then typing must not leave the echo out of sight.
+
 `Config::save()` no longer exists. It was a no-op that logged "not yet
 implemented" while `closeEvent` dutifully wrote the window size into it;
 persisting geometry is listed in `todo-ratty.md` instead of being pretended at.

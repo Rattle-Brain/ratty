@@ -3,18 +3,23 @@
 
 Tracked in `todo-ratty.md`; listed here with the architectural context.
 
-**No scrollback.** `Screen` holds exactly one viewport. The row indirection table
-is the natural place to grow one: a ring buffer of rows with a view offset, with
-`scrollUp` pushing the evicted row into history instead of clearing it. Until
-then `wheelEvent` swallows scrolling and the scroll actions are bound but inert.
+**The scrollback is not reflowed on resize.** History rows are stored at the
+width they had when they were captured, so a narrower window shows old lines
+truncated rather than rewrapped. Doing better needs a record of which rows were
+continuations of one logical line, which `Cell` does not carry — and rewrapping
+from the stored cells alone would mangle TUI output that was never a paragraph.
+The same missing information is why there is no scrollback *search* yet.
 
 **No text selection.** `copySelection()` logs and returns. `Palette` already
-carries a selection colour and `GLRenderer` has an overlay layer, so the missing
-pieces are a selection range in the widget, mouse drag handling, and a
-grid→string conversion that handles wide characters and trailing blanks.
+carries a selection colour, `GLRenderer` has an overlay layer, and
+`TerminalWidget` now hit-tests the mouse to a cell and knows when the application
+does *not* want the mouse — so what is left is a selection range, the drag state
+machine over those hooks, and a grid→string conversion that handles wide
+characters and trailing blanks.
 
-**No mouse reporting.** Modes 1000–1006 are recognised and ignored, so
-applications that probe for mouse support correctly conclude there is none.
+**No pixel-resolution mouse reporting (`?1016`).** Reports are per cell, which is
+all a text application needs; `?1016` exists for graphics protocols RaTTY does not
+implement either.
 
 **Grapheme clusters keep only their base code point.** `Cell` stores a single
 `char32_t`, so combining marks and emoji continuations are consumed rather than
@@ -22,6 +27,12 @@ retained. Widths and cursor movement are correct
 ([grapheme clusters](terminal-emulation.md#grapheme-clusters-and-emoji-presentation)), but the exact sequence
 is not recoverable — which will matter once text selection exists. The fix is a
 side table of cluster extensions keyed by cell.
+
+**A fallback glyph is not scaled to the cell.** `matchFallbackSize()` matches line
+height, not advance, so a private-use icon served from a CJK font (whose em is
+square) is drawn about two columns wide in a one-column cell and bleeds into its
+neighbour. Scaling it down would shrink legitimate CJK text served the same way,
+so the trade-off wants a decision rather than a patch.
 
 **No text shaping, so joined emoji show their base.** Rendering `👨‍💻` as one
 combined glyph needs GSUB ligature substitution, which FreeType alone cannot do;

@@ -14,6 +14,18 @@
  *
  *   - A scrolling region (DECSTBM), so full-screen apps can scroll a subrange.
  *
+ *   - Scrollback. A row that leaves the top of the screen is pushed into a
+ *     history deque instead of being dropped, and a *view offset* lets the
+ *     renderer show `history + viewport` rather than the live grid. Lines
+ *     leaving the top of a smaller scrolling region are not kept: a region is a
+ *     subwindow the application manages itself, and capturing it would fill the
+ *     history with the redrawn middle of a TUI.
+ *
+ *     History rows are stored at the width they had when they were captured and
+ *     are deliberately *not* reflowed on resize -- see doc/known-gaps.md. A
+ *     narrower window therefore shows old lines truncated rather than rewrapped,
+ *     which is what xterm does and what keeps `viewAt()` O(1).
+ *
  * Rows are held in a flat cell buffer addressed through an indirection table,
  * so scrolling rotates row indices instead of copying cell data.
  */
@@ -22,6 +34,7 @@
 #define CORE_SCREEN_H
 
 #include "cell.h"
+#include <deque>
 #include <vector>
 
 class Screen {
@@ -101,12 +114,49 @@ public:
     /* Wholesale reset (RIS / ED 2 style) */
     void reset(const Pen& pen);
 
+    /* ----------------------------------------------------------- scrollback */
+
+    /*
+     * How many rows of history to keep. Zero disables it entirely, which is
+     * what the alternate screen wants: `less` and `vim` redraw their whole
+     * window, so every scroll would otherwise deposit a screenful of noise.
+     * Lowering the limit trims what is already there.
+     */
+    void setHistoryLimit(int lines);
+    int historyLimit() const { return historyLimit_; }
+    int historySize() const { return static_cast<int>(history_.size()); }
+    void clearHistory();
+
+    /*
+     * View offset: how many rows the display is scrolled back, 0 being the live
+     * screen and historySize() the oldest line still kept. The grid accessors
+     * above are unaffected -- an application writes to the live screen whether
+     * or not the user is looking at history.
+     */
+    int viewOffset() const { return viewOffset_; }
+    int maxViewOffset() const { return historySize(); }
+    bool scrolledBack() const { return viewOffset_ > 0; }
+
+    /* All three return true when the view actually moved. `lines` is positive
+     * towards the past. */
+    bool scrollViewBy(int lines);
+    bool scrollViewTo(int offset);
+    bool scrollViewToBottom() { return scrollViewTo(0); }
+    bool scrollViewToTop() { return scrollViewTo(maxViewOffset()); }
+
+    /* The grid as displayed: history rows above, live rows below. With no
+     * offset this is exactly at(). */
+    const Cell& viewAt(int row, int col) const;
+
     /* Every mutation bumps this, so the view can skip repainting an
      * unchanged grid. */
     uint64_t revision() const { return revision_; }
 
 private:
     Cell& cellRef(int row, int col);
+    /* Copy a logical row into the history, evicting the oldest if needed. */
+    void pushHistory(int row);
+    void trimHistory();
     void clearRow(int row, const Pen& pen);
     void clearRowRange(int fromCol, int toColInclusive, int row, const Pen& pen);
     void allocate(int rows, int cols);
@@ -117,6 +167,15 @@ private:
 
     std::vector<Cell> cells_;
     std::vector<int> rowMap_;
+
+    /*
+     * Scrollback. A deque of whole rows rather than a second flat buffer: rows
+     * are appended and evicted one at a time and never addressed as a
+     * rectangle, and the width they were captured at has to travel with them.
+     */
+    std::deque<std::vector<Cell>> history_;
+    int historyLimit_ = 0;
+    int viewOffset_ = 0;
 
     int rows_;
     int cols_;

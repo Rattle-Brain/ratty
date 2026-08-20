@@ -61,6 +61,70 @@ coloured bars with a single `EL` after setting a background.
 **Scrolling region.** `scrollTop_`/`scrollBottom_` bound every scroll, insert and
 delete, so `DECSTBM` works and full-screen applications can scroll a subrange.
 
+### Scrollback
+
+A row leaving the top of the screen is copied into `history_`, a
+`std::deque<std::vector<Cell>>` bounded by `historyLimit_`, and `viewOffset_`
+says how many rows the display is scrolled back. `viewAt(row, col)` reads from
+`history + viewport`; `at(row, col)` is unchanged and still means the live grid,
+which is what the emulator writes to whether or not the user is looking at
+history.
+
+Three decisions are worth stating:
+
+**Only the whole screen feeds the history.** `scrollUp` captures rows only when
+the scrolling region is the full screen. A `DECSTBM` region is a subwindow the
+application scrolls itself — vim's text area, htop's process list — and capturing
+it would fill the scrollback with the same screen redrawn hundreds of times.
+
+**The alternate screen keeps none at all.** `TerminalEmulator` sets its history
+limit to zero. A full-screen application repaints rather than scrolls, so there
+is nothing there worth keeping, and mixing it into the shell's history is how
+other terminals end up with `vim` sessions embedded in their scrollback.
+
+**History is not reflowed on resize.** Rows are stored at the width they had when
+captured, so a narrower window shows old lines truncated rather than rewrapped.
+Reflowing needs a record of which rows were continuations of a logical line,
+which `Cell` does not carry; the alternative — rewrapping on the stored cells
+alone — mangles TUI output that was never a paragraph. Rows dropped off the top
+by a vertical shrink *are* pushed into the history, since from the user's point of
+view they scrolled away.
+
+`ED 3` erases the saved lines and nothing else, which is xterm's definition;
+applications that want both send `ED 2` first (`tput clear` is
+`CSI H CSI 2 J CSI 3 J`). `RIS` discards the history along with everything else.
+
+The view snaps back to the live screen on any output (`TerminalEmulator::write`)
+and on any keystroke (`TerminalWidget::keyPressEvent`). Both are necessary: text
+arriving out of sight, or an echo of what was just typed landing off-screen,
+reads as a hung terminal.
+
+### Mouse reporting
+
+Two independent settings, which is why they are two enums in
+[`core/mouse.h`](../src/core/mouse.h):
+
+| Mode | Meaning |
+|---|---|
+| `?9` | X10 compatibility: presses only, no modifiers, no releases |
+| `?1000` | presses and releases |
+| `?1002` | ... and motion while a button is held |
+| `?1003` | ... and all motion |
+| `?1004` | focus in / focus out (`CSI I` / `CSI O`) |
+| `?1005` | UTF-8 coordinates |
+| `?1006` | SGR coordinates — what modern applications ask for |
+| `?1015` | urxvt coordinates |
+| `?1007` | alternate scroll: the wheel drives a pager through cursor keys |
+
+`encodeMouseReport()` turns one event into bytes, or into an empty string when
+the event is not reportable in the active mode — a release under `?9`, motion
+nobody asked for, a wheel "release" that does not exist. Callers can therefore
+send the result unconditionally instead of re-deriving the rules.
+
+Disabling a mode is deliberately conditional: applications enable `?1002` and
+`?1003` together and then reset them one at a time, so treating any `l` as "off"
+would stop reporting while the application still expects it.
+
 ## `VTParser`
 
 A state machine modelled on Paul Williams' DEC parser, consuming `char32_t`
@@ -102,11 +166,12 @@ Supported sequences:
 |---|---|
 | C0 | BEL, BS, HT, LF, VT, FF, CR (SO/SI accepted, ignored) |
 | Cursor | CUU/CUD/CUF/CUB (`A`–`D`), CNL/CPL (`E`,`F`), CHA/HPA (`G`,`` ` ``), VPA (`d`), CUP/HVP (`H`,`f`), CHT/CBT (`I`,`Z`), VPR/HPR (`e`,`a`) |
-| Erase | ED (`J`) modes 0–3, EL (`K`) modes 0–2, ECH (`X`) |
+| Erase | ED (`J`) modes 0–3 (mode 3 erases the *saved lines* only, as in xterm), EL (`K`) modes 0–2, ECH (`X`) |
 | Edit | ICH (`@`), DCH (`P`), IL (`L`), DL (`M`) |
 | Scroll | SU (`S`), SD (`T`), DECSTBM (`r`) |
 | Rendition | SGR (`m`): 0–9, 21–29, 30–37, 38, 39, 40–47, 48, 49, 90–97, 100–107, both `;` and `:` extended forms |
 | Modes | DECCKM (?1), DECAWM (?7), DECTCEM (?25), alternate buffer (?1047/?1048/?1049), bracketed paste (?2004), LNM (20) |
+| Mouse | X10 (?9), click (?1000), drag (?1002), any-motion (?1003), focus events (?1004), UTF-8/SGR/urxvt coordinates (?1005/?1006/?1015), alternate scroll (?1007) |
 | Cursor shape | DECSCUSR (`CSI n SP q`) |
 | Reports | DSR 5, DSR 6 (CPR), DA1 |
 | ESC | IND, NEL, RI, DECSC/DECRC (`7`/`8`), RIS (`c`), charset selection (accepted, ignored) |

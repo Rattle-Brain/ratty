@@ -11,6 +11,12 @@
 namespace {
 constexpr int kMaxRows = 4096;
 constexpr int kMaxCols = 4096;
+
+/* Enough that "scroll up until you find it" works for a build log, small
+ * enough that a pane costs a few megabytes rather than tens. Config overrides
+ * it; the constant is what a bare emulator (and every test) gets. */
+constexpr int kDefaultScrollbackLines = 10000;
+constexpr int kMaxScrollbackLines = 1000000;
 } // namespace
 
 TerminalEmulator::TerminalEmulator(int rows, int cols)
@@ -19,9 +25,19 @@ TerminalEmulator::TerminalEmulator(int rows, int cols)
     , active_(&primary_)
 {
     parser_.setHandler(this);
+    primary_.setHistoryLimit(kDefaultScrollbackLines);
+    /* The alternate screen deliberately keeps none; see the header. */
+    alternate_.setHistoryLimit(0);
 }
 
 void TerminalEmulator::write(const char* data, size_t length) {
+    /*
+     * New output snaps the view back to the bottom. Anything else means text
+     * arrives somewhere the user cannot see, and the cursor -- which is drawn at
+     * its position within the *view* -- would appear to have wandered off.
+     */
+    active_->scrollViewToBottom();
+
     scratch_.clear();
     decoder_.decode(data, length, scratch_);
     parser_.advance(scratch_.data(), scratch_.size());
@@ -54,8 +70,33 @@ void TerminalEmulator::reset() {
     bracketedPaste_ = false;
     applicationCursorKeys_ = false;
     newlineMode_ = false;
+    mouseTracking_ = MouseTracking::None;
+    mouseEncoding_ = MouseEncoding::X10;
+    focusEvents_ = false;
     parser_.reset();
     decoder_.reset();
+}
+
+void TerminalEmulator::setScrollbackLines(int lines) {
+    primary_.setHistoryLimit(std::clamp(lines, 0, kMaxScrollbackLines));
+}
+
+bool TerminalEmulator::scrollViewBy(int lines) {
+    return active_->scrollViewBy(lines);
+}
+
+bool TerminalEmulator::scrollViewToBottom() {
+    return active_->scrollViewToBottom();
+}
+
+bool TerminalEmulator::scrollViewToTop() {
+    return active_->scrollViewToTop();
+}
+
+void TerminalEmulator::clearScrollback() {
+    /* Only the primary screen has any, but clearing the active one keeps the
+     * action honest while an alternate-screen application is up. */
+    active_->clearHistory();
 }
 
 void TerminalEmulator::sendReply(const std::string& text) {
@@ -571,17 +612,77 @@ void TerminalEmulator::setMode(const CsiSequence& seq, bool enable) {
         case 2004:  // bracketed paste
             bracketedPaste_ = enable;
             break;
+
+        /*
+         * Mouse reporting. Tracking and encoding are set independently, and an
+         * application commonly enables several: `?1002h ?1006h` is the usual
+         * pair. Disabling one tracking mode while another is still on must not
+         * turn reporting off wholesale, hence the "only if it is mine" tests.
+         */
+        case 9:     // X10 compatibility: presses only
+            setMouseTracking(MouseTracking::X10, enable);
+            break;
+        case 1000:  // presses and releases
+            setMouseTracking(MouseTracking::Normal, enable);
+            break;
+        case 1002:  // ... and drag
+            setMouseTracking(MouseTracking::ButtonEvent, enable);
+            break;
+        case 1003:  // ... and all motion
+            setMouseTracking(MouseTracking::AnyEvent, enable);
+            break;
+        case 1004:  // focus in / focus out reporting
+            focusEvents_ = enable;
+            break;
+        case 1005:  // UTF-8 coordinates
+            setMouseEncoding(MouseEncoding::Utf8, enable);
+            break;
+        case 1006:  // SGR coordinates
+            setMouseEncoding(MouseEncoding::Sgr, enable);
+            break;
+        case 1015:  // urxvt coordinates
+            setMouseEncoding(MouseEncoding::Urxvt, enable);
+            break;
+        case 1007:  // alternate scroll: wheel to cursor keys on the alt screen
+            alternateScroll_ = enable;
+            break;
+
         default:
-            /* Mouse reporting (1000-1006), focus events (1004), sixel
-             * scrolling and the rest are not implemented; ignoring them is the
-             * correct behaviour, since applications probe by feature. */
+            /* Sixel scrolling and the rest are not implemented; ignoring them
+             * is the correct behaviour, since applications probe by feature. */
             break;
         }
     }
 }
 
+/*
+ * A mode reset only counts when it names the mode that is actually in force.
+ * Applications routinely enable 1002 and 1003 together and then disable them one
+ * at a time on the way out; treating any `l` as "off" would drop reporting while
+ * the application still expects it.
+ */
+void TerminalEmulator::setMouseTracking(MouseTracking mode, bool enable) {
+    if (enable) {
+        mouseTracking_ = mode;
+    } else if (mouseTracking_ == mode) {
+        mouseTracking_ = MouseTracking::None;
+    }
+}
+
+void TerminalEmulator::setMouseEncoding(MouseEncoding mode, bool enable) {
+    if (enable) {
+        mouseEncoding_ = mode;
+    } else if (mouseEncoding_ == mode) {
+        mouseEncoding_ = MouseEncoding::X10;
+    }
+}
+
 void TerminalEmulator::useAlternateScreen(bool enable) {
     if (enable == alternateActive_) return;
+
+    /* Whichever screen we are leaving, leave it looking at its live rows: the
+     * offset would otherwise still be there on the way back. */
+    active_->scrollViewToBottom();
 
     if (enable) {
         active_->saveCursor();

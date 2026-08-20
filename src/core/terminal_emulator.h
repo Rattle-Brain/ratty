@@ -16,6 +16,7 @@
 
 #include "cell.h"
 #include "cursor.h"
+#include "mouse.h"
 #include "palette.h"
 #include "screen.h"
 #include "utf8.h"
@@ -72,6 +73,44 @@ public:
     void setTitleSink(TitleSink sink) { titleSink_ = std::move(sink); }
     void setBellSink(BellSink sink) { bellSink_ = std::move(sink); }
 
+    /* ----------------------------------------------------------- scrollback */
+
+    /*
+     * Rows of history kept for the primary screen. The alternate screen never
+     * keeps any: `less` and `vim` repaint their whole window, so every scroll
+     * there would deposit a screenful of redrawn text.
+     */
+    void setScrollbackLines(int lines);
+    int scrollbackLines() const { return primary_.historyLimit(); }
+    int historySize() const { return active_->historySize(); }
+
+    /* View offset in rows; 0 is the live screen. `lines` is positive towards
+     * the past. All of these return true when the view actually moved. */
+    bool scrollViewBy(int lines);
+    bool scrollViewToBottom();
+    bool scrollViewToTop();
+    int viewOffset() const { return active_->viewOffset(); }
+    bool scrolledBack() const { return active_->scrolledBack(); }
+    void clearScrollback();
+
+    bool alternateScreenActive() const { return alternateActive_; }
+
+    /* ------------------------------------------------------------- mouse */
+
+    MouseTracking mouseTracking() const { return mouseTracking_; }
+    MouseEncoding mouseEncoding() const { return mouseEncoding_; }
+    /* DECSET 1004: the application wants CSI I / CSI O when the window gains
+     * or loses focus. */
+    bool focusEvents() const { return focusEvents_; }
+    /*
+     * DECSET 1007. With no mouse tracking and the alternate screen up, a wheel
+     * notch is translated into cursor keys so that `less` and `man` scroll --
+     * without it the wheel does nothing at all in a pager, which reads as a bug.
+     * The configured value is the starting point; an application may turn it off.
+     */
+    bool alternateScroll() const { return alternateScroll_; }
+    void setAlternateScroll(bool enable) { alternateScroll_ = enable; }
+
     /* True while an application has requested bracketed paste (DECSET 2004). */
     bool bracketedPaste() const { return bracketedPaste_; }
     /* True while the cursor keys should send SS3 rather than CSI (DECCKM). */
@@ -113,6 +152,10 @@ private:
     /* OSC 10/11/12 default colour control; `which` is the OSC number. */
     void handleDynamicColorOsc(int which, const std::u32string& data);
     void resetDynamicColor(int which);
+    /* Set or clear one tracking / encoding mode; see the implementation for why
+     * clearing is conditional. */
+    void setMouseTracking(MouseTracking mode, bool enable);
+    void setMouseEncoding(MouseEncoding mode, bool enable);
     void useAlternateScreen(bool enable);
     void deviceStatusReport(const CsiSequence& seq);
     void sendReply(const std::string& text);
@@ -147,6 +190,12 @@ private:
 
     bool alternateActive_ = false;
     bool bracketedPaste_ = false;
+
+    MouseTracking mouseTracking_ = MouseTracking::None;
+    MouseEncoding mouseEncoding_ = MouseEncoding::X10;
+    bool focusEvents_ = false;
+    bool alternateScroll_ = true;
+
     bool applicationCursorKeys_ = false;
     /* DECSET 20 / LNM: when set, LF also performs a carriage return. */
     bool newlineMode_ = false;

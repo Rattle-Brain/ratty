@@ -8,7 +8,11 @@
 #include "render/box_drawing.h"
 #include "render/font_manager.h"
 #include "render/terminal_renderer.h"
+#include "core/unicode.h"
 #include <QGuiApplication>
+#include <QProcess>
+#include <QString>
+#include <QStringList>
 #include <algorithm>
 #include <cstdlib>
 #include <string>
@@ -230,6 +234,160 @@ void testFallbackCoversTerminalCharacters() {
     }
 }
 
+/*
+ * Families that fontconfig says actually contain `codepoint`, with the
+ * placeholder fonts left out. Used to keep the discovery test honest on a
+ * machine that simply has no font for the code point being asked about.
+ */
+std::vector<std::string> familiesClaiming(char32_t codepoint) {
+    std::vector<std::string> families;
+
+    QProcess process;
+    process.start(QStringLiteral("fc-list"),
+                  {QStringLiteral("-f"), QStringLiteral("%{family[0]}\n"),
+                   QStringLiteral(":charset=%1").arg(static_cast<uint>(codepoint), 0, 16)});
+    if (!process.waitForFinished(3000)) {
+        process.kill();
+        return families;
+    }
+
+    const QString output = QString::fromLocal8Bit(process.readAllStandardOutput());
+    for (const QString& line : output.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        const QString family = line.trimmed();
+        if (family.isEmpty() || family.startsWith(QLatin1Char('.'))) continue;
+        families.push_back(family.toStdString());
+    }
+    return families;
+}
+
+void testSpacesDrawNothing() {
+    check::section("spaces paint nothing, whichever space they are");
+
+    FontManager fonts;
+    check::that(fonts.loadFamily(std::vector<std::string>{}, 26.0), "a primary font loaded");
+
+    /*
+     * A blank glyph and a missing glyph look identical to a coverage test: both
+     * have an empty outline. So the font chain reports that nothing covers
+     * U+00A0, and the .notdef box that used to follow turned `tree`'s
+     * indentation -- two NO-BREAK SPACEs per level -- into rows of empty
+     * rectangles.
+     */
+    struct Case { char32_t codepoint; const char* what; };
+    const Case cases[] = {
+        {0x0020, "space"},
+        {0x00A0, "no-break space"},
+        {0x2002, "en space"},
+        {0x2007, "figure space"},
+        {0x202F, "narrow no-break space"},
+        {0x205F, "medium mathematical space"},
+        {0x3000, "ideographic space"},
+    };
+
+    for (const Case& item : cases) {
+        const std::string label = std::string(item.what) + " (U+"
+                                + std::to_string(static_cast<unsigned>(item.codepoint)) + ")";
+        check::that(isSpaceSeparator(item.codepoint), label + " is a space separator");
+
+        GlyphBitmap glyph;
+        check::that(fonts.rasterize(item.codepoint, FontStyleRegular, glyph),
+                    "rasterizing " + label + " succeeds");
+        check::equal(inkPixels(glyph), 0L, "and puts no ink on the page for " + label);
+    }
+
+    /* The guard rail: a code point that really is missing still shows something,
+     * or a font problem becomes invisible. */
+    GlyphBitmap missing;
+    if (fonts.rasterize(0x10FFFD, FontStyleRegular, missing)) {
+        check::that(inkPixels(missing) > 0,
+                    "a genuinely missing code point still draws a .notdef box");
+    }
+}
+
+void testBundledSymbolsFont() {
+    check::section("bundled symbols font serves the icon code points");
+
+    /*
+     * The reason kitty shows a TUI's file-type icons on a machine where another
+     * terminal shows empty boxes is not the system's fonts -- it is that kitty
+     * ships a symbols font of its own. These code points are private-use: on a
+     * stock macOS the only face that claims U+E8EB is .LastResort, a font of
+     * literal empty boxes. So RaTTY carries the font too, and this test holds
+     * regardless of what the machine has installed.
+     */
+    FontManager fonts;
+    check::that(fonts.loadFamily(std::vector<std::string>{}, 26.0), "a primary font loaded");
+
+    struct Case { char32_t codepoint; const char* what; };
+    const Case cases[] = {
+        {0xE8EB,  "yaml"},
+        {0xF375,  "Qt / .qrc"},
+        {0xE855,  "shader"},
+        {0xE0B0,  "powerline separator"},
+        {0xF0219, "plain file"},
+    };
+
+    for (const Case& item : cases) {
+        const std::string label = std::string(item.what) + " icon (U+"
+                                + std::to_string(static_cast<unsigned>(item.codepoint)) + ")";
+        GlyphBitmap glyph;
+        check::that(fonts.rasterize(item.codepoint, FontStyleRegular, glyph,
+                                    GlyphPresentation::Text),
+                    "rasterized the " + label);
+        check::that(inkPixels(glyph) > 0, "there is ink for the " + label);
+        check::that(!fonts.familyForCodepoint(item.codepoint, FontStyleRegular,
+                                              GlyphPresentation::Text).empty(),
+                    "and a font owns the " + label);
+    }
+
+    /* It must stay a *symbols* font: taking over Latin, box drawing or spaces
+     * would be far worse than the boxes it fixes. */
+    check::that(fonts.familyForCodepoint(U'A', FontStyleRegular, GlyphPresentation::Text)
+                    != std::string("Symbols Nerd Font Mono"),
+                "it does not serve Latin letters");
+}
+
+void testDiscoveryLooksPastPlaceholderFonts() {
+    check::section("charset discovery does not stop at the placeholder font");
+
+    /*
+     * `fc-match :charset=...` answers *something* whatever you ask it, and on
+     * macOS that something is .LastResort, a font of empty boxes. Rejecting that
+     * one answer used to end the search, so a private-use icon that a CJK font
+     * did carry was drawn as a box anyway. Discovery now enumerates with
+     * `fc-list`, which filters.
+     */
+    FontManager fonts;
+    check::that(fonts.loadFamily(std::vector<std::string>{}, 26.0), "a primary font loaded");
+
+    /* Private-use code points from nvim-web-devicons; whether any font on this
+     * machine has them is a property of the machine, so ask first. */
+    const char32_t candidates[] = {0xE855, 0xE8EB, 0xF375, 0xE61D};
+    int checked = 0;
+
+    for (const char32_t codepoint : candidates) {
+        const std::vector<std::string> claiming = familiesClaiming(codepoint);
+        if (claiming.empty()) continue;   // nothing installed has it; nothing to assert
+
+        ++checked;
+        const std::string label = "U+" + std::to_string(static_cast<unsigned>(codepoint));
+        const std::string resolved =
+            fonts.familyForCodepoint(codepoint, FontStyleRegular, GlyphPresentation::Text);
+        check::that(!resolved.empty(),
+                    label + " resolved to a font (fontconfig offers "
+                        + claiming.front() + ")");
+
+        GlyphBitmap glyph;
+        if (fonts.rasterize(codepoint, FontStyleRegular, glyph)) {
+            check::that(inkPixels(glyph) > 0, "and it draws ink for " + label);
+        }
+    }
+
+    if (checked == 0) {
+        std::printf("  %-4s no font on this machine claims any of the probe code points\n", "skip");
+    }
+}
+
 void testFontFallback() {
     check::section("font resolution never yields a proportional font");
 
@@ -394,6 +552,9 @@ int main(int argc, char** argv) {
     testLayoutPadding();
     testBoxDrawingTiles();
     testFallbackCoversTerminalCharacters();
+    testSpacesDrawNothing();
+    testBundledSymbolsFont();
+    testDiscoveryLooksPastPlaceholderFonts();
     testFontFallback();
     testPresentationSelectsTheRightFont();
     testFontPreferenceOrder();

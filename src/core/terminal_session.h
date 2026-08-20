@@ -51,6 +51,38 @@ public:
 
     void resize(int rows, int cols);
 
+    /* ----------------------------------------------------------- scrollback */
+
+    /* Rows of history to keep for the primary screen; 0 disables it. */
+    void setScrollbackLines(int lines);
+    int historySize() const { return emulator_.historySize(); }
+    int viewOffset() const { return emulator_.viewOffset(); }
+    bool scrolledBack() const { return emulator_.scrolledBack(); }
+
+    /* `lines` is positive towards the past. True when the view moved, so the
+     * caller knows whether a repaint is needed. */
+    bool scrollViewBy(int lines);
+    bool scrollViewToBottom();
+    bool scrollViewToTop();
+    void clearScrollback();
+
+    bool alternateScreenActive() const { return emulator_.alternateScreenActive(); }
+
+    /* ---------------------------------------------------------------- mouse */
+
+    MouseTracking mouseTracking() const { return emulator_.mouseTracking(); }
+    bool focusEvents() const { return emulator_.focusEvents(); }
+    bool alternateScroll() const { return emulator_.alternateScroll(); }
+    void setAlternateScroll(bool enable) { emulator_.setAlternateScroll(enable); }
+
+    /* Encode and send one mouse event. A no-op when the application has not
+     * asked for reporting, or when this particular event is not reportable in
+     * the mode it did ask for. */
+    void sendMouseReport(const MouseReport& report);
+
+    /* CSI I / CSI O, when the application enabled DECSET 1004. */
+    void sendFocusEvent(bool focused);
+
     /* Send key input / pasted text to the shell. */
     void sendInput(const QByteArray& bytes);
     /* Wraps `text` in bracketed-paste markers when the application asked for

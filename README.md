@@ -11,8 +11,10 @@
 
 RaTTY draws text with FreeType and OpenGL: glyphs are rasterized at physical
 pixel resolution, packed into one texture atlas, and drawn in a single batched
-pass. A whole screen of text is one draw call. It has tabs, split panes, colour
-themes, truecolour, colour emoji, and a tab bar thin enough not to insult the
+pass. A whole screen of text is one draw call. It has tabs, split panes,
+scrollback, mouse support for the applications that want it, colour themes,
+truecolour, colour emoji, a bundled Nerd Fonts symbols font so a TUI's file-type
+icons render on a bare machine, and a tab bar thin enough not to insult the
 terminal it sits next to.
 
 It is a rat, and it speaks TTY. The name was not agonised over.
@@ -59,6 +61,8 @@ so you write only what you want to change:
 theme: gruvbox-dark
 font:
   size: 15
+scrollback:
+  lines: 20000
 tab_bar:
   style: pills
   position: bottom
@@ -113,3 +117,10 @@ not repeat them.
 ## Licence
 
 See [LICENSE](LICENSE).
+
+`resources/fonts/SymbolsNerdFontMono-Regular.ttf` is from
+[Nerd Fonts](https://github.com/ryanoasis/nerd-fonts) v3.5.0, MIT licensed
+(© Ryan L McIntyre); its licence travels with it in
+[`resources/fonts/LICENSE-SymbolsNerdFont.txt`](resources/fonts/LICENSE-SymbolsNerdFont.txt).
+It is bundled for the same reason kitty and Ghostty bundle it: a TUI's file-type
+icons are private-use code points that no stock system font carries.

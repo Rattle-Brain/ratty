@@ -83,6 +83,10 @@ public:
     static constexpr int DEFAULT_WINDOW_HEIGHT = 720;
     static constexpr int DEFAULT_WINDOW_PADDING = 4;
     static constexpr int MAX_WINDOW_PADDING = 200;
+    static constexpr int DEFAULT_SCROLLBACK_LINES = 10000;
+    static constexpr int MAX_SCROLLBACK_LINES = 1000000;
+    static constexpr int DEFAULT_SCROLL_MULTIPLIER = 3;
+    static constexpr int MAX_SCROLL_MULTIPLIER = 100;
 
     static Config& instance();
 
@@ -160,6 +164,22 @@ public:
     /* Cursor */
     CursorStyle cursorStyle() const { return cursorStyle_; }
     bool cursorBlink() const { return cursorBlink_; }
+
+    /*
+     * Scrollback. `lines` is per pane and applies to the primary screen only --
+     * the alternate screen never keeps history, since a full-screen application
+     * repaints rather than scrolls. Zero disables the buffer.
+     */
+    int scrollbackLines() const { return scrollbackLines_; }
+    /* Rows moved per wheel notch. */
+    int scrollMultiplier() const { return scrollMultiplier_; }
+
+    /*
+     * With the alternate screen up and no mouse reporting active, translate a
+     * wheel notch into cursor keys so that pagers scroll. An application can
+     * still turn it off for itself with DECRST 1007.
+     */
+    bool alternateScroll() const { return alternateScroll_; }
 
     /* Window */
     int windowWidth() const { return windowWidth_; }
@@ -284,6 +304,10 @@ private:
 
     CursorStyle cursorStyle_ = CursorStyle::Block;
     bool cursorBlink_ = true;
+
+    int scrollbackLines_ = DEFAULT_SCROLLBACK_LINES;
+    int scrollMultiplier_ = DEFAULT_SCROLL_MULTIPLIER;
+    bool alternateScroll_ = true;
 
     TabBarStyle tabBarStyle_ = TabBarStyle::Minimal;
     TabBarPosition tabBarPosition_ = TabBarPosition::Bottom;

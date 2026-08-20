@@ -50,6 +50,77 @@ const Cell* Screen::rowData(int row) const {
     return cells_.data() + static_cast<size_t>(physicalRow(row)) * static_cast<size_t>(cols_);
 }
 
+/* ------------------------------------------------------------ scrollback */
+
+void Screen::setHistoryLimit(int lines) {
+    historyLimit_ = std::max(0, lines);
+    trimHistory();
+    viewOffset_ = clampInt(viewOffset_, 0, historySize());
+}
+
+void Screen::clearHistory() {
+    if (history_.empty() && viewOffset_ == 0) return;
+    history_.clear();
+    viewOffset_ = 0;
+    touch();
+}
+
+void Screen::pushHistory(int row) {
+    if (historyLimit_ <= 0 || row < 0 || row >= rows_) return;
+
+    const Cell* src = rowData(row);
+    history_.emplace_back(src, src + cols_);
+    trimHistory();
+
+    /*
+     * Keep a scrolled-back view looking at the same text. The offset counts
+     * rows back from the live screen, so a line entering the history moves that
+     * text one row further into the past -- whether or not the oldest line was
+     * evicted to make room.
+     */
+    if (viewOffset_ > 0) {
+        viewOffset_ = std::min(viewOffset_ + 1, historySize());
+    }
+}
+
+void Screen::trimHistory() {
+    while (static_cast<int>(history_.size()) > historyLimit_) {
+        history_.pop_front();
+    }
+}
+
+bool Screen::scrollViewTo(int offset) {
+    const int clamped = clampInt(offset, 0, maxViewOffset());
+    if (clamped == viewOffset_) return false;
+    viewOffset_ = clamped;
+    touch();
+    return true;
+}
+
+bool Screen::scrollViewBy(int lines) {
+    return scrollViewTo(viewOffset_ + lines);
+}
+
+const Cell& Screen::viewAt(int row, int col) const {
+    static const Cell blank{};
+    if (viewOffset_ == 0) return at(row, col);
+    if (row < 0 || row >= rows_ || col < 0 || col >= cols_) return blank;
+
+    /* Index into the concatenation of history and the live screen. */
+    const int absolute = historySize() - viewOffset_ + row;
+    if (absolute >= historySize()) {
+        return at(absolute - historySize(), col);
+    }
+
+    const std::vector<Cell>& line = history_[static_cast<size_t>(absolute)];
+    if (col >= static_cast<int>(line.size())) {
+        /* The window is wider than it was when this line was captured. History
+         * is not reflowed, so the rest of the row is blank. */
+        return blank;
+    }
+    return line[static_cast<size_t>(col)];
+}
+
 void Screen::clearRow(int row, const Pen& pen) {
     clearRowRange(0, cols_ - 1, row, pen);
 }
@@ -85,6 +156,12 @@ void Screen::resize(int rows, int cols, const Pen& pen) {
     const int rowShift = (oldRows > rows) ? std::min(oldRows - rows, std::max(0, oldCursorRow - rows + 1))
                                          : 0;
 
+    /* Those rows scrolled off the top as far as the user is concerned, so they
+     * belong in the history rather than in the bin. */
+    for (int r = 0; r < rowShift; ++r) {
+        pushHistory(r);
+    }
+
     allocate(rows, cols);
 
     const int copyCols = std::min(oldCols, cols);
@@ -105,6 +182,7 @@ void Screen::resize(int rows, int cols, const Pen& pen) {
     cursorCol_ = clampInt(cursorCol_, 0, cols_ - 1);
     pendingWrap_ = false;
     lastPrintCol_ = -1;
+    viewOffset_ = clampInt(viewOffset_, 0, historySize());
     resetScrollRegion();
     touch();
 }
@@ -113,6 +191,9 @@ void Screen::reset(const Pen& pen) {
     for (int r = 0; r < rows_; ++r) {
         clearRow(r, pen);
     }
+    /* RIS discards the scrollback, as it does on a real terminal. */
+    history_.clear();
+    viewOffset_ = 0;
     cursorRow_ = 0;
     cursorCol_ = 0;
     pendingWrap_ = false;
@@ -340,8 +421,15 @@ void Screen::eraseInDisplay(int mode, const Pen& pen) {
         clearRowRange(0, cursorCol_, cursorRow_, pen);
         break;
     case 2:  // whole screen
-    case 3:  // whole screen + scrollback (no scrollback yet)
         for (int r = 0; r < rows_; ++r) clearRow(r, pen);
+        break;
+    case 3:
+        /*
+         * "Erase saved lines", and only those -- the display is left alone.
+         * That is xterm's definition, and applications that want both send ED 2
+         * first: `tput clear` is "CSI H CSI 2 J CSI 3 J".
+         */
+        clearHistory();
         break;
     default:
         return;
@@ -434,6 +522,18 @@ void Screen::deleteLines(int count, const Pen& pen) {
 void Screen::scrollUp(int count, const Pen& pen) {
     const int regionHeight = scrollBottom_ - scrollTop_ + 1;
     const int n = std::min(std::max(1, count), regionHeight);
+
+    /*
+     * Only rows leaving the top of the *whole screen* are history. A DECSTBM
+     * region is a subwindow the application scrolls itself -- htop's process
+     * list, vim's text area -- and keeping those rows would fill the scrollback
+     * with the same screen redrawn over and over.
+     */
+    if (historyLimit_ > 0 && scrollTop_ == 0 && scrollBottom_ == rows_ - 1) {
+        for (int i = 0; i < n; ++i) {
+            pushHistory(scrollTop_ + i);
+        }
+    }
 
     auto first = rowMap_.begin() + scrollTop_;
     auto last = rowMap_.begin() + scrollBottom_ + 1;

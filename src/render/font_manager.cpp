@@ -3,6 +3,7 @@
  */
 
 #include "font_manager.h"
+#include "../core/unicode.h"
 #include "box_drawing.h"
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -72,6 +73,24 @@ const char* const kEmojiFamilies[] = {
     "EmojiOne Color",
 };
 
+/*
+ * The bundled symbols font, compiled in from resources/fonts.qrc. Symbols only:
+ * it carries no Latin, no box drawing and no spaces, so it can never take over a
+ * character the primary or platform font should be serving.
+ */
+const char kBundledSymbolsFont[] = ":/fonts/fonts/SymbolsNerdFontMono-Regular.ttf";
+
+/* fc-match / fc-list are subprocesses; never block the UI on a broken install. */
+constexpr int kFontconfigTimeoutMs = 3000;
+
+/*
+ * How many fonts a charset query may offer before we stop reading. Each
+ * candidate that is tried opens a face, and a common code point can be claimed
+ * by two hundred fonts; the first one that verifiably has the glyph wins, so a
+ * short list costs nothing and bounds the worst case.
+ */
+constexpr size_t kMaxDiscoveryCandidates = 12;
+
 /* Fonts that exist only to draw "no glyph here"; never a useful fallback. */
 bool isPlaceholderFamily(const std::string& family) {
     const QString name = QString::fromStdString(family);
@@ -100,7 +119,8 @@ FontFile queryFontconfig(const std::string& family, FontStyle style,
                   {QStringLiteral("-f"), QStringLiteral("%{file}\t%{index}\t%{family}"),
                    pattern});
 
-    if (!process.waitForFinished(3000) || process.exitStatus() != QProcess::NormalExit) {
+    if (!process.waitForFinished(kFontconfigTimeoutMs)
+        || process.exitStatus() != QProcess::NormalExit) {
         return result;
     }
 
@@ -270,17 +290,48 @@ FontFile FontManager::resolveExactFamily(const std::string& family, FontStyle st
 std::vector<FontFile> FontManager::discoverFontsFor(char32_t codepoint) {
     std::vector<FontFile> found;
 
-    const QString charset = QStringLiteral(":charset=%1")
-                                .arg(static_cast<uint>(codepoint), 0, 16);
-
-    /* Prefer a monospaced answer so box-drawing and similar line up with the
-     * primary font, then accept any font at all. */
-    for (const QString& extra : {charset + QStringLiteral(":spacing=100"), charset}) {
-        FontFile file = queryFontconfig("monospace", FontStyleRegular, extra);
-        if (file.isValid() && !isPlaceholderFamily(file.family)) {
-            found.push_back(file);
-        }
+    /*
+     * `fc-list` rather than `fc-match`, because only the former *filters*.
+     * fc-match always answers something: given a charset nothing good covers it
+     * returns its best guess, which on macOS is the placeholder .LastResort --
+     * and rejecting that answer used to end the search, leaving a .notdef box
+     * even when another installed font did have the code point. fc-list returns
+     * every font whose charset actually contains it, so the placeholder is one
+     * candidate among several instead of the last word.
+     */
+    QProcess process;
+    process.start(QStringLiteral("fc-list"),
+                  {QStringLiteral("-f"),
+                   QStringLiteral("%{file}\t%{index}\t%{family[0]}\t%{spacing}\n"),
+                   QStringLiteral(":charset=%1").arg(static_cast<uint>(codepoint), 0, 16)});
+    if (!process.waitForFinished(kFontconfigTimeoutMs)) {
+        process.kill();
+        return found;
     }
+
+    /* Monospaced candidates first, so a fallback's advance matches the grid. */
+    std::vector<FontFile> proportional;
+
+    const QString output = QString::fromLocal8Bit(process.readAllStandardOutput());
+    for (const QString& line : output.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        const QStringList fields = line.split(QLatin1Char('\t'));
+        if (fields.size() < 3) continue;
+
+        FontFile file;
+        file.path = fields[0].trimmed().toStdString();
+        file.faceIndex = fields[1].trimmed().toInt();
+        file.family = fields[2].trimmed().toStdString();
+        if (!file.isValid() || isPlaceholderFamily(file.family)) continue;
+
+        /* An unset spacing means proportional; 100 is fontconfig's FC_MONO. */
+        const bool monospaced = fields.size() > 3 && fields[3].trimmed().toInt() == 100;
+        (monospaced ? found : proportional).push_back(std::move(file));
+
+        if (found.size() + proportional.size() >= kMaxDiscoveryCandidates) break;
+    }
+
+    found.insert(found.end(), std::make_move_iterator(proportional.begin()),
+                 std::make_move_iterator(proportional.end()));
     return found;
 }
 
@@ -567,6 +618,44 @@ void FontManager::computeMetrics() {
 
 /* ------------------------------------------------------ fallback chain */
 
+void FontManager::loadBundledSymbolsFallback() {
+    QFile file(QString::fromLatin1(kBundledSymbolsFont));
+    if (!file.open(QIODevice::ReadOnly)) {
+        qWarning() << "FontManager: bundled symbols font missing from resources";
+        return;
+    }
+
+    const QByteArray data = file.readAll();
+    if (data.isEmpty()) return;
+
+    auto faces = std::make_unique<FaceSet>();
+    /* FreeType does not copy the buffer, so the FaceSet owns it. */
+    faces->embedded.assign(data.constBegin(), data.constEnd());
+
+    FT_Face face = nullptr;
+    if (FT_New_Memory_Face(ftLibrary_, faces->embedded.data(),
+                           static_cast<FT_Long>(faces->embedded.size()), 0, &face) != 0) {
+        qWarning() << "FontManager: bundled symbols font could not be read";
+        return;
+    }
+
+    FT_Select_Charmap(face, FT_ENCODING_UNICODE);
+    faces->styles[FontStyleRegular] = face;
+    faces->isColor = looksLikeColorFont(face);
+    faces->family = face->family_name ? face->family_name : "Symbols Nerd Font Mono";
+
+    /* Already the primary font -- someone has it installed and configured -- so
+     * a second copy would add nothing. */
+    if (familyMatches(faces->family, familyName_)) return;
+
+    applyPixelSizeToFace(face, faces->isColor, faces->sizeScale);
+    matchFallbackSize(*faces);
+
+    qInfo() << "FontManager: fallback" << QString::fromStdString(faces->family)
+            << "(bundled)";
+    fallbacks_.push_back(std::move(faces));
+}
+
 void FontManager::loadConfiguredFallbacks() {
     if (configuredFallbacksLoaded_) return;
     configuredFallbacksLoaded_ = true;
@@ -597,6 +686,7 @@ void FontManager::loadConfiguredFallbacks() {
     for (const char* emoji : kEmojiFamilies) {
         candidates.push_back({emoji, false});
     }
+
 
     for (const Candidate& candidate : candidates) {
         const std::string& family = candidate.family;
@@ -641,6 +731,16 @@ void FontManager::loadConfiguredFallbacks() {
 
         fallbacks_.push_back(std::move(faces));
     }
+
+    /*
+     * Last of the loaded families, and still ahead of charset discovery. The
+     * configured families and the platform monospace come first because they are
+     * what supply arrows, geometric shapes and check marks; the bundled font
+     * exists for the private-use icon code points that no stock font has at all,
+     * and that a charset query can only answer with a placeholder or an
+     * unrelated CJK face.
+     */
+    loadBundledSymbolsFallback();
 }
 
 const FontManager::FaceSet* FontManager::adoptFallback(const FontFile& file,
@@ -883,6 +983,19 @@ bool FontManager::rasterize(char32_t codepoint, FontStyle style, GlyphBitmap& ou
         if (glyphIndex != 0 && rasterizeFrom(*faces, style, glyphIndex, out)) {
             return true;
         }
+    }
+
+    /*
+     * A space paints nothing, and a blank glyph is indistinguishable from a
+     * missing one to any coverage test -- both have an empty outline -- so the
+     * chain above reports that no font has U+00A0 and we would draw .notdef for
+     * it. `tree` indents with NO-BREAK SPACEs, and every one of them came out as
+     * an empty box.
+     */
+    if (isSpaceSeparator(codepoint)) {
+        out = GlyphBitmap{};
+        out.advanceX = metrics_.isValid() ? metrics_.cellWidth : 0;
+        return true;
     }
 
     /* Nothing covers it: draw the primary font's .notdef box, which is the

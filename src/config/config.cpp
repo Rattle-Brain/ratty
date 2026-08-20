@@ -190,6 +190,8 @@ struct Config::Parser {
         if (const YAML::Node node = root["font"]; node && node.IsMap()) font(node);
         if (const YAML::Node node = root["cursor"]; node && node.IsMap()) cursor(node);
         if (const YAML::Node node = root["window"]; node && node.IsMap()) window(node);
+        if (const YAML::Node node = root["scrollback"]; node && node.IsMap()) scrollback(node);
+        if (const YAML::Node node = root["mouse"]; node && node.IsMap()) mouse(node);
         if (const YAML::Node node = root["tab_bar"]; node && node.IsMap()) tabBar(node);
         if (const YAML::Node node = root["mac_os_bindings"]; node) {
             platformBindings(node);
@@ -321,6 +323,21 @@ struct Config::Parser {
         }
         if (const auto blink = readBool(node, "blink")) {
             config.cursorBlink_ = *blink;
+        }
+    }
+
+    void scrollback(const YAML::Node& node) {
+        if (const auto lines = readInt(node, "lines")) {
+            config.scrollbackLines_ = std::clamp(*lines, 0, MAX_SCROLLBACK_LINES);
+        }
+        if (const auto multiplier = readInt(node, "multiplier")) {
+            config.scrollMultiplier_ = std::clamp(*multiplier, 1, MAX_SCROLL_MULTIPLIER);
+        }
+    }
+
+    void mouse(const YAML::Node& node) {
+        if (const auto alternateScroll = readBool(node, "alternate_scroll")) {
+            config.alternateScroll_ = *alternateScroll;
         }
     }
 

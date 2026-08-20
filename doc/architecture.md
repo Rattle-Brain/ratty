@@ -51,7 +51,7 @@ easy to violate again:
 |---|---|
 | `core/cell.h` | `Cell`, `Color`, `Pen`, rendition flags. 16-byte POD, no Qt. |
 | `core/palette.h/.cpp` | The 256-colour palette and the default fg/bg/cursor. Resolves symbolic colours. |
-| `core/screen.h/.cpp` | The grid, cursor, pending-wrap flag, scrolling region, editing operations. |
+| `core/screen.h/.cpp` | The grid, cursor, pending-wrap flag, scrolling region, editing operations, and the scrollback with its view offset. |
 | `core/vt_parser.h/.cpp` | ECMA-48 state machine. Emits parsed sequences to a `VTHandler`. |
 | `core/terminal_emulator.h/.cpp` | Implements `VTHandler`; owns the pen, the primary and alternate screens, and DEC modes. |
 | `core/terminal_session.h/.cpp` | Owns the pty, the socket notifier and the byte pump. Emits Qt signals. |
@@ -59,7 +59,8 @@ easy to violate again:
 | `core/utf8.h` | Incremental UTF-8 decoder (survives chunk boundaries) and encoder. |
 | `core/unicode.h` | Column widths, and the emoji properties that decide presentation. |
 | `core/cursor.h` | `CursorStyle`, shared by config and renderer. |
-| `render/font_manager.h/.cpp` | FreeType faces per style, plus the fallback chain; rasterizes at an explicit pixel size. |
+| `core/mouse.h/.cpp` | Mouse tracking and encoding modes, and the report wire format. |
+| `render/font_manager.h/.cpp` | FreeType faces per style, plus the fallback chain (including the bundled symbols font); rasterizes at an explicit pixel size. |
 | `render/box_drawing.h/.cpp` | Geometric line and block glyphs (U+2500–U+259F). |
 | `render/glyph_atlas.h/.cpp` | Single `GL_RGBA8` texture, shelf packing, glyph cache. |
 | `render/gl_renderer.h/.cpp` | Layered vertex batching, shaders, orthographic projection. |

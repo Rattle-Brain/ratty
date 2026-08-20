@@ -19,15 +19,20 @@ This document is the "why it is shaped like this" companion to the rest of
 - Incremental UTF-8 decoding; double-width characters; colour emoji; emoji
   presentation selectors and multi-code-point sequences
 - Box drawing rendered geometrically, so borders tile exactly
+- A bundled Nerd Fonts symbols font, so a TUI's file-type icons render on a
+  machine with no icon font installed
+- Scrollback, with the wheel, `Shift+PageUp`/`PageDown` and a configurable limit
+- Mouse reporting for applications (`?1000`/`?1002`/`?1003`, SGR and legacy
+  encodings), focus events, and alternate scroll so the wheel drives a pager
 - HiDPI-correct rendering ([why that is hard](rendering.md#physical-pixels-and-why-it-matters))
 - Tabs, recursive split panes, a self-drawn tab bar in five styles
 - Layered YAML configuration, ten colour themes, platform keybinding sets
 
 ## What does not
 
-Scrollback, text selection, mouse reporting for applications, and text shaping
-(so a joined emoji shows its base glyph). See [known gaps](known-gaps.md) for the
-full list and, more usefully, *why* each one is where it is.
+Text selection, scrollback reflow on resize, and text shaping (so a joined emoji
+shows its base glyph). See [known gaps](known-gaps.md) for the full list and, more
+usefully, *why* each one is where it is.
 
 ## Design principles
 
