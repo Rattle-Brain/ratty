@@ -1,117 +1,120 @@
 /*
- * GlyphAtlas - OpenGL texture atlas for glyph caching
+ * GlyphAtlas - one OpenGL texture holding every rasterized glyph
  *
- * Uses shelf-based bin packing algorithm to efficiently pack glyphs
- * into a single OpenGL texture for GPU rendering
+ * Glyphs are packed with a shelf (row-based) allocator into a single GL_RGBA8
+ * texture, so a whole screen of text is one draw call.
+ *
+ * RGBA rather than a single coverage channel, because colour emoji have to live
+ * here too. A coverage mask is widened to (255, 255, 255, coverage) on upload
+ * and tinted by the shader; a colour glyph is stored as-is and drawn untinted.
+ * One texture and one draw call for both is considerably simpler than two
+ * atlases, and 4 MiB for a 1024px atlas is not worth optimising.
+ *
+ * Filtering is GL_NEAREST on purpose. The atlas is only ever sampled 1:1 -- one
+ * texel per physical pixel -- so linear filtering cannot improve anything and
+ * merely smears a glyph across neighbouring pixels whenever a quad lands even
+ * slightly off-grid. Combined with rasterizing at physical pixel size and
+ * snapping quads to integers, this is what makes the text crisp.
  */
 
 #ifndef RENDER_GLYPH_ATLAS_H
 #define RENDER_GLYPH_ATLAS_H
 
-// Include native OpenGL on macOS for direct API access
-#ifdef Q_OS_MACOS
-#include <OpenGL/gl3.h>
-#endif
-
+#include "font_manager.h"
 #include <QOpenGLFunctions>
-#include <QOpenGLExtraFunctions>
-#include <QHash>
 #include <cstdint>
-#include <utility>
+#include <unordered_map>
+#include <vector>
 
-/* Atlas region (pixel position and UV coordinates) */
+/* Sub-rectangle of the atlas, in pixels and in normalized UV. */
 struct AtlasRegion {
-    int x, y;           // Pixel position in atlas
-    int width, height;  // Pixel dimensions
-    float u0, v0;       // Top-left UV
-    float u1, v1;       // Bottom-right UV
+    int x = 0, y = 0;
+    int width = 0, height = 0;
+    float u0 = 0.0f, v0 = 0.0f;
+    float u1 = 0.0f, v1 = 0.0f;
 };
 
-/* Glyph cache key */
-struct GlyphKey {
-    uint32_t codepoint;
-    int style;
-
-    bool operator==(const GlyphKey& other) const {
-        return codepoint == other.codepoint && style == other.style;
-    }
-};
-
-// Hash function for QHash
-inline uint qHash(const GlyphKey& key, uint seed = 0) {
-    return qHash(key.codepoint, seed) ^ qHash(key.style, seed);
-}
-
-/* Cached glyph information */
+/* Everything needed to place a cached glyph on screen. */
 struct CachedGlyph {
     AtlasRegion region;
-    int bearingX;
-    int bearingY;
-    int advanceX;
-    bool isValid;
+    int bearingX = 0;
+    int bearingY = 0;
+    int advanceX = 0;
+    /* True for a colour emoji: the texels are the final colour and must not be
+     * tinted with the cell's foreground. */
+    bool isColor = false;
 };
 
 class GlyphAtlas {
 public:
-    explicit GlyphAtlas(QOpenGLFunctions* gl, int initialSize = 1024);
+    /* `gl` must belong to the context that will sample the texture. */
+    GlyphAtlas(QOpenGLFunctions* gl, int initialSize = 1024);
     ~GlyphAtlas();
 
-    // Delete copy, allow move
     GlyphAtlas(const GlyphAtlas&) = delete;
     GlyphAtlas& operator=(const GlyphAtlas&) = delete;
 
-    // Cache a glyph
-    bool cacheGlyph(uint32_t codepoint, int style,
-                   const uint8_t* bitmap, int width, int height,
-                   int bearingX, int bearingY, int advanceX);
-
-    // Get cached glyph (returns nullptr if not cached)
-    const CachedGlyph* getGlyph(uint32_t codepoint, int style) const;
-
-    // Check if glyph is cached
-    bool hasGlyph(uint32_t codepoint, int style) const;
-
-    // Get OpenGL texture ID
+    bool isValid() const { return textureId_ != 0; }
     GLuint textureId() const { return textureId_; }
-
-    // Get atlas dimensions
     int size() const { return size_; }
 
-    // Clear all cached glyphs
+    /*
+     * Look a glyph up, rasterizing and uploading it on first use. Returns
+     * nullptr only when the glyph cannot be rasterized at all. Growing or
+     * evicting the atlas is handled internally, so callers never see a
+     * "texture full" failure.
+     */
+    const CachedGlyph* glyph(char32_t codepoint, FontStyle style, FontManager& fonts);
+
+    /* Drop every cached glyph (font or size change). */
     void clear();
 
-    // Check if atlas is nearly full
-    bool isFull() const;
-
-    // Grow atlas (doubles size, requires re-caching all glyphs)
-    bool grow();
+    /*
+     * Bumped whenever the cache is dropped or the texture is reallocated. Any
+     * UV coordinate obtained before the change refers to a layout that no longer
+     * exists, so a caller batching quads across many lookups must notice and
+     * start over.
+     */
+    uint64_t generation() const { return generation_; }
 
 private:
+    /* Codepoint + style in one integer: cheap to hash, no custom hasher. */
+    static uint64_t makeKey(char32_t codepoint, FontStyle style) {
+        return (static_cast<uint64_t>(codepoint) << 8) | static_cast<uint8_t>(style);
+    }
+
     struct Shelf {
-        int y;          // Y position of shelf
-        int height;     // Height of shelf
-        int xCursor;    // Current X position for next allocation
+        int y = 0;
+        int height = 0;
+        int xCursor = 0;
     };
 
+    bool createTexture(int size);
+    void destroyTexture();
     bool allocate(int width, int height, AtlasRegion& out);
-    void upload(const AtlasRegion& region, const uint8_t* bitmap);
+    /* Uploads `bitmap` into `region`, widening a coverage mask to RGBA. */
+    void upload(const AtlasRegion& region, const GlyphBitmap& bitmap);
+    /* Double the texture and drop the cache; glyphs re-rasterize on demand. */
+    bool grow();
+    void resetPacking();
 
-    QOpenGLFunctions* gl_;
-    GLuint textureId_;
-    int size_;
+    QOpenGLFunctions* gl_ = nullptr;
+    GLuint textureId_ = 0;
+    int size_ = 0;
 
-    // Shelf-based packing
-    QVector<Shelf> shelves_;
-    int currentY_;
+    std::vector<Shelf> shelves_;
+    int shelfCursorY_ = 0;
+    uint64_t generation_ = 1;
 
-    // Glyph cache
-    QHash<GlyphKey, CachedGlyph> glyphs_;
+    std::unordered_map<uint64_t, CachedGlyph> glyphs_;
 
-    // Statistics
-    int allocatedPixels_;
+    /* 1 px gutter so GL_NEAREST rounding can never pick up a neighbour. */
+    static constexpr int Padding = 1;
+    static constexpr int MaxSize = 4096;
+    static constexpr int BytesPerPixel = 4;
 
-    static constexpr int ATLAS_PADDING = 1;
-    static constexpr int MAX_SHELVES = 256;
+    /* Scratch buffer for widening coverage masks, reused across uploads. */
+    std::vector<uint8_t> uploadScratch_;
 };
 
 #endif /* RENDER_GLYPH_ATLAS_H */

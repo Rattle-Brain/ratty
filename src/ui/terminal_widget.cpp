@@ -1,363 +1,347 @@
 /*
- * TerminalWidget - OpenGL-accelerated terminal display
+ * TerminalWidget - OpenGL terminal view implementation
  */
 
 #include "terminal_widget.h"
 #include "../config/config.h"
+#include <QApplication>
+#include <QClipboard>
+#include <QDebug>
+#include <QKeyCombination>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QOpenGLContext>
+#include <QTimer>
 #include <QWheelEvent>
-#include <QSurfaceFormat>
-#include <QClipboard>
-#include <QApplication>
-#include <QScreen>
-#include <QGuiApplication>
-#include <QDebug>
+#include <algorithm>
+#include <cmath>
 
 TerminalWidget::TerminalWidget(QWidget* parent)
     : QOpenGLWidget(parent)
-    , pty_(nullptr)
-    , ptyNotifier_(nullptr)
-    , rows_(DEFAULT_ROWS)
-    , cols_(DEFAULT_COLS)
-    , focusedBorder_(false)
-    , cursorVisible_(true)
-    , blinkTimer_(nullptr)
 {
-    // Request OpenGL 3.3 Core Profile (minimum required for texture swizzling)
-    QSurfaceFormat format;
-    format.setVersion(3, 3);
-    format.setProfile(QSurfaceFormat::CoreProfile);
-    format.setDepthBufferSize(24);
-    format.setStencilBufferSize(8);
-    format.setSamples(4);  // MSAA
-    setFormat(format);
-
+    /*
+     * The surface format is set once for the whole application in main(); doing
+     * it per-widget as well only risked the two disagreeing. What does belong
+     * here is the absence of multisampling: MSAA cannot help alpha-blended
+     * glyph quads (they have no geometric edges to smooth) and only adds a
+     * resolve blit that softens the result.
+     */
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
+    setAttribute(Qt::WA_OpaquePaintEvent);
+    setMinimumSize(200, 100);
 
-    // Set minimum size based on font metrics (will be updated after GL init)
-    setMinimumSize(400, 150);
-
-    // Cursor blink timer
     blinkTimer_ = new QTimer(this);
-    connect(blinkTimer_, &QTimer::timeout, this, &TerminalWidget::onBlinkTimer);
-    blinkTimer_->start(CURSOR_BLINK_MS);
-
-    qDebug() << "TerminalWidget: Created";
+    blinkTimer_->setInterval(CursorBlinkMs);
+    connect(blinkTimer_, &QTimer::timeout, this, &TerminalWidget::onBlinkTick);
 }
 
 TerminalWidget::~TerminalWidget() {
+    /* Release GL-owned objects while the context is still current. */
+    makeCurrent();
+    renderer_.reset();
+    doneCurrent();
+}
+
+double TerminalWidget::scaleFactor() const {
+    const double ratio = devicePixelRatioF();
+    return ratio > 0.0 ? ratio : 1.0;
+}
+
+int TerminalWidget::framebufferWidth() const {
+    return std::max(1, static_cast<int>(std::lround(width() * scaleFactor())));
+}
+
+int TerminalWidget::framebufferHeight() const {
+    return std::max(1, static_cast<int>(std::lround(height() * scaleFactor())));
+}
+
+int TerminalWidget::paddingPixels() const {
+    /* Config stores logical pixels so the gap looks the same on every display;
+     * everything in the renderer is physical. */
+    return static_cast<int>(std::lround(Config::instance().windowPadding() * scaleFactor()));
 }
 
 void TerminalWidget::initializeGL() {
     initializeOpenGLFunctions();
 
-    // Validate OpenGL version
-    QOpenGLContext* ctx = context();
-    if (!ctx) {
-        qCritical() << "TerminalWidget: No OpenGL context available";
-        return;
+    if (QOpenGLContext* context = QOpenGLContext::currentContext()) {
+        const QSurfaceFormat format = context->format();
+        if (format.majorVersion() < 3
+            || (format.majorVersion() == 3 && format.minorVersion() < 3)) {
+            qCritical() << "TerminalWidget: OpenGL 3.3 core required, got"
+                        << format.majorVersion() << "." << format.minorVersion();
+            return;
+        }
     }
 
-    QSurfaceFormat fmt = ctx->format();
-    int major = fmt.majorVersion();
-    int minor = fmt.minorVersion();
-    qDebug() << "TerminalWidget: OpenGL version" << major << "." << minor;
-    qDebug() << "TerminalWidget: Profile:" << (fmt.profile() == QSurfaceFormat::CoreProfile ? "Core" : "Compatibility");
-
-    if (major < 3 || (major == 3 && minor < 3)) {
-        qCritical() << "TerminalWidget: OpenGL 3.3 or higher required, got" << major << "." << minor;
-        qCritical() << "TerminalWidget: Your system may not support the required OpenGL version";
-        return;
-    }
-
-    // Create renderer (it will get OpenGL functions from the current context)
     renderer_ = std::make_unique<GLRenderer>();
     if (!renderer_->initialize()) {
-        qCritical() << "TerminalWidget: Failed to initialize renderer";
+        qCritical() << "TerminalWidget: renderer initialization failed";
+        renderer_.reset();
         return;
     }
 
-    // Load default font with config and screen DPI
-    Config& config = Config::instance();
-    int fontSize = config.fontSize();
-
-    // Get actual screen DPI for proper font rendering
-    // Qt's logicalDotsPerInch accounts for system DPI scaling
-    QScreen* screen = QGuiApplication::primaryScreen();
-    int dpi = screen ? static_cast<int>(screen->logicalDotsPerInch()) : 96;
-
-    qDebug() << "TerminalWidget: Loading font size" << fontSize << "at" << dpi << "DPI";
-
-    if (!renderer_->loadDefaultFont(fontSize, dpi)) {
-        qCritical() << "TerminalWidget: Failed to load default font";
+    if (!applyFontScale()) {
+        qCritical() << "TerminalWidget: no usable font, nothing can be drawn";
         return;
     }
 
-    // Calculate terminal size
-    calculateTerminalSize();
+    layout_ = TerminalRenderer::computeLayout(renderer_->fontMetrics(),
+                                             framebufferWidth(), framebufferHeight(),
+                                             paddingPixels());
 
-    // Create terminal emulator
-    emulator_ = std::make_unique<TerminalEmulator>(rows_, cols_);
-    qDebug() << "TerminalWidget: Created emulator with" << rows_ << "x" << cols_;
+    const int rows = layout_.isValid() ? layout_.rows : DefaultRows;
+    const int cols = layout_.isValid() ? layout_.cols : DefaultCols;
 
-    // Create PTY
-    createPTY();
+    session_ = std::make_unique<TerminalSession>(rows, cols,
+                                                Config::instance().palette(), this);
+    connect(session_.get(), &TerminalSession::screenChanged,
+            this, &TerminalWidget::onScreenChanged);
+    connect(session_.get(), &TerminalSession::ended,
+            this, &TerminalWidget::sessionEnded);
+    connect(session_.get(), &TerminalSession::titleChanged, this,
+            [this](const QString& title) {
+                title_ = title;
+                emit titleChanged(title);
+            });
+    connect(session_.get(), &TerminalSession::bellRang, this, []() {
+        QApplication::beep();
+    });
 
-    qDebug() << "TerminalWidget: OpenGL initialized";
+    if (!session_->isValid()) {
+        qCritical() << "TerminalWidget: could not start a shell";
+    }
+
+    restartBlink();
 }
 
-void TerminalWidget::resizeGL(int w, int h) {
-    glViewport(0, 0, w, h);
+bool TerminalWidget::applyFontScale() {
+    if (!renderer_) return false;
 
-    // Recalculate terminal size
-    calculateTerminalSize();
+    const Config& config = Config::instance();
+    const double scale = scaleFactor();
 
-    // Resize emulator
-    if (emulator_) {
-        emulator_->resize(rows_, cols_);
-        qDebug() << "TerminalWidget: Resized emulator to" << rows_ << "x" << cols_;
+    /*
+     * Points to physical pixels. Qt reports 72 logical DPI on macOS and 96 on
+     * most of X11/Wayland, and the device pixel ratio carries the HiDPI factor
+     * on top; multiplying the two is exactly how Qt sizes its own text.
+     */
+    const double logicalDpi = logicalDpiY() > 0 ? logicalDpiY() : 96.0;
+    const double pixelSize = config.fontSize() * (logicalDpi / 72.0) * scale;
+
+    if (!renderer_->setFont(config.fontFamilies(), config.fontFallbacks(), pixelSize)) {
+        return false;
     }
 
-    // Resize PTY
-    if (pty_ && pty_->isValid()) {
-        pty_->resize(rows_, cols_);
-        qDebug() << "TerminalWidget: Resized PTY to" << rows_ << "x" << cols_;
-    }
+    lastScaleFactor_ = scale;
+    lastFontSize_ = config.fontSize();
+    return true;
 }
 
-void TerminalWidget::paintGL() {
-    if (!renderer_ || !renderer_->isInitialized()) {
-        // Clear to a visible color to show rendering is being called
-        glClearColor(0.5f, 0.0f, 0.5f, 1.0f);  // Purple to show paintGL is being called
-        glClear(GL_COLOR_BUFFER_BIT);
-        qWarning() << "TerminalWidget::paintGL called but renderer not initialized";
-        return;
+void TerminalWidget::reloadFont() {
+    if (!renderer_) return;
+
+    makeCurrent();
+    if (applyFontScale()) {
+        updateGeometryForFont();
     }
-
-    renderContent();
-}
-
-void TerminalWidget::createPTY() {
-    // Create PTY
-    pty_ = std::make_unique<PTY>(rows_, cols_);
-
-    if (!pty_->isValid()) {
-        qCritical() << "TerminalWidget: Failed to create PTY";
-        return;
-    }
-
-    // Set up notifier for PTY data
-    ptyNotifier_ = new QSocketNotifier(pty_->masterFd(), QSocketNotifier::Read, this);
-    connect(ptyNotifier_, &QSocketNotifier::activated, this, &TerminalWidget::onPTYDataReady);
-
-    qDebug() << "TerminalWidget: PTY created with shell:" << QString::fromStdString(PTY::getUserShell());
-}
-
-void TerminalWidget::calculateTerminalSize() {
-    if (!renderer_ || !renderer_->isInitialized()) return;
-
-    FontMetrics metrics = renderer_->getFontMetrics();
-
-    if (metrics.cellWidth > 0 && metrics.cellHeight > 0) {
-        rows_ = height() / metrics.cellHeight;
-        cols_ = width() / metrics.cellWidth;
-
-        // Minimum dimensions
-        if (rows_ < 1) rows_ = 1;
-        if (cols_ < 1) cols_ = 1;
-
-        qDebug() << "TerminalWidget: Calculated size:" << rows_ << "x" << cols_;
-    }
-}
-
-void TerminalWidget::renderContent() {
-    if (!renderer_ || !renderer_->isInitialized()) {
-        qWarning() << "TerminalWidget: Renderer not initialized, clearing to red for debugging";
-        glClearColor(1.0f, 0.0f, 0.0f, 1.0f);  // Red to show problem
-        glClear(GL_COLOR_BUFFER_BIT);
-        return;
-    }
-
-    if (!emulator_) {
-        qWarning() << "TerminalWidget: Emulator not initialized";
-        return;
-    }
-
-    FontMetrics metrics = renderer_->getFontMetrics();
-
-    if (metrics.cellWidth <= 0 || metrics.cellHeight <= 0) {
-        qWarning() << "TerminalWidget: Invalid font metrics";
-        return;
-    }
-
-    // Get colors from config
-    Config& config = Config::instance();
-    QColor backgroundColor = config.backgroundColor();
-    QColor cursorColor = config.cursorColor();
-
-    // Begin frame
-    renderer_->beginFrame(width(), height());
-
-    // Clear background using config color
-    renderer_->clear(backgroundColor);
-
-    // Note: Focus border removed - only needed when multiple splits exist
-    // TODO: Re-enable subtle border only when there are multiple terminal panes
-
-    // Render terminal grid
-    for (int row = 0; row < emulator_->rows(); ++row) {
-        for (int col = 0; col < emulator_->cols(); ++col) {
-            const Cell& cell = emulator_->cellAt(row, col);
-
-            float x = col * metrics.cellWidth;
-            float y = row * metrics.cellHeight;
-
-            // Get colors (apply inverse if needed)
-            QColor fgColor = cell.attrs.foreground;
-            QColor bgColor = cell.attrs.background;
-
-            if (cell.attrs.inverse) {
-                std::swap(fgColor, bgColor);
-            }
-
-            // Draw background if not default
-            if (bgColor != backgroundColor) {
-                renderer_->drawRect(x, y, metrics.cellWidth, metrics.cellHeight, bgColor);
-            }
-
-            // Draw character if not space
-            if (cell.ch != ' ') {
-                // Make bold text brighter
-                if (cell.attrs.bold) {
-                    fgColor = fgColor.lighter(130);
-                }
-
-                float textY = y + metrics.ascender;
-                renderer_->drawText(QString(cell.ch), x, textY, fgColor);
-
-                // Draw underline if needed
-                if (cell.attrs.underline) {
-                    float underlineY = y + metrics.cellHeight - 2;
-                    renderer_->drawRect(x, underlineY, metrics.cellWidth, 1, fgColor);
-                }
-            }
-        }
-    }
-
-    // Draw cursor using config color with transparency
-    if (cursorVisible_) {
-        int cursorRow = emulator_->cursorRow();
-        int cursorCol = emulator_->cursorCol();
-
-        if (cursorRow >= 0 && cursorRow < emulator_->rows() &&
-            cursorCol >= 0 && cursorCol < emulator_->cols()) {
-
-            float cursorX = cursorCol * metrics.cellWidth;
-            float cursorY = cursorRow * metrics.cellHeight;
-
-            // Draw cursor as semi-transparent block using config color
-            QColor cursorDrawColor = cursorColor;
-            cursorDrawColor.setAlpha(128);  // Semi-transparent
-            renderer_->drawRect(cursorX, cursorY, metrics.cellWidth, metrics.cellHeight, cursorDrawColor);
-        }
-    }
-
-    // End frame
-    renderer_->endFrame();
-}
-
-void TerminalWidget::setFocusedBorder(bool focused) {
-    focusedBorder_ = focused;
+    doneCurrent();
     update();
 }
 
-void TerminalWidget::onPTYDataReady() {
-    if (!pty_ || !pty_->isValid() || !emulator_) return;
+void TerminalWidget::updateGeometryForFont() {
+    if (!renderer_ || !renderer_->hasFont()) return;
 
-    char buffer[4096];
-    ssize_t n = pty_->read(buffer, sizeof(buffer));
+    layout_ = TerminalRenderer::computeLayout(renderer_->fontMetrics(),
+                                             framebufferWidth(), framebufferHeight(),
+                                             paddingPixels());
+    if (!layout_.isValid()) return;
 
-    if (n > 0) {
-        QString text = QString::fromUtf8(buffer, n);
-
-        // Process data through terminal emulator
-        emulator_->processData(text);
-
-        update();
-    } else if (n < 0) {
-        qWarning() << "TerminalWidget: PTY read error";
-        ptyNotifier_->setEnabled(false);
-    } else if (n == 0) {
-        // Check if the child process has exited
-        if (pty_->hasChildExited()) {
-            qDebug() << "TerminalWidget: PTY session ended (child exited)";
-            ptyNotifier_->setEnabled(false);
-            emit sessionEnded();
-        }
+    if (session_) {
+        session_->resize(layout_.rows, layout_.cols);
     }
 }
 
-void TerminalWidget::onBlinkTimer() {
-    cursorVisible_ = !cursorVisible_;
+void TerminalWidget::resizeGL(int, int) {
+    /*
+     * No glViewport() call here: Qt sets the viewport to the device-pixel size
+     * of its backing framebuffer immediately before every paintGL(), so setting
+     * it from the logical size (as this used to) was both wrong and pointless.
+     */
+    if (!renderer_) return;
+
+    /*
+     * Moving to a screen with a different ratio changes how many pixels a point
+     * is worth, so the font has to be re-rasterized before the layout is
+     * recomputed. No makeCurrent() here: Qt invokes resizeGL() with the context
+     * already current, and releasing it would leave Qt's own resize handling
+     * without a context.
+     */
+    if (std::abs(scaleFactor() - lastScaleFactor_) > 0.001
+        || Config::instance().fontSize() != lastFontSize_) {
+        applyFontScale();
+    }
+
+    updateGeometryForFont();
+}
+
+void TerminalWidget::paintGL() {
+    /*
+     * The palette belongs to the session, not to Config: an application can
+     * retheme its own terminal through OSC 4/10/11/12, and that must not leak
+     * into other panes. Before a session exists, fall back to the configured
+     * colours so the first frame is not black.
+     */
+    const Palette& palette = session_ ? session_->palette() : Config::instance().palette();
+    const QColor background = palette.defaultBackground();
+
+    if (!renderer_ || !renderer_->isInitialized()) {
+        glClearColor(static_cast<GLfloat>(background.redF()),
+                     static_cast<GLfloat>(background.greenF()),
+                     static_cast<GLfloat>(background.blueF()), 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        return;
+    }
+
+    renderer_->beginFrame(framebufferWidth(), framebufferHeight(), background);
+
+    if (session_ && layout_.isValid()) {
+        TerminalRenderer::Options options;
+        options.cursorVisible = true;
+        options.cursorPhaseOn = cursorPhaseOn_;
+        options.cursorStyle = effectiveCursorStyle();
+
+        gridRenderer_.paint(*renderer_, session_->screen(), palette, layout_, options);
+    }
+
+    renderer_->endFrame();
+
+    if (renderer_->needsRepaint()) {
+        /* The atlas grew while this frame was being built, so part of it was
+         * dropped. Ask for one more pass; the atlas is now large enough. */
+        update();
+    }
+}
+
+CursorStyle TerminalWidget::effectiveCursorStyle() const {
+    /* An unfocused pane shows a hollow cursor, which is how every tiling
+     * terminal signals "input does not go here". */
+    if (!hasFocus()) return CursorStyle::HollowBlock;
+
+    /* An explicit DECSCUSR request from the application wins: editors use it to
+     * signal their mode, and overriding that with the user's static preference
+     * would throw the information away. */
+    if (session_ && session_->hasRequestedCursorStyle()) {
+        return session_->requestedCursorStyle();
+    }
+    return Config::instance().cursorStyle();
+}
+
+void TerminalWidget::onScreenChanged() {
+    /*
+     * Output resets the blink phase so the cursor is solid while text is
+     * arriving; that is both conventional and avoids a cursor that appears to
+     * flicker during long output.
+     */
+    cursorPhaseOn_ = true;
+    restartBlink();
+    update();
+}
+
+void TerminalWidget::onBlinkTick() {
+    cursorPhaseOn_ = !cursorPhaseOn_;
+    update();
+}
+
+void TerminalWidget::restartBlink() {
+    if (!blinkTimer_) return;
+
+    /* DECSCUSR also says whether the cursor should blink. */
+    const bool blink = (session_ && session_->hasRequestedCursorStyle())
+                           ? session_->cursorBlinkRequested()
+                           : Config::instance().cursorBlink();
+
+    if (blink && hasFocus()) {
+        blinkTimer_->start();
+    } else {
+        /* A steady cursor costs no timer wakeups; the old code repainted the
+         * whole grid twice a second regardless of focus or configuration. */
+        blinkTimer_->stop();
+        cursorPhaseOn_ = true;
+    }
+}
+
+void TerminalWidget::setPaneFocused(bool focused) {
+    if (paneFocused_ == focused) return;
+    paneFocused_ = focused;
     update();
 }
 
 void TerminalWidget::keyPressEvent(QKeyEvent* event) {
-    if (!pty_ || !pty_->isValid()) {
+    /*
+     * Application keybindings get first refusal. This widget used to accept
+     * *every* key event, so the shortcuts in MainWindow::keyPressEvent were
+     * unreachable and no keybinding in the config file ever fired.
+     */
+    if (Config::instance().isBound(event)) {
+        event->ignore();
+        return;
+    }
+
+    if (!session_ || !session_->isValid()) {
         QOpenGLWidget::keyPressEvent(event);
         return;
     }
 
-    // Convert key event to VT bytes
-    QByteArray data = inputHandler_.keyEventToBytes(event);
-
-    // Send to PTY
-    if (!data.isEmpty()) {
-        pty_->write(data.constData(), data.size());
+    const QByteArray bytes = inputHandler_.keyEventToBytes(event,
+                                                           session_->applicationCursorKeys());
+    if (bytes.isEmpty()) {
+        QOpenGLWidget::keyPressEvent(event);
+        return;
     }
 
+    session_->sendInput(bytes);
     event->accept();
 }
 
 void TerminalWidget::mousePressEvent(QMouseEvent* event) {
-    // Set focus when clicked
     setFocus();
+
+    /* Middle click pastes the primary selection on X11; on platforms without
+     * one Qt returns the clipboard, which is close enough to be useful. */
+    if (event->button() == Qt::MiddleButton) {
+        paste();
+    }
     event->accept();
 }
 
 void TerminalWidget::wheelEvent(QWheelEvent* event) {
-    // Scrollback will be implemented with terminal emulation
+    /* Scrollback is not implemented yet, so swallow the event rather than
+     * letting it propagate into the tab bar. */
     event->accept();
 }
 
 void TerminalWidget::focusInEvent(QFocusEvent* event) {
     QOpenGLWidget::focusInEvent(event);
-    setFocusedBorder(true);
+    restartBlink();
+    update();
 }
 
 void TerminalWidget::focusOutEvent(QFocusEvent* event) {
     QOpenGLWidget::focusOutEvent(event);
-    setFocusedBorder(false);
+    restartBlink();
+    update();
 }
 
 void TerminalWidget::copySelection() {
-    // TODO: Implement text selection
-    // For now, just log that copy was requested
-    qDebug() << "TerminalWidget: Copy requested (selection not yet implemented)";
+    /* Text selection is not implemented yet; see todo-ratty.md. */
+    qInfo() << "TerminalWidget: copy requested, but text selection is not implemented";
 }
 
 void TerminalWidget::paste() {
-    if (!pty_ || !pty_->isValid()) return;
+    if (!session_ || !session_->isValid()) return;
 
-    QClipboard* clipboard = QApplication::clipboard();
-    QString text = clipboard->text();
-
-    if (!text.isEmpty()) {
-        // Convert to UTF-8 and send to PTY
-        QByteArray data = text.toUtf8();
-        pty_->write(data.constData(), data.size());
-        qDebug() << "TerminalWidget: Pasted" << data.size() << "bytes";
-    }
+    const QClipboard* clipboard = QApplication::clipboard();
+    session_->sendPaste(clipboard->text());
 }

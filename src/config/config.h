@@ -1,25 +1,34 @@
 /*
- * Config - Configuration management with YAML
+ * Config - application settings loaded from JSON
  *
- * Manages:
- * - Keybindings (action -> QKeySequence mapping)
- * - Appearance (colors, fonts)
- * - Window settings
+ * Load order is: built-in defaults, then the bundled default_config.json from
+ * the Qt resource system, then ~/.config/ratty/config.json as an overlay. Each
+ * layer only overrides the keys it actually contains.
+ *
+ * That layering fixes two concrete problems with the previous version: a config
+ * file without a "keybindings" section silently left the application with *no*
+ * keybindings at all, and the bundled defaults were looked up through a
+ * relative path, so they were only found when the binary happened to be run
+ * from the project root.
  */
 
 #ifndef CONFIG_CONFIG_H
 #define CONFIG_CONFIG_H
 
-#include <QKeySequence>
-#include <QHash>
+#include "../core/cursor.h"
+#include "../core/palette.h"
 #include <QColor>
+#include <QHash>
+#include <QJsonObject>
+#include <QKeyEvent>
+#include <QStringList>
+#include <QKeySequence>
 #include <QString>
 
-/* Actions that can be bound to keys */
+/* Actions that can be bound to keys. */
 enum Action {
     ACTION_NONE = 0,
 
-    // Tab management
     ACTION_NEW_TAB,
     ACTION_CLOSE_TAB,
     ACTION_NEXT_TAB,
@@ -34,7 +43,6 @@ enum Action {
     ACTION_GOTO_TAB_8,
     ACTION_GOTO_TAB_9,
 
-    // Split management
     ACTION_SPLIT_HORIZONTAL,
     ACTION_SPLIT_VERTICAL,
     ACTION_CLOSE_SPLIT,
@@ -43,15 +51,16 @@ enum Action {
     ACTION_FOCUS_LEFT,
     ACTION_FOCUS_RIGHT,
 
-    // Window
     ACTION_QUIT,
     ACTION_FULLSCREEN,
 
-    // Clipboard
     ACTION_COPY,
     ACTION_PASTE,
 
-    // Scrollback
+    ACTION_INCREASE_FONT_SIZE,
+    ACTION_DECREASE_FONT_SIZE,
+    ACTION_RESET_FONT_SIZE,
+
     ACTION_SCROLL_UP,
     ACTION_SCROLL_DOWN,
     ACTION_CLEAR_SCROLLBACK,
@@ -59,87 +68,111 @@ enum Action {
 
 class Config {
 public:
-    // Default configuration values (fallback if YAML fails)
-    static constexpr int DEFAULT_FONT_SIZE = 12;
+    static constexpr int DEFAULT_FONT_SIZE = 13;
+    static constexpr int MIN_FONT_SIZE = 6;
+    static constexpr int MAX_FONT_SIZE = 72;
     static constexpr int DEFAULT_WINDOW_WIDTH = 1280;
     static constexpr int DEFAULT_WINDOW_HEIGHT = 720;
-    static constexpr float DEFAULT_WINDOW_OPACITY = 1.0f;
-    static constexpr bool DEFAULT_FULLSCREEN = false;
+    static constexpr int DEFAULT_WINDOW_PADDING = 4;
+    static constexpr int MAX_WINDOW_PADDING = 200;
 
-    // Singleton access
     static Config& instance();
 
-    // Load/Save
     void load();
-    void save();
-    void loadDefaults();
 
-    // Keybindings
+    /* Keybindings */
     Action lookupAction(const QKeySequence& keySequence) const;
-    void bindKey(const QKeySequence& keySequence, Action action);
-    QKeySequence getKeybinding(Action action) const;
+    bool isBound(const QKeySequence& keySequence) const;
+    QKeySequence keybindingFor(Action action) const;
 
-    // Appearance - Colors
-    QColor backgroundColor() const { return backgroundColor_; }
-    QColor foregroundColor() const { return foregroundColor_; }
-    QColor cursorColor() const { return cursorColor_; }
-    QColor selectionBackground() const { return selectionBackground_; }
+    /*
+     * Resolve a key event, tolerating keyboard-layout differences.
+     *
+     * Qt reports either the unshifted key or the shifted symbol for the same
+     * physical key depending on platform and layout: Ctrl+Shift+1 arrives as
+     * Key_1 on one machine and Key_Exclam on another. Matching only the literal
+     * combination means such a binding fires on some keyboards and not others,
+     * so this also tries the key's shift partner.
+     */
+    Action lookupAction(const QKeyEvent* event) const;
+    bool isBound(const QKeyEvent* event) const;
 
-    void setBackgroundColor(const QColor& color) { backgroundColor_ = color; }
-    void setForegroundColor(const QColor& color) { foregroundColor_ = color; }
-    void setCursorColor(const QColor& color) { cursorColor_ = color; }
-    void setSelectionBackground(const QColor& color) { selectionBackground_ = color; }
+    /*
+     * Colours. This is the seed for each session's palette, not a live view of
+     * it: an application can retheme its own terminal through OSC 4/10/11/12,
+     * so read colours from TerminalSession::palette() when drawing.
+     */
+    const Palette& palette() const { return palette_; }
 
-    // Appearance - Font
-    QString fontFamily() const { return fontFamily_; }
+    /*
+     * Font families in order of preference. The first one actually installed
+     * wins; if none are, the renderer falls back to the font the system has
+     * configured as its monospaced default. Nothing about that fallback is
+     * hard-coded here -- it is whatever the platform reports.
+     */
+    QStringList fontFamilies() const { return fontFamilies_; }
+    /*
+     * Families consulted for code points the primary font lacks, before
+     * automatic discovery. No monospaced font covers everything a terminal has
+     * to draw -- a patched icon font commonly has no box-drawing characters at
+     * all, and colour emoji always live in a separate font.
+     */
+    QStringList fontFallbacks() const { return fontFallbacks_; }
     int fontSize() const { return fontSize_; }
+    void setFontSize(int size);
 
-    void setFontFamily(const QString& family) { fontFamily_ = family; }
-    void setFontSize(int size) { fontSize_ = size; }
+    /* Empty space between the text grid and the window edge, in logical
+     * pixels. Scaled by the device pixel ratio at use. */
+    int windowPadding() const { return windowPadding_; }
 
-    // Window settings
+    /* Cursor */
+    CursorStyle cursorStyle() const { return cursorStyle_; }
+    bool cursorBlink() const { return cursorBlink_; }
+
+    /* Window */
     int windowWidth() const { return windowWidth_; }
     int windowHeight() const { return windowHeight_; }
     float windowOpacity() const { return windowOpacity_; }
     bool startFullscreen() const { return startFullscreen_; }
 
-    void setWindowWidth(int width) { windowWidth_ = width; }
-    void setWindowHeight(int height) { windowHeight_ = height; }
-    void setWindowOpacity(float opacity) { windowOpacity_ = opacity; }
-    void setStartFullscreen(bool fullscreen) { startFullscreen_ = fullscreen; }
-
-    // Helpers
     static QString actionToString(Action action);
-    static Action stringToAction(const QString& str);
+    static Action stringToAction(const QString& text);
 
 private:
     Config();
-    ~Config();
-
-    // No copy
+    ~Config() = default;
     Config(const Config&) = delete;
     Config& operator=(const Config&) = delete;
 
-    void setupDefaultKeybindings();
-    QString findConfigFile();
-    QKeySequence parseKeySequence(const QString& yamlKey);
+    void applyBuiltInDefaults();
+    /* Overlay a JSON document; absent keys keep their current value. */
+    bool applyJsonFile(const QString& path);
+    void applyColors(const QJsonObject& colors);
+    void applyFont(const QJsonObject& font);
+    void applyCursor(const QJsonObject& cursor);
+    void applyWindow(const QJsonObject& window);
+    void applyKeybindings(const QJsonObject& keybindings);
 
-    // Keybindings: keySequence -> action
+    static QKeySequence parseKeySequence(const QString& text);
+    static QString userConfigPath();
+    /* The other key on the same physical key ('1' <-> '!'), or Key_unknown. */
+    static Qt::Key shiftPartner(int key);
+
     QHash<QKeySequence, Action> keybindings_;
 
-    // Appearance
-    QColor backgroundColor_;
-    QColor foregroundColor_;
-    QColor cursorColor_;
-    QColor selectionBackground_;
-    QString fontFamily_;
-    int fontSize_;
+    Palette palette_;
+    QStringList fontFamilies_;
+    QStringList fontFallbacks_;
+    int fontSize_ = DEFAULT_FONT_SIZE;
+    int windowPadding_ = DEFAULT_WINDOW_PADDING;
 
-    // Window
-    int windowWidth_;
-    int windowHeight_;
-    float windowOpacity_;
-    bool startFullscreen_;
+    CursorStyle cursorStyle_ = CursorStyle::Block;
+    bool cursorBlink_ = true;
+
+    int windowWidth_ = DEFAULT_WINDOW_WIDTH;
+    int windowHeight_ = DEFAULT_WINDOW_HEIGHT;
+    float windowOpacity_ = 1.0f;
+    bool startFullscreen_ = false;
 };
 
 #endif /* CONFIG_CONFIG_H */

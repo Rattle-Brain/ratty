@@ -1,306 +1,283 @@
-# ✅ **ROADMAP — from zero to full terminal emulator**
+# RaTTY — state of the art and roadmap
 
-## **PHASE 0 — Foundation (Before you write code)**
+Last updated for **v0.2.0**.
 
-These decisions prevent disasters later.
-
-### **0.1 Choose rendering backend**
-
-* **Will use GLFW (OpenGL)**
-
-💡 Kitty uses OpenGL.
-
-### **0.2 Choose dependency strategy**
-
-Ideal:
-
-* **FreeType** (font rasterization)
-* **HarfBuzz** (text shaping, ligatures — optional early)
-* **libuv** or epoll/kqueue (event loop)
-* **cairo/pango** (optional if going CPU rendering route)
-* **yaml-cpp / inih** for config
-
-LGTM!
+This file tracks what works, what is broken, and what comes next. Items marked
+🔍 have a design note in
+[DOCUMENTATION.md § 10](DOCUMENTATION.md#10-known-gaps) explaining why the gap is
+where it is.
 
 ---
 
-# ✅ **PHASE 1 — Minimal Terminal (MVP, just to see text)**
-
-**Goal:** Show characters from a PTY on the screen.
-
-### **1. Open a PTY** -- DONE
-
-Implement:
-
-* `forkpty()` on Linux/macOS
-* Set raw mode
-* Spawn `/bin/bash` or user’s shell
-* Nonblocking read/write
-
-### **2. Build event loop** -- DONE
-
-Single-threaded:
-
-* Poll PTY for input
-* Poll GUI window for input
-* Poll timers (blink cursor)
-
-Use:
-
-* `select()` initially
-* Upgrade to epoll/kqueue later
-
-### **3. Create a window**
-
-Using GLFW:
-
-* Create window
-* Create GL context
-* Handle key events
-* Render plain colored rectangle
-
-### **4. Load a font**
-
-With FreeType:
-
-* Load font face
-* Rasterize ASCII glyphs (no shaping yet)
-* Create simple atlas texture
-* Render text via textured quads
-
-### **5. Display PTY output**
-
-* Read bytes from PTY
-* Append them to a 2D char grid buffer
-* Render as basic grid of glyphs
-* Handle newline, backspace
-
-**This is your first working terminal.**
-It’s extremely basic but proves the architecture.
-
----
-
-# ✅ **PHASE 2 — Actual Terminal Emulation**
-
-**This is where it becomes a *real* terminal.**
-
-### **6. Implement a VT escape sequence parser**
-
-Support:
-
-* CSI (cursor movement)
-* OSC (title setting)
-* SGR (colors)
-* DEC private modes
-* Alternate screen buffer
-* Insert/delete lines
-* Clearing regions
-
-This is 50% of terminal complexity.
-
-### **7. Add scrollback**
-
-* Implement a scrollback ring buffer
-* Reflow (optional early)
-
-### **8. Add color support**
-
-* 16-color
-* 256-color
-* TrueColor (24-bit)
-
-### **9. Add basic mouse support**
-
-* xterm mouse reporting
-* selection (click + drag)
-
----
-
-# ✅ **PHASE 3 — Rendering Improvements**
-
-### **10. Add glyph caching**
-
-* Cache rasterized glyphs
-* Rebuild atlas dynamically
-
-### **11. HiDPI support**
-
-* Detect DPI
-* Scale fonts
-* Adjust cursor/render scale
-
-### **12. Add bold/italic/underline**
-
-Via:
-
-* separate font faces
-* or synthetic styling
-
-### **13. Add blinking cursor + shapes**
-
-Block
-Underline
-Beam
-
----
-
-# ✅ **PHASE 4 — Config System + Shortcuts**
-
-### **14. Implement config loader**
-
-Use:
-
-* YAML
-* TOML
-* INI
-
-Support:
-
-* Colors
-* Font
-* Keybindings
-* Layout settings
-
-### **15. Add keybinding engine**
-
-Map:
-
-* Ctrl+Shift+Enter
-* Ctrl+Alt+Arrows
-* etc.
-
----
-
-# ✅ **PHASE 5 — Multiplexer (splits/tabs)**
-
-This is Kitty’s “killer feature”.
-
-### **16. Split-window layout engine**
-
-Support:
-
-* horizontal split
-* vertical split
-* dynamic resize
-
-### **17. Add tab support**
-
-* List of tab objects
-* Tab switching
-* Tab naming (OSC 2)
-
-### **18. Per-split PTY**
-
-Each split must have its own PTY and its own terminal emulator instance.
-
----
-
-# ✅ **PHASE 6 — Performance Optimization**
-
-### **19. Partial redraw / dirty rectangles**
-
-Never redraw full screen unless needed.
-
-### **20. Faster Unicode**
-
-* Grapheme cluster handling
-* width tables
-* combining characters
-
-### **21. Improve scrollback memory**
-
-Switch from:
-
-* vector<string>
-  to:
-* ring buffer of glyph rows
-* compressed history
-
----
-
-# ✅ **PHASE 7 — Kitty-level Features**
-
-### **22. True ligatures (HarfBuzz)**
-
-Complex, but beautiful.
-
-### **23. Sprite-based animations**
-
-Kitty supports animated cursors and emoji.
-
-### **24. Image protocol or Sixel**
-
-Your choice.
-
-### **25. GPU-based text rendering pipeline**
-
-For ultra-low-latency drawing.
-
----
-
-# 🌲 **Directory Structure (Ideal, Scalable)**
+## Where the project stands
+
+RaTTY is usable as a daily driver for shell work. The rendering path is correct
+on HiDPI displays, the VT parser handles what a modern shell and most TUI
+applications emit, and the terminal model is separated cleanly enough from Qt and
+OpenGL to be tested headlessly.
+
+The two things a user notices as missing are **scrollback** and **text
+selection**.
 
 ```
-terminal/
-├── src/
-│   ├── core/
-│   │   ├── pty.cpp
-│   │   ├── event_loop.cpp
-│   │   ├── terminal_state.cpp      # screen buffer + scrollback
-│   │   ├── vt_parser.cpp
-│   │   ├── input.cpp
-│   │   └── clipboard.cpp
-│   │
-│   ├── render/
-│   │   ├── renderer.cpp            # high level render loop
-│   │   ├── gl_renderer.cpp         # OpenGL code
-│   │   ├── glyph_cache.cpp
-│   │   ├── font.cpp                # FreeType loading
-│   │   ├── atlas.cpp
-│   │   └── shaders/
-│   │       ├── text.vert
-│   │       └── text.frag
-│   │
-│   ├── ui/
-│   │   ├── window.cpp              # GLFW/SDL code
-│   │   ├── tabs.cpp
-│   │   ├── splits.cpp
-│   │   └── keybindings.cpp
-│   │
-│   ├── config/
-│   │   ├── config.cpp
-│   │   └── default_config.yaml
-│   │
-│   ├── utils/
-│   │   ├── logging.cpp
-│   │   ├── utf8.cpp
-│   │   └── unicode_width.cpp
-│   │
-│   └── main.cpp
-│
-├── include/
-│   ├── pty.hpp
-│   ├── renderer.hpp
-│   ├── font.hpp
-│   ├── vt_parser.hpp
-│   ├── terminal_state.hpp
-│   ├── config.hpp
-│   ├── window.hpp
-│   └── utils.hpp
-│
-├── third_party/
-│   ├── freetype/
-│   ├── harfbuzz/
-│   └── yaml-cpp/
-│
-├── assets/
-│   ├── fonts/
-│   └── themes/
-│
-├── tests/
-│
-└── CMakeLists.txt
+Foundations ████████████████████ done
+VT emulation ██████████████████░░ good enough for shells + most TUIs
+Rendering    ████████████████████ done (sharp, HiDPI-correct, emoji, box drawing)
+UI shell     ████████████████░░░░ tabs + splits work; no selection
+Polish       ████████░░░░░░░░░░░░ no scrollback, no mouse, no fallback fonts
 ```
 
-This structure avoids spaghetti, scales well, and supports multiple render backends later.
+---
 
+## ✅ Done
+
+### Foundations
+- [x] `forkpty` PTY wrapper with the user's **login** shell, `TERM` and
+      `COLORTERM` set, `LINES`/`COLUMNS` cleared, signal dispositions reset
+- [x] Non-blocking master fd driven by `QSocketNotifier`, drained in a bounded
+      loop rather than one read per event
+- [x] Read outcomes distinguished: data / `EAGAIN` / EOF (including `EIO`) / error
+- [x] Session teardown that reaps the child exactly once
+- [x] Qt6 window with an OpenGL 3.3 core context
+
+### Terminal emulation
+- [x] ECMA-48 state machine: Ground / Escape / intermediates / CSI / OSC /
+      DCS-SOS-PM-APC, with private markers and intermediate bytes recognised
+      rather than printed
+- [x] Parser holds **no** terminal state — syntax and semantics are separate
+      classes
+- [x] **Deferred (pending) line wrap** — the VT-correct behaviour shell prompts
+      depend on
+- [x] Scrolling region (`DECSTBM`), `IL`/`DL`/`ICH`/`DCH`/`ECH`, `SU`/`SD`
+- [x] Alternate screen buffer (`?1047`/`?1048`/`?1049`) so vim and less do not
+      destroy the shell's screen
+- [x] Full cursor movement set, `ED`/`EL` all modes, `DECSC`/`DECRC`, `RIS`
+- [x] DEC modes: `DECCKM`, `DECAWM`, `DECTCEM`, bracketed paste, `LNM`
+- [x] `DSR` 5/6 and `DA1` replies routed back to the shell
+- [x] SGR: 16-colour, bright, 256-colour and 24-bit truecolour, in both the `;`
+      and `:` spellings
+- [x] `OSC 4`/`104` palette entries and `OSC 10`/`11`/`12` + `110`/`111`/`112`
+      default colours, settable **and** queryable, owned per session
+- [x] `DECSCUSR` application cursor shape
+- [x] Erase retains the pen's background (coloured bars work)
+- [x] `OSC 0`/`2` window title; `ESC \` (ST) correctly consumed
+- [x] Incremental UTF-8 decoding across pty read boundaries
+- [x] Double-width character layout with trailer cells
+- [x] O(1) scroll via a row indirection table
+
+### Rendering
+- [x] FreeType rasterization at an explicit **physical** pixel size
+- [x] HiDPI correctness: device-pixel projection, device-pixel layout,
+      `devicePixelRatio`-scaled font, integer-snapped quads, `GL_NEAREST`
+- [x] Re-rasterization when the window moves to a screen with a different ratio
+- [x] Light hinting (`FT_LOAD_TARGET_LIGHT`) for crisp stems
+- [x] Cell metrics from a representative glyph, not `max_advance`
+- [x] Four font styles per family, resolved through `fc-match` **with face
+      index** (macOS `.ttc` collections), synthesized when a face is missing
+- [x] Font preference *list*, falling back to the system's configured monospaced
+      font, with substitution detection so a missing family can never yield a
+      proportional face
+- [x] Font **fallback chain**: code points the primary font lacks are served from
+      configured families, the platform monospace, or a fontconfig charset
+      lookup -- each verified to actually cover the code point
+- [x] Colour emoji, from the emoji font's own bitmap strikes, in a shared RGBA
+      atlas with a per-vertex tint flag
+- [x] Box-drawing and block characters (U+2500-U+259F) drawn geometrically, so
+      they tile exactly whatever font is in use
+- [x] Configurable window padding, clamped so it never costs a row or column
+- [x] Single `GL_R8` atlas, shelf packing, swizzled to `(R,R,R,1)`
+- [x] Atlas growth actually wired up, and safe when it happens mid-frame
+- [x] Layered draw order — backgrounds, then glyphs, then overlays
+- [x] Background run merging (one quad per run, not per cell)
+- [x] Per-codepoint glyph API — no `QString` allocation per cell per frame
+- [x] MSAA removed; it could not help alpha-blended glyph quads
+- [x] One GL code path (the duplicated macOS "workaround" branches are gone)
+
+### UI
+- [x] Tabs, with the tab bar auto-hidden when there is only one
+- [x] Recursive split panes over `QSplitter`, with correct Qt ownership on both
+      split and close
+- [x] Directional focus movement between panes
+- [x] Keybindings that actually fire — the terminal widget defers bound sequences
+      to the window instead of swallowing every key
+- [x] xterm modifier encoding (`CSI 1;mod A`) and `DECCKM` SS3 forms
+- [x] Bracketed paste, `LF`→`CR` translation on paste
+- [x] Live font resizing across every pane in every tab
+- [x] Cursor styles (block / hollow / underline / bar); blink only when focused
+- [x] Window title from `OSC`, per-tab
+
+### Project
+- [x] Layered JSON config: built-in → bundled resource → user overlay
+- [x] Full 256-colour palette, 16 base colours overridable by name
+- [x] `"none"` unbinds a default keybinding
+- [x] Headless test suites (terminal / input / splits) with `ctest`
+- [x] Warning-clean under `-Wall -Wextra -Wpedantic`
+- [x] No pinned compiler path in `CMakeLists.txt`
+- [x] Empty placeholder translation units removed
+
+---
+
+## 🐛 Fixed in v0.2.0
+
+Recorded because the causes are instructive; full write-ups in
+[DOCUMENTATION.md § 8](DOCUMENTATION.md#8-two-bugs-worth-understanding).
+
+- [x] **Blurry text.** The projection was built from the widget's *logical* size
+      while Qt had set the viewport to *device* pixels, so the scene was
+      stretched 2× on Retina; the font was rasterized at macOS's 72 logical DPI,
+      giving a 12-pixel em box for a 12 pt font; the atlas filtered `GL_LINEAR`;
+      and 4× MSAA was requested for a 2D alpha-blended pass. Now ~4× the glyph
+      coverage data with no resampling.
+- [x] **A white block above every prompt.** Two defects composing: `Screen`
+      wrapped eagerly, so zsh's `PROMPT_SP` end-of-line marker was never erased
+      (and an extra row was consumed per prompt); and rectangles were flushed
+      *after* text, so the marker's inverse background painted over its own `%`
+      glyph, turning it into a featureless block.
+- [x] **Stray `\` in the grid.** `ESC \` (string terminator) dropped out of the
+      OSC state on the `ESC` and printed the `\`. zsh emits `OSC 7 … ST` before
+      every prompt.
+- [x] **256-colour and truecolour ignored.** `SGR 38;5;N` was fed through a flat
+      per-parameter switch, so `38` matched nothing and `5`/`N` were interpreted
+      as unrelated attributes.
+- [x] **Mojibake on large output.** `QString::fromUtf8` was called per 4 KiB pty
+      read, so any multi-byte character split across the boundary became
+      replacement characters.
+- [x] **Coloured-background text was invisible.** Background rectangles were
+      drawn on top of glyphs.
+- [x] **No keybinding ever worked.** `TerminalWidget::keyPressEvent` accepted
+      every event, so nothing reached `MainWindow`.
+- [x] **A config file without a `keybindings` section removed all keybindings.**
+      The loader cleared the table, then inserted only what the file listed.
+- [x] **Bundled defaults were often not found.** They were loaded through the
+      relative path `src/config/default_config.json`.
+- [x] **Closing a split could destroy the surviving pane.** Only the logical
+      parent pointer was cleared before `deleteLater()`, while the sibling was
+      still a Qt child of the doomed splitter.
+- [x] **A reattached pane could stay invisible.** `QSplitter::insertWidget()`
+      will not re-show a widget carrying `WA_WState_ExplicitShowHide`, which
+      every former tab page does.
+- [x] **`hasChildExited()` consumed the exit status.** It called `waitpid` from a
+      `const` method on every poll, so cleanup could no longer reap.
+- [x] **`TERM` was never set**, so a shell launched outside a terminal fell back
+      to `dumb`.
+- [x] **Bold was fake.** Every cell was drawn with the regular face and bold was
+      approximated by lightening the colour.
+- [x] **Default colours were defined in three places** that disagreed; a custom
+      background made every cell paint an opaque rectangle in the old colour.
+- [x] **`resize()` sent `SIGWINCH` by hand** to the shell rather than letting
+      `TIOCSWINSZ` signal the foreground process group.
+- [x] **`Config::save()` was a no-op** that `closeEvent` wrote window geometry
+      into.
+- [x] **A missing font family silently became a proportional font.** `fc-match`
+      substitutes rather than failing, so a typo or an uninstalled font produced
+      Verdana in a character grid. Compounded by
+      `QFontInfo(systemFont(FixedFont)).family()` answering `.AppleSystemUIFont`
+      on macOS, which fontconfig also substituted with Verdana — so even the
+      *fallback* was proportional.
+- [x] **`DECSCUSR` was ignored**, so an editor's insert-mode cursor never
+      changed shape.
+- [x] **`OSC 11` queries went unanswered**, leaving Neovim to guess whether the
+      terminal was light or dark.
+- [x] **A patched icon font turned a TUI into a field of empty boxes.** There was
+      no fallback chain, and `DroidSansMono Nerd Font` -- like the family it was
+      patched from -- has no box-drawing characters, which is what every TUI
+      draws its borders with. Fixed by drawing those geometrically and by adding
+      the fallback chain for everything else.
+- [x] **Emoji were empty boxes**, since colour emoji live in a separate bitmap
+      font and neither the fallback chain nor an RGBA atlas existed to hold
+      them.
+- [x] **A pinned compiler path** (`/opt/homebrew/opt/llvm@20/bin/clang++`) broke
+      configuration on any other machine.
+
+---
+
+## 🎯 Next up
+
+Roughly in the order that gives the most user-visible benefit per unit of work.
+
+### 1. Scrollback buffer 🔍
+The single most missed feature.
+
+- [ ] Turn `Screen`'s row indirection table into a ring buffer with history
+- [ ] `scrollUp` pushes the evicted row into history instead of clearing it
+- [ ] A view offset, so rendering reads `history + viewport`
+- [ ] Mouse wheel and `Shift+PageUp`/`PageDown` move the offset
+      (the actions are already bound and currently inert)
+- [ ] Any new output, and any keypress, snaps back to the live view
+- [ ] Configurable line limit; `Ctrl+Shift+K` clears it
+- [ ] Reflow on resize, or an explicit decision not to reflow
+
+### 2. Text selection and clipboard 🔍
+- [ ] Selection range in `TerminalWidget`; mouse press/drag/release
+- [ ] Word (double-click) and line (triple-click) selection
+- [ ] Rectangular selection with a modifier
+- [ ] Render using the overlay layer and `Palette::selectionBackground`
+      (both already exist)
+- [ ] Grid→string conversion handling wide characters and trailing blanks
+- [ ] `Ctrl+Shift+C`; optional copy-on-select; primary selection on X11
+- [ ] `OSC 52` clipboard access
+
+### 3. Mouse reporting 🔍
+- [ ] `?1000` (click), `?1002` (drag), `?1003` (any motion)
+- [ ] `?1006` SGR extended coordinates
+- [ ] `?1004` focus in/out events
+- [ ] Pass through to the application when active; keep a modifier for local
+      selection
+
+---
+
+## 📋 Backlog
+
+### Terminal emulation
+- [ ] Combining marks 🔍 — needs a grapheme-extension side table per cell
+- [ ] Emoji presentation selectors (U+FE0E / U+FE0F) — currently dropped, so a
+      code point with both a text and an emoji form always renders as whichever
+      the fallback chain reaches first
+- [ ] DEC line-drawing charset (`ESC ( 0`) — currently accepted and ignored
+- [ ] Tab stops: `HTS`, `TBC` (tabs are hard-coded to every 8 columns)
+- [ ] Origin mode (`DECOM`), left/right margins (`DECLRMM`)
+- [ ] Soft reset (`DECSTR`), `DECRQM` mode queries
+- [ ] Overline (SGR 53), underline styles and colours (`4:3`, `58`)
+- [ ] `OSC 8` hyperlinks; `OSC 13`–`19` (highlight/pointer colours); `OSC 133`
+      prompt marks; `OSC 52` clipboard
+- [ ] Generate `charWidth()` tables from `UnicodeData.txt` instead of hand-listing 🔍
+
+### Rendering
+- [ ] Gamma-correct glyph blending 🔍 — light-on-dark text is currently slightly thin
+- [ ] Damage tracking 🔍 — `Screen::revision()` is the hook; per-row dirty flags next
+- [ ] Powerline separators drawn geometrically too (box drawing already is), so
+      they tile regardless of which font supplies them
+- [ ] Cursor-cell text redrawn in the background colour, for an opaque block
+      cursor instead of a translucent one
+- [ ] Background image / true window transparency
+- [ ] Ligatures via HarfBuzz (deliberately low priority for a grid terminal)
+- [ ] Sixel and kitty graphics protocols
+
+### UI
+- [ ] Persist window geometry 🔍
+- [ ] Search within the scrollback (depends on §1)
+- [ ] Drag a splitter and have the pty resize live (works, but unthrottled)
+- [ ] Move panes between tabs; detach a pane into a new window
+- [ ] URL detection and click-to-open
+- [ ] Visual bell as an alternative to the audible one
+- [ ] Tab context menu: rename, duplicate, close others
+- [ ] Config reload without a restart (file watcher)
+
+### Project health
+- [ ] Decide the fate of `src/utils/retcodes.h` 🔍 — 273 lines nothing includes
+- [ ] `.app` bundle for macOS and a `.desktop` file for Linux
+- [ ] CI: build on macOS and Linux, run `ctest`
+- [ ] Fuzz `VTParser` against random byte streams
+- [ ] A benchmark for throughput (`cat` of a large file) and frame time
+- [ ] `clang-format` configuration matching the existing style
+- [ ] Test the render layer — needs an offscreen GL context, so currently
+      uncovered
+
+---
+
+## Non-goals
+
+- **Windows support.** RaTTY is built on `forkpty` and Unix job control.
+- **A configuration language.** JSON, not a scripting runtime.
+- **Tmux-style session persistence.** Use tmux.
+- **A plugin system.** Not at this size.

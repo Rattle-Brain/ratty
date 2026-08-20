@@ -1,5 +1,5 @@
 /*
- * SplitContainer - Binary tree structure for terminal panes
+ * SplitContainer - pane tree implementation
  */
 
 #include "split_container.h"
@@ -7,176 +7,196 @@
 #include <QVBoxLayout>
 #include <QDebug>
 
+namespace {
+
+QVBoxLayout* makeFlushLayout(QWidget* owner) {
+    auto* layout = new QVBoxLayout(owner);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+    return layout;
+}
+
+} // namespace
+
 SplitContainer::SplitContainer(QWidget* parent)
     : QWidget(parent)
-    , type_(Leaf)
-    , focused_(false)
-    , parent_(nullptr)
-    , terminal_(nullptr)
-    , splitter_(nullptr)
-    , child1_(nullptr)
-    , child2_(nullptr)
 {
 }
 
-SplitContainer::~SplitContainer() {
-    // Qt will handle child widget deletion
-}
+SplitContainer::~SplitContainer() = default;
 
 SplitContainer* SplitContainer::createLeaf(QWidget* parent) {
-    SplitContainer* split = new SplitContainer(parent);
-    split->type_ = Leaf;
+    auto* node = new SplitContainer(parent);
+    node->type_ = Leaf;
+    node->terminal_ = new TerminalWidget(node);
 
-    // Create terminal widget
-    split->terminal_ = new TerminalWidget(split);
+    connect(node->terminal_, &TerminalWidget::sessionEnded, node, [node]() {
+        emit node->paneSessionEnded(node);
+    });
+    connect(node->terminal_, &TerminalWidget::titleChanged, node,
+            [node](const QString& title) {
+                emit node->paneTitleChanged(title);
+            });
 
-    // Connect terminal session ended signal
-    QObject::connect(split->terminal_, &TerminalWidget::sessionEnded,
-                     split, &SplitContainer::onTerminalSessionEnded);
-
-    // Set up layout
-    QVBoxLayout* layout = new QVBoxLayout(split);
-    layout->addWidget(split->terminal_);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
-
-    qDebug() << "Created leaf split";
-    return split;
+    makeFlushLayout(node)->addWidget(node->terminal_);
+    return node;
 }
 
-SplitContainer* SplitContainer::createContainer(SplitType type,
-                                                 SplitContainer* child1,
-                                                 SplitContainer* child2,
-                                                 float ratio,
-                                                 QWidget* parent)
-{
-    if (!child1 || !child2 || type == Leaf) {
-        return nullptr;
-    }
+SplitContainer* SplitContainer::createContainer(SplitType type, SplitContainer* first,
+                                                SplitContainer* second, float ratio) {
+    if (!first || !second || type == Leaf) return nullptr;
 
-    SplitContainer* container = new SplitContainer(parent);
+    auto* container = new SplitContainer(nullptr);
     container->type_ = type;
 
-    // Create splitter
-    Qt::Orientation orientation = (type == Horizontal) ?
-                                   Qt::Horizontal : Qt::Vertical;
+    const Qt::Orientation orientation = (type == Horizontal) ? Qt::Horizontal : Qt::Vertical;
     container->splitter_ = new QSplitter(orientation, container);
     container->splitter_->setHandleWidth(1);
-    container->splitter_->setStyleSheet("QSplitter::handle { background-color: #505050; }");
+    container->splitter_->setChildrenCollapsible(false);
+    container->splitter_->setStyleSheet(
+        QStringLiteral("QSplitter::handle { background-color: #3a3a3a; }"));
 
-    // Add children to splitter
-    container->child1_ = child1;
-    container->child2_ = child2;
+    container->child1_ = first;
+    container->child2_ = second;
+    first->parent_ = container;
+    second->parent_ = container;
 
-    // Reparent children
-    child1->setParent(container->splitter_);
-    child2->setParent(container->splitter_);
-    child1->parent_ = container;
-    child2->parent_ = container;
+    container->splitter_->addWidget(first);
+    container->splitter_->addWidget(second);
+    /*
+     * Show the children explicitly. QSplitter only auto-shows a widget when the
+     * splitter itself is already visible, and a widget that has been through a
+     * QStackedWidget (every tab page has) comes back carrying
+     * WA_WState_ExplicitShowHide, which suppresses the implicit show entirely.
+     * Being explicit here is the difference between a working split and a pane
+     * that silently vanishes.
+     */
+    first->show();
+    second->show();
+    /* Equal stretch keeps the ratio stable as the window is resized; without it
+     * QSplitter hands all new space to the last widget. */
+    container->splitter_->setStretchFactor(0, 1);
+    container->splitter_->setStretchFactor(1, 1);
 
-    // Forward sessionEnded signals from children to parent
-    QObject::connect(child1, &SplitContainer::sessionEnded,
-                     container, &SplitContainer::sessionEnded);
-    QObject::connect(child2, &SplitContainer::sessionEnded,
-                     container, &SplitContainer::sessionEnded);
+    const int total = (orientation == Qt::Horizontal) ? container->width() : container->height();
+    const int reference = total > 0 ? total : 1000;
+    container->splitter_->setSizes({static_cast<int>(reference * ratio),
+                                    static_cast<int>(reference * (1.0f - ratio))});
 
-    container->splitter_->addWidget(child1);
-    container->splitter_->addWidget(child2);
+    makeFlushLayout(container)->addWidget(container->splitter_);
 
-    // Set initial split ratio
-    QList<int> sizes;
-    int total = (type == Horizontal) ? container->width() : container->height();
-    if (total == 0) total = 1000;  // Default size
-    sizes << static_cast<int>(total * ratio) << static_cast<int>(total * (1.0f - ratio));
-    container->splitter_->setSizes(sizes);
-
-    // Set up layout
-    QVBoxLayout* layout = new QVBoxLayout(container);
-    layout->addWidget(container->splitter_);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
-
-    qDebug() << "Created container split:" << (type == Horizontal ? "Horizontal" : "Vertical");
+    container->adoptChildSignals(first);
+    container->adoptChildSignals(second);
     return container;
+}
+
+void SplitContainer::adoptChildSignals(SplitContainer* child) {
+    if (!child) return;
+    /* Forward child notifications up the tree so only the root needs a
+     * listener. Reconnecting after tree surgery is safe because the old node is
+     * destroyed with its connections. */
+    connect(child, &SplitContainer::paneSessionEnded,
+            this, &SplitContainer::paneSessionEnded, Qt::UniqueConnection);
+    connect(child, &SplitContainer::paneTitleChanged,
+            this, &SplitContainer::paneTitleChanged, Qt::UniqueConnection);
 }
 
 SplitContainer* SplitContainer::performSplit(SplitType splitType, float ratio) {
     if (type_ != Leaf) {
-        qWarning() << "Can only split leaf nodes";
+        qWarning() << "SplitContainer: only leaves can be split";
         return nullptr;
     }
 
-    // Create new leaf for the second pane
     SplitContainer* newLeaf = createLeaf(nullptr);
-    if (!newLeaf) return nullptr;
+    SplitContainer* oldParent = parent_;
 
-    // Create container to hold both leaves
-    SplitContainer* container = createContainer(splitType, this, newLeaf, ratio, nullptr);
+    /* Detach from the current parent first, so the container can take ownership
+     * without the splitter reparenting it back mid-construction. */
+    if (oldParent) {
+        oldParent->detachChild(this);
+    } else {
+        setParent(nullptr);
+    }
+
+    SplitContainer* container = createContainer(splitType, this, newLeaf, ratio);
     if (!container) {
         delete newLeaf;
         return nullptr;
     }
 
-    // Update parent relationship
-    if (parent_) {
-        parent_->replaceChild(this, container);
-        container->parent_ = parent_;
+    if (oldParent) {
+        oldParent->replaceChild(this, container);
+        container->parent_ = oldParent;
     }
 
-    // The container's layout now owns this widget and newLeaf
-    // so we don't need to delete them manually
-
-    return container;
+    newLeaf->focusPane();
+    return container->rootNode();
 }
 
 SplitContainer* SplitContainer::splitHorizontal(float ratio) {
-    qDebug() << "Splitting horizontal";
     return performSplit(Horizontal, ratio);
 }
 
 SplitContainer* SplitContainer::splitVertical(float ratio) {
-    qDebug() << "Splitting vertical";
     return performSplit(Vertical, ratio);
 }
 
-bool SplitContainer::closeSplit() {
-    if (!parent_) {
-        // Can't close root
-        qDebug() << "Cannot close root split";
-        return false;
+void SplitContainer::detachChild(SplitContainer* child) {
+    if (!child) return;
+
+    /*
+     * Reparenting to nullptr takes the widget out of the splitter's ownership
+     * without destroying it, which is the whole point: Qt would otherwise
+     * delete it along with the splitter. Qt hides a reparented widget for us, so
+     * there is no flash of a stray top-level window; whoever reattaches it is
+     * responsible for showing it again.
+     */
+    child->setParent(nullptr);
+    child->parent_ = nullptr;
+}
+
+SplitContainer* SplitContainer::closePane() {
+    SplitContainer* parent = parent_;
+    if (!parent) {
+        /* The only pane in the tab: the caller owns the decision to close it. */
+        return nullptr;
     }
 
-    // Find sibling
-    SplitContainer* sibling = (parent_->child1_ == this) ?
-                              parent_->child2_ : parent_->child1_;
+    SplitContainer* sibling = (parent->child1_ == this) ? parent->child2_ : parent->child1_;
+    SplitContainer* grandparent = parent->parent_;
 
-    // Replace parent with sibling in grandparent
-    if (parent_->parent_) {
-        SplitContainer* grandparent = parent_->parent_;
-        grandparent->replaceChild(parent_, sibling);
-        sibling->parent_ = grandparent;
-    } else {
-        // Parent was root - sibling becomes new root
-        sibling->parent_ = nullptr;
+    /*
+     * Order matters. The sibling must leave the doomed parent's splitter before
+     * that parent is destroyed, or Qt's ownership takes the sibling down with
+     * it -- which is exactly what the previous implementation did.
+     */
+    parent->detachChild(sibling);
+    parent->detachChild(this);
+    parent->child1_ = nullptr;
+    parent->child2_ = nullptr;
+
+    sibling->parent_ = grandparent;
+
+    if (grandparent) {
+        grandparent->replaceChild(parent, sibling);
     }
 
-    // Clean up
-    // Remove this from parent's splitter to prevent double-delete
-    parent_->child1_ = nullptr;
-    parent_->child2_ = nullptr;
-
-    // Delete this split
+    /* `this` and the parent container are no longer reachable from the tree. */
+    setParent(nullptr);
     deleteLater();
+    parent->setParent(nullptr);
+    parent->deleteLater();
 
-    // Delete parent container
-    parent_->deleteLater();
+    /* Focus must land on a live pane; it was on the one just removed. */
+    SplitContainer* target = sibling;
+    while (target && !target->isLeaf()) target = target->child1_;
+    if (target) target->focusPane();
 
-    qDebug() << "Closed split";
-    return true;
+    return sibling->rootNode();
 }
 
 void SplitContainer::replaceChild(SplitContainer* oldChild, SplitContainer* newChild) {
-    if (!splitter_) return;
+    if (!splitter_ || !newChild) return;
 
     int index = -1;
     if (child1_ == oldChild) {
@@ -186,87 +206,78 @@ void SplitContainer::replaceChild(SplitContainer* oldChild, SplitContainer* newC
         child2_ = newChild;
         index = 1;
     }
+    if (index < 0) return;
 
-    if (index >= 0) {
-        // Replace in splitter
-        splitter_->replaceWidget(index, newChild);
-        newChild->setParent(splitter_);
+    /* Preserve the current split ratio across the swap. */
+    const QList<int> sizes = splitter_->sizes();
+    splitter_->insertWidget(index, newChild);
+    newChild->show();       // see the note in createContainer()
+    newChild->parent_ = this;
+    if (sizes.size() == 2) {
+        splitter_->setSizes(sizes);
     }
+    adoptChildSignals(newChild);
+}
+
+SplitContainer* SplitContainer::rootNode() {
+    SplitContainer* node = this;
+    while (node->parent_) node = node->parent_;
+    return node;
 }
 
 SplitContainer* SplitContainer::findFocused() {
     if (type_ == Leaf) {
-        return focused_ ? this : nullptr;
+        return (terminal_ && terminal_->hasFocus()) ? this : nullptr;
     }
-
-    SplitContainer* found = child1_ ? child1_->findFocused() : nullptr;
-    if (found) return found;
-
+    if (SplitContainer* found = child1_ ? child1_->findFocused() : nullptr) return found;
     return child2_ ? child2_->findFocused() : nullptr;
 }
 
-SplitContainer* SplitContainer::findAtPosition(const QPoint& pos) {
-    QPoint localPos = mapFromGlobal(pos);
-
-    if (!rect().contains(localPos)) {
-        return nullptr;
+SplitContainer* SplitContainer::findInDirection(Qt::Orientation orientation, bool forward) {
+    /*
+     * Walk up until a container splits along `orientation` with this subtree on
+     * the near side, then descend the far side to its first leaf.
+     */
+    SplitContainer* node = this;
+    while (SplitContainer* parent = node->parentNode()) {
+        const bool matches = (parent->type_ == Horizontal && orientation == Qt::Horizontal)
+                          || (parent->type_ == Vertical && orientation == Qt::Vertical);
+        if (matches) {
+            SplitContainer* target = forward
+                ? (parent->child1_ == node ? parent->child2_ : nullptr)
+                : (parent->child2_ == node ? parent->child1_ : nullptr);
+            if (target) {
+                while (target && !target->isLeaf()) {
+                    target = forward ? target->child1_ : target->child2_;
+                }
+                return target;
+            }
+        }
+        node = parent;
     }
-
-    if (type_ == Leaf) {
-        return this;
-    }
-
-    // Check children
-    if (child1_) {
-        SplitContainer* found = child1_->findAtPosition(pos);
-        if (found) return found;
-    }
-
-    if (child2_) {
-        return child2_->findAtPosition(pos);
-    }
-
     return nullptr;
 }
 
-SplitContainer* SplitContainer::findInDirection(Direction dir) {
-    // TODO: Implement directional navigation
-    // This is complex and requires walking up the tree to find appropriate sibling
-    // For now, just return nullptr
-    (void)dir;
-    return nullptr;
-}
+void SplitContainer::focusPane() {
+    if (type_ != Leaf || !terminal_) return;
 
-void SplitContainer::setFocused(bool focused) {
-    if (type_ != Leaf) return;
-
-    focused_ = focused;
-
-    if (terminal_) {
-        terminal_->setFocusedBorder(focused);
+    /* Clear the marker on every other pane so exactly one is highlighted. */
+    if (SplitContainer* root = rootNode()) {
+        root->forEachLeaf([this](SplitContainer* leaf) {
+            if (leaf->terminal_) leaf->terminal_->setPaneFocused(leaf == this);
+        });
     }
+    terminal_->setFocus();
 }
 
 int SplitContainer::countLeaves() const {
-    if (type_ == Leaf) {
-        return 1;
-    }
-
-    int count = 0;
-    if (child1_) count += child1_->countLeaves();
-    if (child2_) count += child2_->countLeaves();
-    return count;
+    if (type_ == Leaf) return 1;
+    return (child1_ ? child1_->countLeaves() : 0) + (child2_ ? child2_->countLeaves() : 0);
 }
 
-void SplitContainer::resizeEvent(QResizeEvent* event) {
-    QWidget::resizeEvent(event);
-
-    // Qt's layout system handles resizing automatically
-    // No need for manual geometry recalculation like in C version
-}
-
-void SplitContainer::onTerminalSessionEnded() {
-    qDebug() << "SplitContainer: Terminal session ended";
-    // Emit signal to notify parent (MainWindow or parent split)
-    emit sessionEnded(this);
+bool SplitContainer::contains(const SplitContainer* node) const {
+    if (!node) return false;
+    if (node == this) return true;
+    if (type_ == Leaf) return false;
+    return (child1_ && child1_->contains(node)) || (child2_ && child2_->contains(node));
 }

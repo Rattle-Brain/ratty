@@ -1,43 +1,91 @@
 /*
- * Pseudo Terminal (PTY) - C++ RAII implementation
+ * PTY - pseudo-terminal implementation
  *
  * Author: Rattle-Brain
  */
 
 #include "pty.h"
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <signal.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
-#include <fcntl.h>
-#include <errno.h>
-#include <cstdlib>
 
-/* Get the user's default shell */
+namespace {
+
+/*
+ * The child needs a TERM value or the shell falls back to "dumb" and stops
+ * emitting colours and cursor movement entirely. Previously nothing was set,
+ * so behaviour depended on whatever the launching environment happened to
+ * export - which differs between running from a terminal and launching from
+ * Finder or a .desktop file.
+ */
+constexpr const char* kTerm = "xterm-256color";
+constexpr const char* kColorTerm = "truecolor";
+
+/* Basename of a path, for building a login-shell argv[0] ("-zsh"). */
+std::string baseName(const std::string& path) {
+    const size_t slash = path.find_last_of('/');
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+} // namespace
+
 std::string PTY::getUserShell() {
-    // Try $SHELL environment variable first
-    const char *shell = std::getenv("SHELL");
-    if (shell && shell[0] != '\0') {
+    if (const char* shell = std::getenv("SHELL"); shell && shell[0] != '\0') {
         return std::string(shell);
     }
 
-    // Try password database
-    struct passwd *pw = getpwuid(getuid());
-    if (pw && pw->pw_shell && pw->pw_shell[0] != '\0') {
+    if (const struct passwd* pw = getpwuid(getuid()); pw && pw->pw_shell && pw->pw_shell[0] != '\0') {
         return std::string(pw->pw_shell);
     }
 
-    // Fallback
     return "/bin/sh";
 }
 
+void PTY::execChild(const std::string& shell) {
+    /*
+     * Start a *login* shell (argv[0] prefixed with '-'), which is what
+     * Terminal.app and kitty do on macOS: without it ~/.zprofile never runs and
+     * PATH ends up missing Homebrew and friends.
+     */
+    const std::string argv0 = "-" + baseName(shell);
+
+    setsid();
+#ifdef TIOCSCTTY
+    ioctl(STDIN_FILENO, TIOCSCTTY, 0);
+#endif
+
+    setenv("TERM", kTerm, 1);
+    setenv("COLORTERM", kColorTerm, 1);
+    /* Stale values inherited from the parent would lie about our geometry;
+     * the pty's winsize is authoritative. */
+    unsetenv("LINES");
+    unsetenv("COLUMNS");
+
+    /* Qt installs handlers and may block signals; the shell must start clean. */
+    sigset_t empty;
+    sigemptyset(&empty);
+    sigprocmask(SIG_SETMASK, &empty, nullptr);
+    signal(SIGCHLD, SIG_DFL);
+    signal(SIGPIPE, SIG_DFL);
+
+    execl(shell.c_str(), argv0.c_str(), static_cast<char*>(nullptr));
+
+    /* execl only returns on failure. Fall back to a plain interactive shell,
+     * then to /bin/sh, before giving up. */
+    execl(shell.c_str(), baseName(shell).c_str(), static_cast<char*>(nullptr));
+    execl("/bin/sh", "-sh", static_cast<char*>(nullptr));
+    _exit(127);
+}
+
 PTY::PTY(int rows, int cols)
-    : master_fd_(-1)
-    , child_pid_(-1)
-    , rows_(rows)
+    : rows_(rows)
     , cols_(cols)
 {
-    // Set up window size
     struct winsize ws = {
         .ws_row = static_cast<unsigned short>(rows),
         .ws_col = static_cast<unsigned short>(cols),
@@ -45,10 +93,8 @@ PTY::PTY(int rows, int cols)
         .ws_ypixel = 0
     };
 
-    // Get the user's shell
-    std::string shell = getUserShell();
+    const std::string shell = getUserShell();
 
-    // Fork with a new PTY
     child_pid_ = forkpty(&master_fd_, nullptr, nullptr, &ws);
 
     if (child_pid_ < 0) {
@@ -59,20 +105,16 @@ PTY::PTY(int rows, int cols)
     }
 
     if (child_pid_ == 0) {
-        // Child process - exec the shell
-        setsid();
-        execlp(shell.c_str(), shell.c_str(), nullptr);
-        perror("execlp");
-        _exit(1);
+        execChild(shell);
     }
 
-    // Parent process
-
-    // Set master fd to non-blocking for async I/O
-    int flags = fcntl(master_fd_, F_GETFL, 0);
+    /* Parent: non-blocking master for the event loop, and close-on-exec so
+     * child processes we later spawn cannot inherit it. */
+    const int flags = fcntl(master_fd_, F_GETFL, 0);
     if (flags != -1) {
         fcntl(master_fd_, F_SETFL, flags | O_NONBLOCK);
     }
+    fcntl(master_fd_, F_SETFD, FD_CLOEXEC);
 }
 
 PTY::~PTY() {
@@ -84,8 +126,8 @@ PTY::PTY(PTY&& other) noexcept
     , child_pid_(other.child_pid_)
     , rows_(other.rows_)
     , cols_(other.cols_)
+    , child_exited_(other.child_exited_)
 {
-    // Invalidate the moved-from object
     other.master_fd_ = -1;
     other.child_pid_ = -1;
     other.rows_ = 0;
@@ -94,16 +136,14 @@ PTY::PTY(PTY&& other) noexcept
 
 PTY& PTY::operator=(PTY&& other) noexcept {
     if (this != &other) {
-        // Clean up our current resources
         cleanup();
 
-        // Transfer ownership
         master_fd_ = other.master_fd_;
         child_pid_ = other.child_pid_;
         rows_ = other.rows_;
         cols_ = other.cols_;
+        child_exited_ = other.child_exited_;
 
-        // Invalidate the moved-from object
         other.master_fd_ = -1;
         other.child_pid_ = -1;
         other.rows_ = 0;
@@ -113,54 +153,89 @@ PTY& PTY::operator=(PTY&& other) noexcept {
 }
 
 void PTY::cleanup() {
-    // Close the master fd
     if (master_fd_ >= 0) {
         ::close(master_fd_);
         master_fd_ = -1;
     }
 
-    // Kill the child process if still running
-    if (child_pid_ > 0) {
-        int status;
-        pid_t result = waitpid(child_pid_, &status, WNOHANG);
-
-        if (result == 0) {
-            // Child still running, send SIGHUP then SIGKILL
+    if (child_pid_ > 0 && !child_exited_) {
+        int status = 0;
+        if (waitpid(child_pid_, &status, WNOHANG) == 0) {
+            /* Closing the master sends SIGHUP to the session; give it a moment
+             * before escalating. */
             kill(child_pid_, SIGHUP);
-            usleep(50000);  // 50ms grace period
+            usleep(50000);
 
-            result = waitpid(child_pid_, &status, WNOHANG);
-            if (result == 0) {
+            if (waitpid(child_pid_, &status, WNOHANG) == 0) {
                 kill(child_pid_, SIGKILL);
                 waitpid(child_pid_, &status, 0);
             }
         }
-
-        child_pid_ = -1;
     }
+
+    child_pid_ = -1;
+    child_exited_ = true;
 }
 
-ssize_t PTY::read(char* buf, size_t len) {
-    if (!isValid()) return -1;
+PTY::ReadResult PTY::read(char* buf, size_t len) {
+    ReadResult result;
 
-    ssize_t n = ::read(master_fd_, buf, len);
-
-    // Handle non-blocking read
-    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-        return 0;  // No data available
+    if (master_fd_ < 0) {
+        result.error = true;
+        return result;
     }
 
-    return n;
+    const ssize_t n = ::read(master_fd_, buf, len);
+
+    if (n > 0) {
+        result.bytes = n;
+        return result;
+    }
+
+    if (n == 0) {
+        result.eof = true;
+        return result;
+    }
+
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        result.wouldBlock = true;
+    } else if (errno == EIO) {
+        /* On both Linux and the BSDs a pty master reports EIO once the slave
+         * side is gone. That is a normal session end, not a failure. */
+        result.eof = true;
+    } else if (errno == EINTR) {
+        result.wouldBlock = true;
+    } else {
+        result.error = true;
+    }
+    return result;
 }
 
 ssize_t PTY::write(const char* buf, size_t len) {
-    if (!isValid()) return -1;
+    if (master_fd_ < 0) return -1;
 
-    return ::write(master_fd_, buf, len);
+    size_t written = 0;
+    while (written < len) {
+        const ssize_t n = ::write(master_fd_, buf + written, len - written);
+        if (n > 0) {
+            written += static_cast<size_t>(n);
+            continue;
+        }
+        if (n < 0 && (errno == EINTR)) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            /* The shell is not draining fast enough. Dropping the tail would
+             * corrupt input, so report what made it through and let the caller
+             * decide. In practice terminal input is tiny and this never trips. */
+            break;
+        }
+        if (written == 0) return -1;
+        break;
+    }
+    return static_cast<ssize_t>(written);
 }
 
 void PTY::resize(int rows, int cols) {
-    if (!isValid()) return;
+    if (master_fd_ < 0) return;
 
     rows_ = rows;
     cols_ = cols;
@@ -172,23 +247,20 @@ void PTY::resize(int rows, int cols) {
         .ws_ypixel = 0
     };
 
-    // Send TIOCSWINSZ to update terminal size
+    /* TIOCSWINSZ already delivers SIGWINCH to the slave's foreground process
+     * group, so the explicit kill() the old code did was both redundant and
+     * wrong for job control (it targeted the shell, not the foreground job). */
     ioctl(master_fd_, TIOCSWINSZ, &ws);
-
-    // Send SIGWINCH to notify the shell
-    if (child_pid_ > 0) {
-        kill(child_pid_, SIGWINCH);
-    }
 }
 
-bool PTY::hasChildExited() const {
+bool PTY::hasChildExited() {
+    if (child_exited_) return true;
     if (child_pid_ <= 0) return true;
 
-    int status;
-    pid_t result = waitpid(child_pid_, &status, WNOHANG);
-
-    // result > 0 means child has exited
-    // result == 0 means child is still running
-    // result < 0 means error (likely child doesn't exist)
-    return result != 0;
+    int status = 0;
+    const pid_t result = waitpid(child_pid_, &status, WNOHANG);
+    if (result != 0) {
+        child_exited_ = true;
+    }
+    return child_exited_;
 }

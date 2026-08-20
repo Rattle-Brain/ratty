@@ -1,54 +1,62 @@
 /*
- * MainWindow - Top-level application window
+ * MainWindow - top-level window holding a tab per split tree
  *
- * Manages multiple terminal tabs using QTabWidget
+ * Each tab's widget is the root SplitContainer of a pane tree. Because closing
+ * or creating a split can change which node is the root, the window keeps the
+ * tab widget in step through installTabRoot() rather than trying to detect the
+ * change after the fact.
  */
 
 #ifndef UI_MAIN_WINDOW_H
 #define UI_MAIN_WINDOW_H
 
+#include "../config/config.h"
 #include <QMainWindow>
-#include <QTabWidget>
 
+class QTabWidget;
 class SplitContainer;
-
-#define WINDOW_MAX_TABS 32
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
 
 public:
-    explicit MainWindow(QWidget *parent = nullptr);
+    static constexpr int MaxTabs = 32;
+
+    explicit MainWindow(QWidget* parent = nullptr);
     ~MainWindow() override;
 
-    // Tab management
-    void addTab(const QString& title = "Terminal");
+    void addTab();
     void closeTab(int index);
-    void closeCurrentTab();
-    void setActiveTab(int index);
-    void nextTab();
-    void prevTab();
-    void gotoTab(int index);  // Go to tab 1-9
 
-    // Queries
     int tabCount() const;
-    SplitContainer* currentTab() const;
-    SplitContainer* tabAt(int index) const;
+    SplitContainer* currentRoot() const;
+    SplitContainer* rootAt(int index) const;
 
 protected:
     void keyPressEvent(QKeyEvent* event) override;
-    void closeEvent(QCloseEvent* event) override;
 
 private slots:
-    void onTabCloseRequested(int index);
-    void onSplitSessionEnded(SplitContainer* split);
+    void onPaneSessionEnded(SplitContainer* pane);
+    void onPaneTitleChanged(const QString& title);
 
 private:
     void setupUi();
-    void setupActions();
-    bool isDescendant(SplitContainer* container, SplitContainer* split);
+    /* Puts `root` at `index`, taking over the tab's previous widget. */
+    void installTabRoot(int index, SplitContainer* root);
+    void connectRoot(SplitContainer* root);
+    int indexOfRootContaining(const SplitContainer* node) const;
 
-    QTabWidget* tab_widget_;
+    bool handleAction(Action action);
+    void splitFocusedPane(bool horizontal);
+    void closeFocusedPane();
+    void focusNeighbour(Qt::Orientation orientation, bool forward);
+    void changeFontSize(int delta);
+    void goToTab(int oneBasedIndex);
+
+    /* The focused pane of the current tab, or nullptr. */
+    SplitContainer* focusedPane() const;
+
+    QTabWidget* tabWidget_ = nullptr;
 };
 
 #endif /* UI_MAIN_WINDOW_H */

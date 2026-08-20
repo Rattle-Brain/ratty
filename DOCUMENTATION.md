@@ -1,1571 +1,1026 @@
-# RaTTY Documentation
+# RaTTY — Architecture and Internals
 
-## Table of Contents
-1. [Architecture Overview](#architecture-overview)
-2. [Application Hierarchy](#application-hierarchy)
-3. [Data Flow: From Shell to Screen](#data-flow-from-shell-to-screen)
-4. [Terminal Emulation (VT/ANSI Parsing)](#terminal-emulation-vtansi-parsing)
-5. [The Rendering Pipeline (GPU-Accelerated)](#the-rendering-pipeline-gpu-accelerated)
-6. [The Glyph Atlas: The Heart of Fast Rendering](#the-glyph-atlas-the-heart-of-fast-rendering)
-7. [The Rendering Process (Frame by Frame)](#the-rendering-process-frame-by-frame)
-8. [Shader Pipeline (GPU Programs)](#shader-pipeline-gpu-programs)
-9. [Input Flow (Keyboard → Shell)](#input-flow-keyboard--shell)
-10. [Session Lifecycle & Auto-Cleanup](#session-lifecycle--auto-cleanup)
-11. [How Everything Binds Together](#how-everything-binds-together)
-12. [Performance Optimizations](#performance-optimizations)
-13. [Summary](#summary)
+Version 0.2.0
+
+This document describes how RaTTY is put together, why the pieces are separated
+the way they are, and where the current limits lie. It is written for someone
+about to change the code.
 
 ---
 
-# Architecture Overview
+## Table of contents
 
-RaTTY is a **GPU-accelerated terminal emulator** that uses modern OpenGL for rendering. Here's how everything connects:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Application Flow                       │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│  MainWindow (QMainWindow)                                   │
-│  ├─ QTabWidget (manages multiple tabs)                      │
-│  │   └─ Tab 1, Tab 2, Tab 3... (SplitContainer instances)   │
-│  └─ Keyboard shortcuts & global actions                     │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│  SplitContainer (Binary tree for panes)                     │
-│  ├─ LEAF nodes → TerminalWidget (actual terminal)           │
-│  └─ CONTAINER nodes → QSplitter with 2 children             │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│  TerminalWidget (QOpenGLWidget)                             │
-│  ├─ PTY (shell process)                                     │
-│  ├─ TerminalEmulator (ANSI/VT parsing)                      │
-│  ├─ GLRenderer (OpenGL rendering)                           │
-│  └─ InputHandler (keyboard input)                           │
-└─────────────────────────────────────────────────────────────┘
-```
+1. [Design principles](#1-design-principles)
+2. [Layered architecture](#2-layered-architecture)
+3. [Data flow: bytes to pixels](#3-data-flow-bytes-to-pixels)
+4. [The core layer](#4-the-core-layer)
+5. [The render layer](#5-the-render-layer)
+6. [The UI layer](#6-the-ui-layer)
+7. [Configuration](#7-configuration)
+8. [Two bugs worth understanding](#8-two-bugs-worth-understanding)
+9. [Building, running and testing](#9-building-running-and-testing)
+10. [Known gaps](#10-known-gaps)
 
 ---
 
-# Application Hierarchy
+## 1. Design principles
 
-## MainWindow (Top Level)
-**Location**: `src/ui/main_window.h/cpp`
+Four rules shape the code. Most of the structure follows from them.
 
-The MainWindow is the top-level application window that:
-- Manages the entire application window
-- Contains a **QTabWidget** for multiple terminal tabs
-- Handles global keyboard shortcuts (Cmd+T for new tab, Cmd+W for close tab, etc.)
-- Manages tab lifecycle (creation, deletion, switching)
-- Responds to window close events (saves window size to config)
+**The core knows nothing about pixels.** Everything under `src/core/` models a
+terminal: a grid of cells, a cursor, an escape-sequence parser. It does not
+include a single OpenGL or QtWidgets header. That is why the terminal test suite
+runs in a fraction of a second with no GPU, no window and no shell.
 
-**Key Features**:
-- Maximum of 32 tabs (`WINDOW_MAX_TABS`)
-- Keyboard shortcuts defined in config system
-- Automatic tab switching (next/prev)
-- Direct tab access (Cmd+1 through Cmd+9)
+**Syntax and semantics are separate.** `VTParser` recognises the *shape* of an
+escape sequence and nothing else. `TerminalEmulator` decides what a recognised
+sequence *means*. The parser holds no terminal state; earlier revisions had it
+tracking the current text attributes, which meant terminal state lived in two
+places and drifted.
 
-## SplitContainer (Tab Level)
-**Location**: `src/ui/split_container.h/cpp`
+**One source of truth per fact.** The default foreground colour is defined in
+exactly one place (`Palette`). Cells store *symbolic* colours — "default",
+"palette slot 208", "this RGB triple" — and only the palette turns them into
+pixels. When three separate classes each hard-coded their own idea of "default
+background", a custom background in `config.json` made every cell paint an
+opaque rectangle in the old colour.
 
-Each tab contains a **binary tree** of splits:
-- **LEAF nodes** = actual terminal widgets
-- **CONTAINER nodes** = horizontal/vertical splitters
-
-```
-Initial state:        After horizontal split:
-   [Terminal]         [Container: Horizontal]
-                           /          \
-                     [Terminal A]  [Terminal B]
-```
-
-**Tree Operations**:
-- `splitHorizontal()` - Split pane left/right
-- `splitVertical()` - Split pane top/bottom
-- `closeSplit()` - Remove pane and restructure tree
-- `findFocused()` - Locate currently focused terminal
-- `countLeaves()` - Get number of terminal panes
-
-**Example Layout**:
-```
-     [Root: HORIZONTAL]
-          /        \
-    [Terminal A]  [VERTICAL]
-                   /      \
-            [Terminal B] [Terminal C]
-```
-
-## TerminalWidget (Individual Terminal)
-**Location**: `src/ui/terminal_widget.h/cpp`
-
-The TerminalWidget is where the magic happens - it's an OpenGL-accelerated terminal display that contains:
-- **PTY**: Manages shell process communication
-- **TerminalEmulator**: Parses VT/ANSI escape sequences
-- **GLRenderer**: GPU-accelerated rendering engine
-- **InputHandler**: Converts Qt key events to VT100 sequences
-
-**Initialization Flow**:
-1. `initializeGL()` - Set up OpenGL context
-2. Create `GLRenderer` and load fonts
-3. Calculate terminal dimensions (rows × cols)
-4. Create `TerminalEmulator` with dimensions
-5. Create `PTY` and fork shell process
-6. Set up `QSocketNotifier` for async I/O
+**Physical pixels everywhere in the renderer.** No part of the drawing code
+works in logical/device-independent units. This is not stylistic: mixing the two
+is exactly what made text blurry (see [§8](#8-two-bugs-worth-understanding)).
 
 ---
 
-# Data Flow: From Shell to Screen
-
-Here's the complete journey of data through RaTTY:
+## 2. Layered architecture
 
 ```
-┌─────────────┐    read()     ┌───────────────┐   processData()  ┌─────────────────┐
-│ Shell (PTY) │──────────────>│ SocketNotifier│─────────────────>│TerminalEmulator │
-│  (bash/zsh) │               │  (Qt event)   │                  │  (VT parser)    │
-└─────────────┘               └───────────────┘                  └─────────────────┘
-                                                                          │
-                                                                          │ Updates grid
-                                                                          ▼
-                                                                  ┌─────────────────┐
-                                                                  │  Terminal Grid  │
-                                                                  │  (Cell[][])     │
-                                                                  └─────────────────┘
-                                                                          │
-                                                                          │ paintGL()
-                                                                          ▼
-                                                                  ┌─────────────────┐
-                                                                  │   GLRenderer    │
-                                                                  │  (Rendering)    │
-                                                                  └─────────────────┘
-                                                                          │
-                                                                          ▼
-                                                                     ┌─────────┐
-                                                                     │  Screen │
-                                                                     └─────────┘
+                     ┌──────────────────────────────────┐
+   src/ui/           │ MainWindow                       │  tabs, shortcuts
+                     │   └─ SplitContainer (tree)       │  pane layout
+                     │        └─ TerminalWidget         │  QOpenGLWidget
+                     └───────────┬──────────┬───────────┘
+                                 │          │
+                 ┌───────────────┘          └──────────────┐
+                 ▼                                         ▼
+   src/render/  ┌──────────────────────────┐   src/core/  ┌────────────────────┐
+                │ TerminalRenderer         │              │ TerminalSession    │
+                │   grid → draw calls      │              │   pty + I/O pump   │
+                ├──────────────────────────┤              ├────────────────────┤
+                │ GLRenderer               │              │ TerminalEmulator   │
+                │   batching, layers       │              │   VT semantics     │
+                ├─────────────┬────────────┤              ├─────────┬──────────┤
+                │ GlyphAtlas  │FontManager │              │ Screen  │VTParser  │
+                │  texture    │ FreeType   │              │  grid   │ syntax   │
+                └─────────────┴────────────┘              ├─────────┴──────────┤
+                                                          │ PTY  Palette  Cell │
+   src/config/  ┌──────────────────────────┐              └────────────────────┘
+                │ Config (singleton)       │
+                └──────────────────────────┘
 ```
 
-## Step-by-Step Data Flow:
+### Dependency rules
 
-1. **Shell outputs data** (e.g., `echo "Hello"` or `ls --color`)
-2. **PTY master fd** becomes readable (shell wrote to slave fd)
-3. **QSocketNotifier** detects readable fd and triggers `TerminalWidget::onPTYDataReady()`
-4. **Data is read** from PTY master fd (raw bytes, up to 4096 at a time)
-5. **TerminalEmulator::processData()** parses VT/ANSI escape sequences
-6. **Grid is updated** with characters and their attributes (colors, bold, etc.)
-7. **Qt calls paintGL()** on the next frame (vsync-timed)
-8. **GLRenderer** draws the terminal grid to screen using OpenGL
+| Layer     | May depend on                         | Must not depend on          |
+|-----------|---------------------------------------|-----------------------------|
+| `core/`   | Qt Core/Gui (`QColor`, `QObject`), libc | OpenGL, QtWidgets, `render/` |
+| `render/` | `core/`, OpenGL, FreeType, Qt Gui     | `ui/`, `config/`            |
+| `ui/`     | everything                            | —                           |
+| `config/` | `core/`                               | `render/`, `ui/`            |
 
-**Key Point**: This is **asynchronous** - the shell runs independently, and Qt's event loop processes data as it arrives.
+Two of these are worth calling out because they were violated before and are
+easy to violate again:
+
+- `config/` must not include `render/`. `CursorStyle` therefore lives in
+  `core/cursor.h`, so that a setting can be expressed without dragging the whole
+  OpenGL stack into the settings parser.
+- `render/` must not read `Config`. The renderer is handed a `Palette`,
+  `FontMetrics` and a `Layout`; it does not look settings up for itself. That
+  keeps it testable and makes the data flow one-directional.
+
+### File map
+
+| File | Responsibility |
+|---|---|
+| `core/cell.h` | `Cell`, `Color`, `Pen`, rendition flags. 16-byte POD, no Qt. |
+| `core/palette.h/.cpp` | The 256-colour palette and the default fg/bg/cursor. Resolves symbolic colours. |
+| `core/screen.h/.cpp` | The grid, cursor, pending-wrap flag, scrolling region, editing operations. |
+| `core/vt_parser.h/.cpp` | ECMA-48 state machine. Emits parsed sequences to a `VTHandler`. |
+| `core/terminal_emulator.h/.cpp` | Implements `VTHandler`; owns the pen, the primary and alternate screens, and DEC modes. |
+| `core/terminal_session.h/.cpp` | Owns the pty, the socket notifier and the byte pump. Emits Qt signals. |
+| `core/pty.h/.cpp` | `forkpty` wrapper: shell lookup, environment, resize, teardown. |
+| `core/utf8.h` | Incremental UTF-8 decoder (survives chunk boundaries) and encoder. |
+| `core/char_width.h` | `charWidth()` — 0 / 1 / 2 columns per code point. |
+| `core/cursor.h` | `CursorStyle`, shared by config and renderer. |
+| `render/font_manager.h/.cpp` | FreeType faces per style, plus the fallback chain; rasterizes at an explicit pixel size. |
+| `render/box_drawing.h/.cpp` | Geometric line and block glyphs (U+2500–U+259F). |
+| `render/glyph_atlas.h/.cpp` | Single `GL_RGBA8` texture, shelf packing, glyph cache. |
+| `render/gl_renderer.h/.cpp` | Layered vertex batching, shaders, orthographic projection. |
+| `render/terminal_renderer.h/.cpp` | Grid geometry and the grid→draw-call loop. |
+| `ui/terminal_widget.h/.cpp` | `QOpenGLWidget`; DPI handling, events, paint. |
+| `ui/split_container.h/.cpp` | Binary pane tree over `QSplitter`. |
+| `ui/main_window.h/.cpp` | Tabs, shortcut dispatch, window title. |
+| `ui/input_handler.h/.cpp` | Qt key events → VT input bytes. |
+| `config/config.h/.cpp` | Layered JSON settings and keybindings. |
 
 ---
 
-# Terminal Emulation (VT/ANSI Parsing)
+## 3. Data flow: bytes to pixels
 
-## TerminalEmulator
-**Location**: `src/core/terminal_emulator.h/cpp`
+### Output path (shell → screen)
 
-The emulator maintains:
-- **2D grid of cells**: `QVector<QVector<Cell>>` (rows × cols)
-- **Cursor position**: `(cursorRow_, cursorCol_)`
-- **Current attributes**: foreground/background colors, bold, italic, underline
-- **Parser state machine**: Ground, Escape, CSI, OSC
+```
+  shell writes to the pty slave
+        │
+        ▼
+  QSocketNotifier fires on the master fd
+        │
+        ▼
+  TerminalSession::drainPty()
+        │   reads up to 32 × 64 KiB per event
+        ▼
+  TerminalEmulator::write(bytes)
+        │
+        ├─► Utf8Decoder  bytes → char32_t, retaining any partial sequence
+        │
+        ▼
+  VTParser::advance(code points)
+        │   pure syntax: Ground / Escape / CSI / OSC / …
+        │
+        ├─► VTHandler::print(ch)            printable character
+        ├─► VTHandler::control(c0)          BS, HT, LF, CR, BEL, …
+        ├─► VTHandler::csiDispatch(seq)     CSI … final
+        ├─► VTHandler::escDispatch(i, f)    ESC … final
+        └─► VTHandler::oscDispatch(n, data) OSC n ; data ST
+              │
+              ▼
+        TerminalEmulator  (semantics: SGR → pen, modes, replies)
+              │
+              ▼
+        Screen  (cells, cursor, scrolling)  ── revision() bumped
+              │
+              ▼
+        TerminalSession emits screenChanged()
+              │
+              ▼
+        TerminalWidget::update()  →  paintGL()
+              │
+              ▼
+        TerminalRenderer::paint(screen, palette, layout, options)
+              │
+              ├─► GLRenderer::fillBackground(...)   layer 1
+              ├─► GLRenderer::drawGlyph(...)        layer 2
+              └─► GLRenderer::fillOverlay(...)      layer 3
+                        │
+                        ▼
+              GLRenderer::endFrame()
+                  flush layer 1 → flush layer 2 → flush layer 3
+```
 
-### Cell Structure
+The three layers are the whole reason cell backgrounds no longer hide their own
+characters. Draw order is a property of the API, not of the order in which the
+grid loop happens to emit calls.
+
+### Input path (keyboard → shell)
+
+```
+  QKeyEvent
+     │
+     ▼
+  TerminalWidget::keyPressEvent
+     │
+     ├─ Config::isBound(sequence)? ── yes ─► event->ignore()
+     │                                        │  propagates up the widget chain
+     │                                        ▼
+     │                                   MainWindow::keyPressEvent → handleAction()
+     │
+     └─ no ─► InputHandler::keyEventToBytes(event, applicationCursorKeys)
+                    │
+                    ▼
+              TerminalSession::sendInput(bytes) → PTY::write → shell
+```
+
+The `isBound` check is what makes application shortcuts work at all. The widget
+previously accepted *every* key event, so nothing ever reached `MainWindow` and
+no keybinding in the config file could fire.
+
+---
+
+## 4. The core layer
+
+### 4.1 `Cell`, `Color` and `Pen`
+
+A cell is 16 bytes and trivially copyable:
 
 ```cpp
 struct Cell {
-    QChar ch;                    // The character ('A', '字', '🎉', etc.)
-    CellAttributes attrs;        // Foreground, background, bold, italic, underline, inverse
-};
-
-struct CellAttributes {
-    QColor foreground;           // Text color
-    QColor background;           // Background color
-    bool bold;                   // Bold text
-    bool italic;                 // Italic text
-    bool underline;              // Underlined text
-    bool inverse;                // Swap fg/bg colors
+    char32_t ch;      // one code point
+    Color    fg, bg;  // symbolic, 4 bytes each
+    uint16_t flags;   // bold, italic, underline, inverse, …
 };
 ```
 
-## Parser State Machine
+`Color` is a tagged 4-byte value:
 
-The terminal parser is a **state machine** that processes input character-by-character:
+| Kind | Meaning | Set by |
+|---|---|---|
+| `Default` | whatever the palette calls default | SGR 39 / 49, initial state |
+| `Indexed` | one of 256 palette slots | SGR 30–37, 40–47, 90–97, 100–107, 38;5;N, 48;5;N |
+| `Rgb` | a literal 24-bit colour | SGR 38;2;R;G;B, 48;2;R;G;B |
 
-```
-States:
-- StateGround:    Normal text mode
-- StateEscape:    After receiving ESC (0x1B)
-- StateCSI:       Control Sequence Introducer (ESC [)
-- StateOSC:       Operating System Command (ESC ])
-- StateOSCString: OSC string content
-```
+Storing "default" symbolically rather than resolving it at parse time is what
+lets a theme change repaint correctly without rewriting the grid, and is what
+makes `bg != defaultBackground` a meaningful test in the renderer.
 
-### Example Parsing Sequence
+The `Pen` is the current graphic rendition — the colours and flags that newly
+printed characters inherit. SGR sequences mutate the pen; they never touch the
+grid.
 
-Input: `"Hello\x1b[1;31mRed\x1b[0m"`
+### 4.2 `Screen`
 
-```
-StateGround:  'H' → putChar('H')
-StateGround:  'e' → putChar('e')
-StateGround:  'l' → putChar('l')
-StateGround:  'l' → putChar('l')
-StateGround:  'o' → putChar('o')
-StateGround:  '\x1b' → StateEscape
-StateEscape:  '[' → StateCSI, csiParams_ = ""
-StateCSI:     '1' → csiParams_ += '1'
-StateCSI:     ';' → csiParams_ += ';'
-StateCSI:     '3' → csiParams_ += '3'
-StateCSI:     '1' → csiParams_ += '1'
-StateCSI:     'm' → executeCSI() → handleSGR() → set bold + red
-StateGround:  'R' → putChar('R') with bold+red attrs
-StateGround:  'e' → putChar('e') with bold+red attrs
-StateGround:  'd' → putChar('d') with bold+red attrs
-StateGround:  '\x1b' → StateEscape
-StateEscape:  '[' → StateCSI, csiParams_ = ""
-StateCSI:     '0' → csiParams_ += '0'
-StateCSI:     'm' → executeCSI() → handleSGR() → reset all attributes
+Pure terminal state: no parsing, no Qt widgets, no rendering.
+
+Rows live in a flat `std::vector<Cell>` addressed through an indirection table
+(`rowMap_`). Scrolling rotates row *indices* rather than copying cell data, so
+`scrollUp`, `insertLines` and `deleteLines` are index permutations:
+
+```cpp
+void Screen::scrollUp(int count, const Pen& pen) {
+    auto first = rowMap_.begin() + scrollTop_;
+    auto last  = rowMap_.begin() + scrollBottom_ + 1;
+    std::rotate(first, first + n, last);
+    for (int r = scrollBottom_ - n + 1; r <= scrollBottom_; ++r) clearRow(r, pen);
+}
 ```
 
-## Supported Escape Sequences
+Three behaviours in here are load-bearing:
 
-### CSI Sequences (ESC [)
-- **Cursor movement**: `ESC [ H` (home), `ESC [ A` (up), `ESC [ B` (down), etc.
-- **Cursor positioning**: `ESC [ <row> ; <col> H`
-- **Erasing**:
-  - `ESC [ J` - Clear from cursor to end of screen
-  - `ESC [ 2 J` - Clear entire screen
-  - `ESC [ K` - Clear from cursor to end of line
-- **SGR (colors/styles)**: `ESC [ <params> m`
-  - `0` - Reset all attributes
-  - `1` - Bold
-  - `3` - Italic
-  - `4` - Underline
-  - `7` - Inverse (swap fg/bg)
-  - `30-37` - Foreground colors (ANSI)
-  - `40-47` - Background colors (ANSI)
-  - `38;5;<n>` - 256-color foreground
-  - `48;5;<n>` - 256-color background
+**Deferred wrap.** When a character lands in the last column the cursor stays
+put and only `pendingWrap_` is set. The line break happens when the *next*
+printable character arrives. Any explicit cursor movement — including `CR` —
+clears the flag without wrapping. This is required by the VT specification and
+relied upon by every shell prompt; see [§8.2](#82-the-white-block-after-every-enter).
 
-### What it Handles
-- ✅ Text rendering with attributes
-- ✅ ANSI colors (16 colors)
-- ✅ 256-color palette
-- ✅ Cursor movement and positioning
-- ✅ Screen clearing
-- ✅ Line wrapping
-- ✅ Scrolling (when cursor reaches bottom)
-- ✅ SGR attributes (bold, italic, underline, inverse)
+**Erase keeps the background.** `Cell::erase(pen)` retains the pen's background
+colour but drops other rendition. That is how TUI applications paint full-width
+coloured bars with a single `EL` after setting a background.
 
-### What's Not Yet Implemented
-- ⏳ Scrollback buffer
-- ⏳ Mouse support
-- ⏳ OSC sequences (window title, etc.)
-- ⏳ Alternate screen buffer
-- ⏳ Complex VT features (saved cursor, margins, etc.)
+**Scrolling region.** `scrollTop_`/`scrollBottom_` bound every scroll, insert and
+delete, so `DECSTBM` works and full-screen applications can scroll a subrange.
+
+### 4.3 `VTParser`
+
+A state machine modelled on Paul Williams' DEC parser, consuming `char32_t`
+rather than bytes (UTF-8 decoding happens upstream; all escape syntax is ASCII,
+so this costs nothing and makes multi-byte text fall out for free).
+
+```
+Ground ──ESC──► Escape ──'['──► CsiEntry ──params──► CsiParam ──final──► dispatch
+   ▲               │                 │                   │
+   │               ├──']'──► OscString ──BEL / ESC '\'──► dispatch
+   │               ├──'P','X','^','_'──► StringIgnore
+   │               └──intermediate──► EscapeIntermediate ──final──► dispatch
+   └───────────────────────── printable / C0 ─────────────────────────
+```
+
+Parameters are stored flat, with omitted parameters preserved as
+`CsiSequence::Omitted` so a handler can apply the correct per-command default.
+Sub-parameters (the colon form in `SGR 38:2:r:g:b`) are *flagged* rather than
+flattened, so both spellings work.
+
+Points where the previous parser produced visible garbage, and what changed:
+
+| Input | Old behaviour | Now |
+|---|---|---|
+| `ESC ] 7 ; … ESC \` | left the OSC state on the `ESC`, then printed the `\` into the grid | `ESC \` consumed as one ST |
+| `ESC [ > 4 ; 2 m` | `>` treated as a final byte; `4;2m` printed as text | private marker recognised and ignored |
+| `ESC [ ! p`, `ESC [ 2 SP q` | intermediate byte treated as final; remainder printed | intermediate bytes recognised |
+| `ESC [ 3 8 ; 5 ; 2 0 8 m` | each parameter matched separately, so the colour was dropped | parsed as one extended-colour spec |
+| 20-digit parameter | signed overflow | clamped |
+
+### 4.4 `TerminalEmulator`
+
+Implements `VTHandler` and supplies all the semantics. It owns the pen, a primary
+and an alternate `Screen`, and the DEC mode flags.
+
+Supported sequences:
+
+| Category | Sequences |
+|---|---|
+| C0 | BEL, BS, HT, LF, VT, FF, CR (SO/SI accepted, ignored) |
+| Cursor | CUU/CUD/CUF/CUB (`A`–`D`), CNL/CPL (`E`,`F`), CHA/HPA (`G`,`` ` ``), VPA (`d`), CUP/HVP (`H`,`f`), CHT/CBT (`I`,`Z`), VPR/HPR (`e`,`a`) |
+| Erase | ED (`J`) modes 0–3, EL (`K`) modes 0–2, ECH (`X`) |
+| Edit | ICH (`@`), DCH (`P`), IL (`L`), DL (`M`) |
+| Scroll | SU (`S`), SD (`T`), DECSTBM (`r`) |
+| Rendition | SGR (`m`): 0–9, 21–29, 30–37, 38, 39, 40–47, 48, 49, 90–97, 100–107, both `;` and `:` extended forms |
+| Modes | DECCKM (?1), DECAWM (?7), DECTCEM (?25), alternate buffer (?1047/?1048/?1049), bracketed paste (?2004), LNM (20) |
+| Cursor shape | DECSCUSR (`CSI n SP q`) |
+| Reports | DSR 5, DSR 6 (CPR), DA1 |
+| ESC | IND, NEL, RI, DECSC/DECRC (`7`/`8`), RIS (`c`), charset selection (accepted, ignored) |
+| OSC | 0/2 (window title), 4 and 104 (palette entries), 10/11/12 and 110/111/112 (default fg, bg, cursor) — all of them settable *and* queryable; others parsed and dropped |
+
+Replies (`DSR`, `DA1`) go out through a `ReplySink` callback that
+`TerminalSession` wires back to the pty. Title changes and the bell use the same
+callback pattern. One `std::function` per genuinely distinct concern, rather than
+the twelve action callbacks the emulator used to register.
+
+`LF` deliberately does **not** imply a carriage return unless `LNM` is set. The
+old code folded CR into LF unconditionally, which hid missing-CR bugs and broke
+plain index movement.
+
+### 4.4.1 Colours are owned per session
+
+`TerminalEmulator` holds two palettes: `basePalette_`, seeded from `Config` when
+the session starts, and `palette_`, the live one. `OSC 4/10/11/12` mutate the
+live palette; `OSC 104/110/111/112` restore individual entries from the base.
+
+Ownership matters here. The palette deliberately does **not** live in `Config`,
+because these sequences let a running application retheme *its own* terminal —
+one pane changing its background must not disturb another. `TerminalWidget`
+therefore reads `session_->palette()`, not `Config::instance().palette()`, both
+for the grid and for the frame's clear colour.
+
+Because cells store a palette *index* rather than a resolved colour
+([§4.1](#41-cell-color-and-pen)), an `OSC 4` arriving after text is already on
+screen recolours that text on the next repaint. Tools like `base16-shell` depend
+on exactly that.
+
+Queries are the other half. Neovim sends `OSC 11 ; ?` at start-up to discover
+whether the terminal is light or dark, and with no answer it has to guess — which
+gets a light colour scheme wrong. Replies use the X11 `rgb:rrrr/gggg/bbbb` form
+that xterm uses, and `parseColorSpec()` accepts `#rgb`, `#rrggbb`,
+`#rrrgggbbb`, `#rrrrggggbbbb`, `rgb:r/g/b` with 1–4 hex digits per component,
+and colour names.
+
+`DECSCUSR` (`CSI n SP q`) is handled alongside, because editors use it to signal
+their mode — a bar while inserting, a block otherwise. The request wins over the
+user's configured `cursor.style` while it is in effect; `CSI 0 SP q` hands
+control back. Note that the space *intermediate* is what identifies the
+sequence: `CSI 5 q` without it is something else entirely.
+
+### 4.5 `TerminalSession`
+
+Everything between the pty file descriptor and the grid, with no rendering and no
+widget code: the pty, the `QSocketNotifier`, the emulator and the byte pump.
+Extracting it is what let `TerminalWidget` shrink to a view.
+
+`drainPty()` reads in a bounded loop — up to 32 reads of 64 KiB — rather than one
+read per notifier activation. A command producing megabytes of output otherwise
+costs one event-loop round trip and one repaint per 4 KiB. The bound stops a
+runaway producer from starving the UI.
+
+Paste goes through `sendPaste()`, which translates `LF` to `CR` (Enter delivers
+CR) and wraps the payload in `ESC[200~` / `ESC[201~` when the application has
+enabled bracketed paste.
+
+### 4.6 `PTY`
+
+RAII wrapper around `forkpty`. Things it now gets right that it did not before:
+
+- **`TERM` is set** (`xterm-256color`, plus `COLORTERM=truecolor`). Nothing set
+  it before, so behaviour depended on the launching environment — a shell started
+  from Finder or a `.desktop` file saw no `TERM` and fell back to `dumb`, with no
+  colour and no cursor movement at all.
+- **The shell is a login shell** (`argv[0]` prefixed with `-`), matching
+  Terminal.app and kitty. Without it `~/.zprofile` never runs and `PATH` is
+  missing Homebrew.
+- **`LINES`/`COLUMNS` are unset** in the child so the pty's `winsize` is the only
+  authority, and signal dispositions are reset so the shell starts clean.
+- **Read outcomes are distinguished.** `ReadResult` separates data, `EAGAIN`,
+  end-of-file and real errors. The old `ssize_t` return conflated "no data right
+  now" with "the shell exited"; `EIO`, which is how a pty master reports a
+  departed slave on Linux and the BSDs, was treated as a failure.
+- **`hasChildExited()` is idempotent.** It used to call `waitpid` from a `const`
+  method on every poll, so the first call consumed the exit status and the
+  destructor could no longer reap.
+- **`resize()` no longer sends `SIGWINCH` by hand.** `TIOCSWINSZ` already signals
+  the slave's foreground process group; the manual `kill` targeted the shell
+  rather than the foreground job, which is wrong under job control.
 
 ---
 
-# The Rendering Pipeline (GPU-Accelerated)
+## 5. The render layer
 
-This is where RaTTY shines! The rendering system uses **OpenGL 3.3** for hardware-accelerated text rendering.
+### 5.1 Physical pixels, and why it matters
 
-## GLRenderer Architecture
-**Location**: `src/render/gl_renderer.h/cpp`
+This is the single most important thing in the render layer.
+
+`QOpenGLWidget` hands `resizeGL()` the widget's size in **logical** pixels, but
+sets the GL viewport to the **device-pixel** size of its backing framebuffer
+immediately before every `paintGL()`. Measured on a Retina MacBook:
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                    GLRenderer                            │
-├──────────────────────────────────────────────────────────┤
-│  FontManager     │  Loads fonts with FreeType2           │
-│                  │  Rasterizes glyphs to bitmaps         │
-│                  │  Manages Regular, Bold, Italic styles │
-├──────────────────────────────────────────────────────────┤
-│  GlyphAtlas      │  OpenGL texture atlas (1024×1024)     │
-│                  │  Caches rasterized glyphs             │
-│                  │  Shelf-based bin packing              │
-├──────────────────────────────────────────────────────────┤
-│  Shaders         │  GLSL vertex + fragment shaders       │
-│  (text.vert)     │  GPU programs for rendering           │
-│  (text.frag)     │  Texture sampling & blending          │
-│  (rect.vert)     │  Rectangle rendering                  │
-│  (rect.frag)     │                                       │
-├──────────────────────────────────────────────────────────┤
-│  Vertex Buffers  │  VBO/VAO for text geometry            │
-│  (VBO/VAO)       │  Batched rendering (one draw call)    │
-│                  │  MAX_TEXT_VERTICES = 65536            │
-│                  │  MAX_RECT_VERTICES = 16384            │
-└──────────────────────────────────────────────────────────┘
+resizeGL args:   400 200   |  widget logical size: 400 200  |  devicePixelRatio: 2
+paintGL viewport set by Qt: 0 0 800 400
+logicalDotsPerInch: 72     |  physicalDotsPerInch: 127.5
 ```
 
-## Components
+So a projection built from `width()`/`height()` covers a quarter of the
+framebuffer's area and the GPU stretches everything 2× to fill it. On top of
+that, `logicalDotsPerInch` is **72** on macOS, so rasterizing a 12 pt font "at
+screen DPI" produced a 12-pixel em box — which was then magnified to cover 24
+physical pixels.
 
-### FontManager
-**Location**: `src/render/font_manager.h/cpp`
+The rules that follow:
 
-Responsibilities:
-- Initialize FreeType2 library
-- Load font files (TrueType, OpenType)
-- Manage 4 font styles: Regular, Bold, Italic, BoldItalic
-- Rasterize individual glyphs to grayscale bitmaps
-- Provide font metrics (cell width/height, ascender, descender)
+1. `GLRenderer::beginFrame()` takes the framebuffer size in device pixels and
+   builds a matching orthographic projection.
+2. `TerminalWidget` computes every geometry value as
+   `logical × devicePixelRatioF()`.
+3. The font is rasterized at `points × (logicalDpi / 72) × devicePixelRatio`,
+   which is how Qt sizes its own text.
+4. Glyph quads land on integer pixel coordinates, and the atlas uses
+   `GL_NEAREST`. With integer positions, fragment centres land exactly on texel
+   centres, so the rasterized coverage is reproduced verbatim.
+5. `resizeGL()` no longer calls `glViewport()` at all — Qt has already set it,
+   correctly, and the widget's logical size was the wrong value to use.
+6. No multisampling. MSAA cannot improve an alpha-blended glyph quad (there is no
+   geometric edge to smooth — the shape lives in the texture's alpha) and only
+   adds a resolve blit.
 
-```cpp
-struct FontMetrics {
-    int cellWidth;              // Advance width for monospace (e.g., 10px)
-    int cellHeight;             // Line height (ascender + descender + gap) (e.g., 20px)
-    int ascender;               // Pixels above baseline (e.g., 16px)
-    int descender;              // Pixels below baseline (e.g., 4px)
-    int underlinePosition;      // Offset from baseline
-    int underlineThickness;
-    int strikethroughPosition;
-};
-```
+Measured effect on the same display, rasterizing `g` from Menlo:
 
-**Rasterization Flow**:
-1. Get glyph index from codepoint: `FT_Get_Char_Index()`
-2. Load glyph: `FT_Load_Glyph()`
-3. Render to bitmap: `FT_Render_Glyph(FT_RENDER_MODE_NORMAL)` (antialiased)
-4. Return grayscale bitmap + metrics
+| | em box | cell | `g` bitmap | pixels of coverage | antialiased-edge pixels |
+|---|---|---|---|---|---|
+| before (12 pt @ 72 dpi, then stretched 2×) | 12 px | 7×15 | 7×10 | 70 | 56 % |
+| after (13 pt × dpr 2) | 26 px | 16×32 | 13×21 | 273 | 36 % |
 
-### GlyphAtlas
-**Location**: `src/render/glyph_atlas.h/cpp`
+Roughly four times the coverage data, a smaller proportion of it spent on soft
+edges, and no resampling pass on top.
 
-See detailed explanation in next section.
+Moving the window to a screen with a different ratio is handled: `resizeGL()`
+compares the current scale against the one the font was last rasterized at and
+re-rasterizes when they differ.
+
+### 5.2 `FontManager`
+
+One `FT_Face` per style (regular / bold / italic / bold-italic) of a single
+monospaced family, rasterized at an explicit pixel size.
+
+The API takes **pixels**, not points-plus-DPI. The caller already knows how many
+physical pixels a cell needs, and the old point/DPI API existed mainly as a place
+to feed the wrong DPI into.
+
+Font resolution asks `fc-match` for the file *and the face index*, which matters
+because macOS ships collections: all four styles of Menlo live in
+`/System/Library/Fonts/Menlo.ttc` at indices 0–3. A style whose face cannot be
+found is synthesized with `FT_GlyphSlot_Embolden` / `FT_GlyphSlot_Oblique`.
+
+#### Resolution order, and why it is careful
+
+`loadFamily()` takes a *list* of families and tries them in order:
+
+1. **Each configured preference**, accepted only if fontconfig resolves it to
+   that same family. This check is essential: `fc-match` never fails, it
+   substitutes — asking for a font that is not installed returns something else
+   entirely. On this machine `fc-match "No Such Font"` answers **Verdana**, a
+   proportional font, which is unusable in a character grid. `FontFile::family`
+   carries the resolved name so the caller can tell.
+2. **The platform's monospaced default**, where substitution is welcome because
+   the platform's answer *is* the intended fallback. The query adds fontconfig's
+   `:spacing=100` constraint so the answer is actually monospaced.
+3. **A per-platform list of known font paths**, for a system with no fontconfig
+   at all.
+
+Getting the platform default right needed care too. `QFontDatabase::systemFont(
+QFontDatabase::FixedFont).family()` returns the generic `"monospace"`, which is
+exactly the right thing to hand to fontconfig — but passing it through
+`QFontInfo` first resolves it against the font engine, which on macOS answers
+`.AppleSystemUIFont`. Feeding *that* to fontconfig produced Verdana again. The
+family name is therefore taken straight off the `QFont`, with
+`QFontDatabase::isFixedPitch()` as the secondary source.
+
+Finally, every candidate is verified after loading: `regularFaceIsMonospaced()`
+compares the unscaled advances of `i` and `W` and rejects the face if they
+differ. Font metadata can lie; two glyphs of visibly different width cannot. Even
+an explicit request for a proportional family is refused and falls through to the
+system monospace, which is the right call for a terminal.
+
+#### The fallback chain
+
+No single monospaced font covers what a terminal has to draw, so the primary
+family is backed by a lazily grown list of others.
+
+The motivating case is concrete. A patched "Nerd Font" build can carry twelve
+thousand glyphs — every Powerline separator and file-type icon — and still have
+**no box-drawing characters at all**, because the family it was patched from
+never had them. Every TUI builds its borders, tree guides and separators out of
+U+2500–U+257F, so without fallback a full-screen editor renders as a field of
+empty `.notdef` boxes. Colour emoji are a second case: they only ever live in a
+separate font, and one that stores bitmaps rather than outlines.
+
+`resolveFaceSet()` answers "which family serves this code point", once per code
+point, and caches the answer (including misses, since discovery shells out):
+
+1. The primary family, if it has the glyph.
+2. Families named in `font.fallback`, then the platform's monospaced default,
+   then a list of known colour-emoji families. Loaded on first need.
+3. Otherwise, ask fontconfig which font covers the code point
+   (`:charset=<hex>`, monospaced-preferred).
+
+Steps 2 and 3 both **verify coverage after loading** rather than trusting the
+answer, and both reject placeholder families. That check is not paranoia:
+`fc-match ":charset=1F600"` on macOS answers `.LastResort`, a font whose glyphs
+are literally empty boxes, and a charset query for box drawing answers
+proportional Verdana.
+
+The platform monospace deliberately sits ahead of the emoji fonts, because it is
+what supplies the arrows, geometric shapes and check marks a patched icon font
+most often lacks.
+
+Fallback faces are rescaled by `matchFallbackSize()` so their line height matches
+the primary cell. Different families draw a different proportion of the em, and
+leaving them at the same em size left glyphs a pixel or two short of the cell.
+
+#### Colour glyphs
+
+A colour emoji font is bitmap-only with fixed strikes. `FT_LOAD_COLOR` (and
+crucially *not* `FT_LOAD_NO_BITMAP`) yields a `FT_PIXEL_MODE_BGRA` bitmap;
+`FT_Set_Char_Size` picks the nearest strike and scales it, so no manual strike
+selection is needed. Colour faces are sized from
+`min(cellHeight, 2 × cellWidth)` because emoji are double-width and span two
+cells — sizing them from the line height alone made them bleed into the next row.
+
+FreeType hands back *premultiplied* BGRA. `rasterizeFrom()` un-premultiplies and
+swaps to RGBA so colour and coverage glyphs share one straight-alpha blend mode,
+and marks the result with `GlyphBitmap::isColor`.
+
+Rasterization uses `FT_LOAD_TARGET_LIGHT` with `FT_RENDER_MODE_LIGHT`: light
+hinting snaps stems vertically without touching horizontal metrics, which is what
+a monospaced grid needs.
+
+`computeMetrics()` derives the cell from a representative glyph (`M`, `0`, `x`)
+rather than `max_advance`, because many monospaced fonts carry oversized advances
+for box-drawing or fullwidth glyphs, which would leave a visible gap between
+columns. Any leftover line gap is split evenly above and below so glyphs sit
+optically centred.
+
+### 5.2.1 Box drawing is geometric, not from a font
+
+Line and block characters (U+2500–U+259F) are drawn from the cell geometry by
+`render/box_drawing.cpp`, ahead of any font lookup.
+
+They have to *tile*: a vertical line must meet the one in the row below with no
+seam, and a horizontal line must span the cell exactly. No font can guarantee
+that once a fallback is involved, because families disagree about how much of the
+em their box glyphs occupy — the fallback arrives a pixel or two short and borders
+look dashed. Scaling the fallback to compensate only trades gaps for overhang.
+
+A line character is fully described by the weight of its four arms
+(none/light/heavy/double), which turns ~150 code points into one table and one
+draw routine. Each arm runs from its cell edge *past* the centre by half the
+perpendicular stroke, so corners and tees have no notch. Blocks, eighths,
+quadrants and the three shades are handled separately; shades use an ordered 2×2
+dither, which reads as an even tone at cell sizes.
+
+The output is an ordinary 8-bit coverage mask, so it caches in the atlas and
+renders through exactly the same path as a font glyph. Rounded corners
+(U+256D–U+2570) are drawn square, and the diagonals (U+2571–U+2573) fall through
+to the font.
+
+### 5.3 `GlyphAtlas`
+
+One `GL_RGBA8` texture with a shelf (row-based) packing allocator and a
+`codepoint | style → CachedGlyph` cache. A whole screen of text is one draw call.
+
+RGBA rather than a single coverage channel, because colour emoji have to live
+here too. A coverage mask is widened to `(255, 255, 255, coverage)` on upload and
+tinted by the shader; a colour glyph is stored as-is and drawn untinted, selected
+per-vertex by `CachedGlyph::isColor`. One texture and one draw call for both is
+considerably simpler than maintaining two atlases, and 4 MiB for a 1024 px atlas
+is not worth optimising. It also removed the `GL_TEXTURE_SWIZZLE_*` dance that
+the single-channel format needed.
+
+Filtering is `GL_NEAREST` deliberately (see §5.1). A 1-pixel gutter between
+glyphs keeps rounding from ever picking up a neighbour.
+
+Two things this class now handles that it previously only claimed to:
+
+- **Growth is wired up.** `glyph()` grows the texture (or, at the 4096 cap, flushes
+  the cache) when an allocation fails, so callers never see a "texture full"
+  error. The old `grow()`/`isFull()` pair was never called from anywhere.
+- **Mid-frame rebuilds are safe.** Rebuilding invalidates every UV already
+  batched for the frame. A `generation()` counter lets `GLRenderer` notice,
+  discard the stale batch and report `needsRepaint()`, and `TerminalWidget`
+  schedules one more paint. Without this, a frame that happened to trigger growth
+  would draw garbage.
+
+The file also lost about sixty lines of duplicated `#ifdef Q_OS_MACOS` "Apple
+Silicon workaround" that called the native GL entry points directly. The actual
+problem those branches were working around was the missing swizzle for the
+single-channel format, not Qt's wrappers, so there is now one code path.
+
+### 5.4 `GLRenderer`
+
+Batched 2D drawing with three explicit layers:
+
+| Layer | API | Contents |
+|---|---|---|
+| 1 | `fillBackground()` | cell backgrounds, underlines, strikethrough |
+| 2 | `drawGlyph()` | glyphs |
+| 3 | `fillOverlay()`, `strokeOverlay()` | cursor, selection, focus indicators |
+
+`endFrame()` flushes them bottom-up. Draw order is therefore a property of the
+API rather than of the order in which the grid loop happens to submit calls —
+which is the permanent fix for cell backgrounds painting over their own
+characters.
+
+`drawGlyph()` takes a code point, not a `QString`. The old `drawText(QString, …)`
+was called once per cell from the grid loop, allocating a one-character `QString`
+for every cell of every frame.
+
+Vertex buffers grow geometrically on demand rather than being capped at a fixed
+size, and use `StreamDraw`.
+
+### 5.5 `TerminalRenderer`
+
+The only place that knows how a grid maps onto pixels. `computeLayout()` derives
+rows, columns and centring padding from the font metrics and the viewport;
+`paint()` walks the grid and emits draw calls.
+
+Worth noting:
+
+- **Background runs are merged.** Horizontally adjacent cells sharing a
+  background become one quad, so a full-width coloured bar costs 6 vertices
+  instead of 6 per column. The common case — everything on the default
+  background — emits nothing at all, because the frame was already cleared to
+  that colour.
+- **Bold and italic select a real font style** via `fontStyleFor(bold, italic)`.
+  Previously every cell was drawn with the regular face and bold was faked by
+  lightening the foreground colour, so bold text was merely brighter.
+- **Wide-character trailers are skipped**, so a double-width glyph is not
+  double-struck.
+- **Leftover pixels are split evenly** between left/right and top/bottom, so a
+  window that is not an exact multiple of the cell size does not look
+  off-centre.
+- **Padding insets the grid** from the window edge by `window.padding` logical
+  pixels (default 4), scaled to physical pixels by the widget. The padding is
+  subtracted before rows and columns are computed, and any remainder is then
+  shared as above, so both edges keep their gap. Padding is clamped so it can
+  never cost the last row or column on a very small window — the gap is given up
+  before the content is.
 
 ---
 
-# The Glyph Atlas: The Heart of Fast Rendering
+## 6. The UI layer
 
-## What is a Glyph Atlas?
+### 6.1 `TerminalWidget`
 
-A **glyph atlas** is a **single large OpenGL texture** that contains **many character glyphs packed together**. This is a common technique in GPU-accelerated text rendering.
+A `QOpenGLWidget` that owns a `GLRenderer`, a `TerminalSession` and a
+`TerminalRenderer`, and does little else: translate events, compute the layout,
+paint. Process management, byte decoding and VT interpretation all live in
+`TerminalSession`; the grid→pixels mapping lives in `TerminalRenderer`.
 
-### Why Use an Atlas?
+Details worth knowing before editing it:
 
-**Without Atlas** (Naive Approach):
-- ❌ Create 1 separate texture per character (thousands of textures)
-- ❌ Bind different textures for each character (slow GPU state changes)
-- ❌ Re-rasterize characters every frame (CPU intensive)
-- ❌ Massive memory overhead
+- `resizeGL()` must **not** call `makeCurrent()`/`doneCurrent()`. Qt invokes it
+  with the context already current, and releasing it leaves Qt's own resize
+  handling without one. `reloadFont()`, which is called from outside a paint,
+  does need the pair.
+- The destructor makes the context current before releasing GL-owned objects.
+- The cursor blink timer only runs when the pane has focus *and* blinking is
+  enabled. It used to repaint the entire grid twice a second unconditionally.
+  Incoming output resets the blink phase so the cursor stays solid while text
+  arrives.
+- An unfocused pane draws a hollow cursor, which is how tiling terminals signal
+  "input does not go here".
 
-**With Atlas** (RaTTY's Approach):
-- ✅ **One texture** (1024×1024 pixels) containing hundreds of glyphs
-- ✅ **Cache** glyphs once, reuse forever (until font size changes)
-- ✅ **GPU texture sampling** (extremely fast, hardware-accelerated)
-- ✅ **Single texture bind** per frame (minimal state changes)
-- ✅ **Batched rendering** (one draw call for all text)
+### 6.2 `SplitContainer`
 
-## Visual Representation
-
-```
-Glyph Atlas (1024×1024 texture):
-┌─────────────────────────────────────────────────────────┐
-│ A  B  C  D  E  F  G  H  I  J  K  L  M  N  O  P  Q  R    │  ← Shelf 1 (height: 16px)
-├─────────────────────────────────────────────────────────┤
-│ S  T  U  V  W  X  Y  Z  0  1  2  3  4  5  6  7  8  9    │  ← Shelf 2 (height: 16px)
-├─────────────────────────────────────────────────────────┤
-│ a  b  c  d  e  f  g  h  i  j  k  l  m  n  o  p  q  r    │  ← Shelf 3 (height: 16px)
-├─────────────────────────────────────────────────────────┤
-│ s  t  u  v  w  x  y  z  !  @  #  $  %  ^  &  *  (  )    │  ← Shelf 4 (height: 16px)
-├─────────────────────────────────────────────────────────┤
-│ {  }  [  ]  <  >  /  \  |  -  =  +  _  `  ~  '  "  :    │  ← Shelf 5 (height: 16px)
-├─────────────────────────────────────────────────────────┤
-│ 你 好 世 界 こんにちは                                     │  ← Shelf 6 (height: 24px, CJK)
-├─────────────────────────────────────────────────────────┤
-│ λ  π  ∑  ∫  √  ∞  ≈  ≠  ≤  ≥  ∈  ∉  ∪  ∩  ⊂  ⊃          │  ← Shelf 7 (math symbols)
-├─────────────────────────────────────────────────────────┤
-│ ...                                                     │
-└─────────────────────────────────────────────────────────┘
-
-Each glyph stores:
-- Pixel position in atlas (x, y)
-- Dimensions (width, height)
-- UV coordinates (u0, v0, u1, v1) for texture sampling
-- Metrics (bearingX, bearingY, advanceX)
-```
-
-## Data Structures
-
-```cpp
-struct AtlasRegion {
-    int x, y;           // Pixel position in atlas
-    int width, height;  // Pixel dimensions
-    float u0, v0;       // Top-left UV coordinates (normalized 0.0-1.0)
-    float u1, v1;       // Bottom-right UV coordinates
-};
-
-struct CachedGlyph {
-    AtlasRegion region; // Where in the atlas this glyph lives
-    int bearingX;       // Horizontal offset from origin
-    int bearingY;       // Vertical offset from baseline
-    int advanceX;       // Horizontal advance to next character
-    bool isValid;       // Is this glyph successfully cached?
-};
-
-struct GlyphKey {
-    uint32_t codepoint; // Unicode codepoint (e.g., 'A' = 65, '你' = 20320)
-    int style;          // FontStyleRegular, FontStyleBold, etc.
-};
-
-// Cache: maps GlyphKey → CachedGlyph
-QHash<GlyphKey, CachedGlyph> glyphs_;
-```
-
-## How Glyph Caching Works
-
-### 1. Request Glyph
-
-```cpp
-// Example: Render the letter 'A' in bold
-const CachedGlyph* glyph = glyphAtlas->getGlyph('A', FontStyleBold);
-```
-
-### 2. Cache Miss Path (First Time)
-
-If glyph is **not** in cache:
-
-```cpp
-// A. Rasterize with FreeType2
-GlyphBitmap bitmap;
-fontManager_.rasterizeGlyph('A', FontStyleBold, bitmap);
-// Returns: 12×16 grayscale bitmap (8-bit alpha channel)
-
-// B. Allocate space in atlas using shelf packing
-AtlasRegion region;
-bool success = glyphAtlas->allocate(12, 16, region);
-// Returns: {x: 50, y: 0, width: 12, height: 16}
-
-// C. Upload bitmap to GPU texture
-glBindTexture(GL_TEXTURE_2D, atlasTextureId);
-glTexSubImage2D(GL_TEXTURE_2D, 0,
-                region.x, region.y,           // offset in atlas
-                region.width, region.height,   // glyph size
-                GL_RED, GL_UNSIGNED_BYTE,      // single-channel grayscale
-                bitmap.bitmap);                // pixel data
-
-// D. Calculate UV coordinates (normalized 0.0-1.0)
-region.u0 = 50.0f / 1024.0f;   // = 0.0488
-region.v0 = 0.0f / 1024.0f;    // = 0.0
-region.u1 = 62.0f / 1024.0f;   // = 0.0605
-region.v1 = 16.0f / 1024.0f;   // = 0.0156
-
-// E. Store in cache
-CachedGlyph cached;
-cached.region = region;
-cached.bearingX = bitmap.bearingX;
-cached.bearingY = bitmap.bearingY;
-cached.advanceX = bitmap.advanceX;
-cached.isValid = true;
-
-glyphs_.insert(GlyphKey{'A', FontStyleBold}, cached);
-```
-
-### 3. Cache Hit Path (Subsequent Times)
-
-If glyph **is** in cache:
-
-```cpp
-// Instant lookup - no rasterization needed!
-const CachedGlyph* glyph = glyphs_.value(GlyphKey{'A', FontStyleBold});
-// Returns cached glyph with UV coordinates and metrics
-```
-
-### 4. Rendering Cached Glyph
-
-```cpp
-// Create quad (2 triangles = 6 vertices) at screen position
-float x0 = x + glyph->bearingX;
-float y0 = y - glyph->bearingY;
-float x1 = x0 + glyph->region.width;
-float y1 = y0 + glyph->region.height;
-
-// Triangle 1: Top-left, Top-right, Bottom-left
-vertices[0] = {x0, y0, glyph->region.u0, glyph->region.v0, color};
-vertices[1] = {x1, y0, glyph->region.u1, glyph->region.v0, color};
-vertices[2] = {x0, y1, glyph->region.u0, glyph->region.v1, color};
-
-// Triangle 2: Top-right, Bottom-right, Bottom-left
-vertices[3] = {x1, y0, glyph->region.u1, glyph->region.v0, color};
-vertices[4] = {x1, y1, glyph->region.u1, glyph->region.v1, color};
-vertices[5] = {x0, y1, glyph->region.u0, glyph->region.v1, color};
-
-// GPU samples atlas at UV coordinates, extracts alpha, renders glyph
-```
-
-## Shelf-Based Packing Algorithm
-
-The atlas uses a **shelf-based bin packing** algorithm for efficient space utilization:
-
-```cpp
-struct Shelf {
-    int y;          // Y position of shelf baseline
-    int height;     // Height of this shelf (tallest glyph)
-    int xCursor;    // Current X position for next allocation
-};
-```
-
-### Allocation Algorithm
+A binary tree where each node is either a *leaf* holding one `TerminalWidget` or
+a *container* holding a `QSplitter` with exactly two children.
 
 ```
-Allocate glyph (12×16 pixels):
-
-1. Try existing shelves:
-   Shelf 1: y=0, height=16, xCursor=50
-   → Height OK (16 >= 16) ✓
-   → Space available (50 + 12 <= 1024) ✓
-   → Allocate at (50, 0)
-   → Update xCursor: 50 → 62 (50 + 12)
-
-2. If no shelf fits:
-   → Create new shelf at currentY
-   → Set shelf height = glyph height
-   → Allocate from new shelf
-   → Update currentY
-
-3. If currentY + height > 1024:
-   → Atlas is FULL!
-   → Option A: Grow atlas (1024 → 2048)
-   → Option B: Clear and re-cache (font size changed)
+        [Root: Horizontal]
+             /        \
+      [Terminal A]  [Vertical]
+                     /      \
+              [Terminal B] [Terminal C]
 ```
 
-### Example Packing Sequence
+`splitHorizontal()`, `splitVertical()` and `closePane()` all **return the
+resulting root**, because tree surgery can change which node the tab widget
+should hold. The caller (`MainWindow::installTabRoot`) is then told rather than
+having to infer it.
 
-```
-Initial: Empty 1024×1024 atlas
+Two Qt ownership hazards live here, both of which bit the previous
+implementation:
 
-1. Cache 'A' (12×16):
-   - No shelves exist
-   - Create Shelf 1: y=0, height=16
-   - Allocate at (0, 0), xCursor=12
+**Detaching before destroying.** When a pane closes, its sibling must leave the
+doomed parent's `QSplitter` *before* that parent is destroyed. The old code set
+only the logical `sibling->parent_ = nullptr` and then called
+`parent_->deleteLater()` — while the sibling was still a Qt child of the parent's
+splitter, so Qt destroyed the surviving pane along with it. `detachChild()` now
+reparents to `nullptr` first.
 
-2. Cache 'B' (12×16):
-   - Shelf 1 fits (height=16, space available)
-   - Allocate at (12, 0), xCursor=24
+**Showing after reattaching.** `QSplitter::insertWidget()` only auto-shows a
+widget when the splitter itself is already visible, and a widget that has been
+through a `QStackedWidget` — which every tab page has — comes back carrying
+`WA_WState_ExplicitShowHide`, which suppresses the implicit show entirely. Both
+reattachment points therefore call `show()` explicitly. This is verified by
+`tests/test_splits.cpp`; the failure mode is a pane that silently vanishes.
 
-3. Cache 'W' (16×16):
-   - Shelf 1 fits (height=16, space available)
-   - Allocate at (24, 0), xCursor=40
+### 6.3 `MainWindow`
 
-4. Cache 'j' (8×20):  ← Taller glyph with descender
-   - Shelf 1 too short (height=16 < 20)
-   - Create Shelf 2: y=16, height=20
-   - Allocate at (0, 16), xCursor=8
+Tabs, shortcut dispatch and the window title. `handleAction()` is a single
+`switch` over `Action`, and the tab bar auto-hides when there is only one tab so
+a single-terminal window looks like a terminal.
 
-5. Cache 'p' (10×20):
-   - Shelf 2 fits (height=20, space available)
-   - Allocate at (8, 16), xCursor=18
+Note that both `paneSessionEnded` and `paneTitleChanged` connect to *member
+functions*: `Qt::UniqueConnection` is silently rejected for lambdas, and
+`installTabRoot()` may reconnect the same root more than once.
 
-Result:
-┌────────────────────────────┐
-│ A B W ... (more 16px)      │  Shelf 1: y=0, height=16
-├────────────────────────────┤
-│ j p ... (more 20px)        │  Shelf 2: y=16, height=20
-├────────────────────────────┤
-│ (future shelves)           │
-└────────────────────────────┘
-```
+### 6.4 `InputHandler`
 
-## Memory Efficiency
+Qt key events to VT bytes, with xterm's modifier encoding (`CSI 1 ; mod A`), so
+Shift+Arrow and Ctrl+Arrow are distinguishable from the bare key. Cursor keys
+switch to the SS3 form (`ESC O A`) when the application has set `DECCKM`.
 
-### Single-Channel Texture (GL_RED)
-
-RaTTY uses **GL_RED** format (single-channel) instead of RGBA:
-
-```
-RGBA format: 4 bytes per pixel
-1024×1024 atlas = 1,048,576 pixels × 4 bytes = 4 MB
-
-GL_RED format: 1 byte per pixel
-1024×1024 atlas = 1,048,576 pixels × 1 byte = 1 MB
-
-Savings: 75% memory reduction! 🎉
-```
-
-**Why this works**:
-- Glyphs are grayscale (single alpha channel)
-- Shader swizzles R → R,G,B for color
-- Texture swizzle mask on macOS: `(R, R, R, 1)`
-
-### Padding Between Glyphs
-
-```cpp
-static constexpr int ATLAS_PADDING = 1; // 1 pixel padding
-```
-
-Prevents **texture bleeding** when GPU samples between adjacent glyphs due to bilinear filtering.
-
-## Atlas Growing
-
-When the atlas fills up (>90% usage or no vertical space):
-
-```cpp
-bool GlyphAtlas::grow() {
-    int newSize = size_ * 2;  // 1024 → 2048
-
-    // Delete old texture
-    glDeleteTextures(1, &textureId_);
-
-    // Create new larger texture
-    size_ = newSize;
-    glGenTextures(1, &textureId_);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, newSize, newSize, ...);
-
-    // Clear cache (all glyphs must be re-cached)
-    shelves_.clear();
-    glyphs_.clear();
-
-    return true;
-}
-```
-
-**Note**: Growing requires re-caching all glyphs, which is expensive. The default 1024×1024 atlas is usually sufficient for typical terminal usage.
-
-## Atlas Lifecycle
-
-1. **Creation**: `initializeGL()` creates 1024×1024 GL_RED texture
-2. **Population**: Glyphs cached on-demand as characters are rendered
-3. **Persistence**: Cache remains valid until font size changes
-4. **Invalidation**: Clear cache when:
-   - Font size changes
-   - Font family changes
-   - Atlas grows (size doubles)
-5. **Destruction**: `~GlyphAtlas()` deletes OpenGL texture
+Covered by `tests/test_input.cpp`, including the check that shell control keys
+(Ctrl+C/D/W/R/Z/L/A/E/U and Tab) are **not** bound to application shortcuts.
 
 ---
 
-# The Rendering Process (Frame by Frame)
+## 7. Configuration
 
-## Frame Rendering Flow
+Settings are loaded in layers, each overriding only the keys it contains:
 
-Every frame (typically 60 FPS at vsync), Qt calls `paintGL()`:
+1. built-in defaults (`Palette`'s constructor and `Config::applyBuiltInDefaults`)
+2. `:/config/default_config.json` — compiled into the binary from
+   `src/config/default_config.json`
+3. `~/.config/ratty/config.json` — the user's overlay
 
-```cpp
-void TerminalWidget::paintGL() {
-    if (!renderer_ || !emulator_) return;
+This fixes two concrete problems. A config file without a `keybindings` section
+used to leave the application with *no* keybindings at all, because the loader
+cleared the table and then only inserted what the file listed. And the bundled
+defaults were looked up through the relative path
+`src/config/default_config.json`, so they were only found when the binary
+happened to be run from the project root.
 
-    // 1. Begin frame - sets up projection matrix
-    renderer_->beginFrame(width(), height());
-
-    // 2. Clear background to configured color
-    Config& config = Config::instance();
-    renderer_->clear(config.backgroundColor());
-
-    // 3. Render each cell in the terminal grid
-    FontMetrics metrics = renderer_->getFontMetrics();
-
-    for (int row = 0; row < emulator_->rows(); ++row) {
-        for (int col = 0; col < emulator_->cols(); ++col) {
-            const Cell& cell = emulator_->cellAt(row, col);
-
-            float x = col * metrics.cellWidth;
-            float y = row * metrics.cellHeight;
-
-            // Get cell colors (handle inverse attribute)
-            QColor fgColor = cell.attrs.foreground;
-            QColor bgColor = cell.attrs.background;
-            if (cell.attrs.inverse) {
-                std::swap(fgColor, bgColor);
-            }
-
-            // Draw background if not default
-            if (bgColor != config.backgroundColor()) {
-                renderer_->drawRect(x, y,
-                                   metrics.cellWidth,
-                                   metrics.cellHeight,
-                                   bgColor);
-            }
-
-            // Draw character if not space
-            if (cell.ch != ' ') {
-                // Make bold text brighter
-                if (cell.attrs.bold) {
-                    fgColor = fgColor.lighter(130);
-                }
-
-                float textY = y + metrics.ascender;
-                renderer_->drawText(QString(cell.ch), x, textY, fgColor);
-
-                // Draw underline if needed
-                if (cell.attrs.underline) {
-                    float underlineY = y + metrics.cellHeight - 2;
-                    renderer_->drawRect(x, underlineY,
-                                       metrics.cellWidth, 1,
-                                       fgColor);
-                }
-            }
-        }
-    }
-
-    // 4. Draw cursor (blinking)
-    if (cursorVisible_) {
-        int cursorRow = emulator_->cursorRow();
-        int cursorCol = emulator_->cursorCol();
-
-        float cursorX = cursorCol * metrics.cellWidth;
-        float cursorY = cursorRow * metrics.cellHeight;
-
-        QColor cursorColor = config.cursorColor();
-        cursorColor.setAlpha(128);  // Semi-transparent
-
-        renderer_->drawRect(cursorX, cursorY,
-                           metrics.cellWidth,
-                           metrics.cellHeight,
-                           cursorColor);
-    }
-
-    // 5. End frame - flushes batched geometry to GPU
-    renderer_->endFrame();
+```json
+{
+  "font":   { "family": ["DroidSansMono Nerd Font", "Menlo"], "size": 13 },
+  "cursor": { "style": "block", "blink": true },
+  "colors": {
+    "background": "#1e1e1e",
+    "foreground": "#dcdcdc",
+    "cursor": "#dcdcdc",
+    "red": "#cd3131",
+    "bright_red": "#f14c4c"
+  },
+  "window": { "width": 1280, "height": 720, "padding": 4, "opacity": 1.0,
+              "fullscreen": false },
+  "keybindings": { "ctrl+shift+t": "new_tab", "ctrl+shift+w": "none" }
 }
 ```
 
-## Text Rendering Deep Dive
+- All 16 base ANSI colours are overridable by name (`black`, `red`, …,
+  `bright_white`). Slots 16–255 are generated (6×6×6 cube plus greyscale ramp).
+- `font.family` accepts a single name **or an array tried in order**. The array
+  form is how a config can name a preferred font and still degrade gracefully on
+  a machine where it is not installed; see
+  [§5.2](#52-fontmanager) for the resolution rules. `"Monospace"` or `""` means
+  "ask the platform".
+- `font.fallback` names families to consult for code points the primary font
+  lacks, ahead of automatic discovery. Left empty, the platform's monospaced font
+  and any installed colour-emoji font are used.
+- `window.padding` is the gap between the text and the window edge, in logical
+  pixels.
+- Cursor styles: `block`, `hollow`, `underline`, `bar`.
+- Binding an action to `"none"` **removes** a default binding — the only way for
+  a user overlay to unbind something it did not create.
+- Action names live in one table (`kActionNames`) used for both directions of the
+  string↔enum mapping, instead of a hand-maintained `switch` and `if`-chain.
 
-```cpp
-void GLRenderer::drawText(const QString& text, float x, float y,
-                         const QColor& color, FontStyle style) {
-    for (QChar ch : text) {
-        uint32_t codepoint = ch.unicode();
+Key sequences accept `ctrl`/`control`, `shift`, `alt`/`option`,
+`meta`/`super`/`cmd`, named keys (`up`, `pageup`, `escape`, …), function keys
+(`f1`…`f12`), and spelled-out punctuation (`plus`, `minus`, `underscore`,
+`backslash`, `bracketleft`, …) — the last because `ctrl+shift++` cannot be split
+on `+` unambiguously.
 
-        // 1. Check if glyph is cached
-        if (!glyphAtlas_->hasGlyph(codepoint, style)) {
-            // 2. Rasterize with FreeType2
-            GlyphBitmap bitmap;
-            if (!fontManager_.rasterizeGlyph(codepoint, style, bitmap)) {
-                // Glyph not found in font, skip
-                x += fontManager_.getMetrics().cellWidth;
-                continue;
-            }
+### Layout tolerance
 
-            // 3. Cache in atlas
-            glyphAtlas_->cacheGlyph(codepoint, style,
-                                   bitmap.bitmap,
-                                   bitmap.width,
-                                   bitmap.height,
-                                   bitmap.bearingX,
-                                   bitmap.bearingY,
-                                   bitmap.advanceX);
-        }
+Qt reports either the unshifted key or the shifted symbol for the same physical
+key, depending on platform and layout: `Ctrl+Shift+1` arrives as `Key_1` on one
+machine and `Key_Exclam` on another. A binding matched only against the literal
+combination would therefore work on some keyboards and not others.
 
-        // 4. Get cached glyph
-        const CachedGlyph* glyph = glyphAtlas_->getGlyph(codepoint, style);
-        if (!glyph || !glyph->isValid) {
-            x += fontManager_.getMetrics().cellWidth;
-            continue;
-        }
+`Config::lookupAction(const QKeyEvent*)` handles this by retrying with the key's
+shift partner (`1`↔`!`, `\`↔`|`, `-`↔`_`, `=`↔`+`, …). The retry happens **only**
+when Shift is held: without Shift there is no ambiguity about which symbol was
+meant, and rewriting unshifted keys would risk turning `Ctrl+C` into a shortcut.
 
-        // 5. Calculate quad vertices
-        float x0 = x + glyph->bearingX;
-        float y0 = y - glyph->bearingY;
-        float x1 = x0 + glyph->region.width;
-        float y1 = y0 + glyph->region.height;
+A consequence worth keeping in mind when editing the defaults: two actions must
+never be bound to the two halves of the same physical key, because which one wins
+would then depend on the user's keyboard. The default bindings put font sizing on
+`+`/`-` and splits on letters (plus `\` as an alias) for exactly this reason.
 
-        // Convert QColor to floats
-        float r = color.redF();
-        float g = color.greenF();
-        float b = color.blueF();
-        float a = color.alphaF();
-
-        // 6. Add 6 vertices to batch (2 triangles)
-        batch_.textVertices.append({
-            // Triangle 1
-            {x0, y0}, {glyph->region.u0, glyph->region.v0}, {r, g, b, a},  // Top-left
-            {x1, y0}, {glyph->region.u1, glyph->region.v0}, {r, g, b, a},  // Top-right
-            {x0, y1}, {glyph->region.u0, glyph->region.v1}, {r, g, b, a},  // Bottom-left
-
-            // Triangle 2
-            {x1, y0}, {glyph->region.u1, glyph->region.v0}, {r, g, b, a},  // Top-right
-            {x1, y1}, {glyph->region.u1, glyph->region.v1}, {r, g, b, a},  // Bottom-right
-            {x0, y1}, {glyph->region.u0, glyph->region.v1}, {r, g, b, a},  // Bottom-left
-        });
-
-        // 7. Advance to next character position
-        x += glyph->advanceX;
-    }
-}
-```
-
-## Batched Rendering (Critical Optimization!)
-
-**Problem**: Rendering each character individually is SLOW:
-
-```cpp
-// BAD: 10,000 draw calls for 10,000 characters
-for (each character) {
-    glBufferData(..., 6 vertices);
-    glDrawArrays(GL_TRIANGLES, 0, 6);  // GPU state change = EXPENSIVE
-}
-// Result: 10,000 GPU state changes = 1-2 FPS 😢
-```
-
-**Solution**: Batch all geometry into one buffer:
-
-```cpp
-// GOOD: Accumulate all vertices, then ONE draw call
-QVector<TextVertex> batch;
-for (each character) {
-    batch.append(6 vertices);  // Just accumulate in CPU memory
-}
-glBufferData(..., batch);
-glDrawArrays(GL_TRIANGLES, 0, batch.size());  // ONE GPU state change
-// Result: 1 GPU state change = 60 FPS 🚀
-```
-
-**RaTTY's Implementation**:
-
-```cpp
-// During frame:
-drawText("Hello");   // Adds 30 vertices to batch
-drawText("World");   // Adds 30 more vertices to batch
-// ... thousands more characters ...
-
-// At end of frame:
-void GLRenderer::endFrame() {
-    flushTextBatch();  // Upload ALL vertices at once
-    flushRectBatch();  // Upload ALL rectangles at once
-}
-
-void GLRenderer::flushTextBatch() {
-    if (batch_.textVertices.isEmpty()) return;
-
-    // Upload to GPU
-    textVBO_.bind();
-    textVBO_.write(0,
-                   batch_.textVertices.constData(),
-                   batch_.textVertices.size() * sizeof(TextVertex));
-
-    // Bind atlas texture
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, glyphAtlas_->textureId());
-
-    // Draw ALL text with ONE call
-    textVAO_.bind();
-    glDrawArrays(GL_TRIANGLES, 0, batch_.textVertices.size());
-
-    // Clear batch for next frame
-    batch_.textVertices.clear();
-}
-```
-
-**Performance Numbers**:
-- 80×24 terminal = 1,920 characters
-- 1,920 characters × 6 vertices = 11,520 vertices
-- **Without batching**: 1,920 draw calls
-- **With batching**: 1 draw call
-- **Speedup**: ~1000× faster! 🚀
+`Config::save()` no longer exists. It was a no-op that logged "not yet
+implemented" while `closeEvent` dutifully wrote the window size into it;
+persisting geometry is listed in `todo-ratty.md` instead of being pretended at.
 
 ---
 
-# Shader Pipeline (GPU Programs)
+## 8. Two bugs worth understanding
 
-## Vertex Shader (text.vert)
-**Location**: `resources/shaders/text.vert`
+Both of these were reported as visual defects and both turned out to have precise
+mechanical causes. They are documented because the reasoning generalises.
 
-```glsl
-#version 330 core
+### 8.1 Blurry text
 
-// Input: per-vertex attributes
-layout(location = 0) in vec2 a_position;   // Screen position (x, y)
-layout(location = 1) in vec2 a_texcoord;   // UV coordinates (u, v)
-layout(location = 2) in vec4 a_color;      // RGBA color
+**Symptom.** Text noticeably softer than kitty at the same size.
 
-// Output: interpolated values passed to fragment shader
-out vec2 v_texcoord;
-out vec4 v_color;
+**Cause.** Four compounding factors, all variations on "logical pixels used where
+physical pixels were meant":
 
-// Uniform: constant for all vertices in this draw call
-uniform mat4 u_projection;  // Orthographic projection matrix
+1. `GLRenderer::beginFrame(width(), height())` built the projection from the
+   widget's **logical** size, while Qt had set the viewport to the
+   **device-pixel** size. On a `devicePixelRatio` of 2 the entire scene was
+   stretched 2× by the GPU.
+2. The font was rasterized at `screen->logicalDotsPerInch()`, which is **72** on
+   macOS, so a 12 pt font got a 12-pixel em box — a quarter of the data needed to
+   fill the 24 physical pixels it was then stretched across.
+3. The atlas used `GL_LINEAR`, so that stretch was a resampling pass rather than
+   a clean magnification.
+4. `setSamples(4)` requested 4× MSAA for a pure 2D alpha-blended pass, adding a
+   resolve blit that helped nothing.
 
-void main() {
-    // Transform position from screen space to clip space
-    gl_Position = u_projection * vec4(a_position, 0.0, 1.0);
+`resizeGL()` also called `glViewport(0, 0, w, h)` with the logical size. That one
+was harmless only by accident: Qt overwrites the viewport before each `paintGL()`.
 
-    // Pass texture coordinates and color to fragment shader
-    // (GPU will interpolate these across the triangle)
-    v_texcoord = a_texcoord;
-    v_color = a_color;
-}
+**Fix.** §5.1. Measured result: ~4× the glyph coverage data and no resampling.
+
+### 8.2 The white block after every Enter
+
+**Symptom**, exactly as reported:
+
+```
+<white block>
+terminal@prompt: somecommand
+somecommand output
+<white block>
+terminal@prompt:
 ```
 
-**What it does**:
-1. Takes vertex position in **screen coordinates** (e.g., x=100, y=200)
-2. Multiplies by **orthographic projection matrix** to convert to **clip space** (-1 to +1)
-3. Passes UV coordinates and color to fragment shader (interpolated across triangle)
+**Investigation.** Capturing what zsh actually writes to the pty after Enter:
 
-**Projection Matrix**:
-```cpp
-// In GLRenderer::beginFrame():
-QMatrix4x4 projection;
-projection.ortho(0.0f, width, height, 0.0f, -1.0f, 1.0f);
-//               left  right  bottom top   near   far
-
-// This maps:
-// (0, 0) → top-left corner
-// (width, height) → bottom-right corner
+```
+\x1b[1m\x1b[7m%\x1b[27m\x1b[1m\x1b[0m<79 spaces>\r \r
+\x1b]2;…\x07\x1b]7;file://…\x1b\\
+\r\x1b[0m\x1b[27m\x1b[24m\x1b[J<prompt>
 ```
 
-## Fragment Shader (text.frag)
-**Location**: `resources/shaders/text.frag`
+That first line is zsh's `PROMPT_SP` end-of-line marker. It prints an inverse
+`%`, pads with spaces to the right margin, then does `\r` `space` `\r` to erase
+the marker. The trick depends entirely on **deferred wrap**: in a correct
+terminal, filling the last column leaves the cursor on that same row, so the
+`\r space \r` erases the `%` and the prompt is drawn over it.
 
-```glsl
-#version 330 core
+**Cause.** Two independent defects composing:
 
-// Input: interpolated values from vertex shader
-in vec2 v_texcoord;   // UV coordinates for this pixel
-in vec4 v_color;      // Color for this pixel
+1. **`Screen` wrapped eagerly.** `putCharAtCursor` set `cursorCol_ = 0;
+   cursorRow_++` the instant a character filled the last column. So the padding
+   spaces advanced the cursor a row, the erase landed one row too low, and the
+   inverse `%` survived — plus an extra row was consumed on every prompt.
+2. **Rectangles were flushed after text.** `endFrame()` called
+   `flushTextBatch()` and then `flushRectBatch()`, so any cell with a
+   non-default background painted over its own glyph. The marker cell's inverse
+   attribute made its background the near-white foreground colour, and the `%`
+   glyph underneath was covered — turning an inverse `%` into a featureless
+   white block.
 
-// Output: final pixel color
-out vec4 frag_color;
+**Verification.** Replaying that byte stream through the old core reproduces it
+exactly — one opaque block per Enter, each on its own row:
 
-// Uniform: glyph atlas texture
-uniform sampler2D u_texture;
-
-void main() {
-    // Sample atlas texture at UV coordinates
-    // The atlas is GL_RED (single channel), so we read from .r component
-    float alpha = texture(u_texture, v_texcoord).r;
-
-    // Multiply vertex color by glyph alpha
-    // This creates colored text with anti-aliasing
-    frag_color = vec4(v_color.rgb, v_color.a * alpha);
-}
+```
+ 0 |echo hola                    |
+ 1 |<opaque block>               |
+ 2 |dalvarez@MM repos/ratty (main) > |
+ 3 |<opaque block>               |
+ 4 |dalvarez@MM repos/ratty (main) > |
+--> opaque blocks drawn over text: 3
 ```
 
-**What it does**:
-1. Samples the **glyph atlas texture** at interpolated UV coordinates
-2. Extracts alpha value from red channel (GL_RED texture)
-3. Multiplies vertex color by glyph alpha
-4. Outputs final pixel color with anti-aliasing
+The same stream through the new core gives zero opaque cells and one row per
+prompt. Pinned by `tests/test_terminal.cpp`
+(`testDeferredWrap`, `testZshPromptArtifact`).
 
-**Example**:
-```
-Rendering red 'A':
-- Vertex color: (1.0, 0.0, 0.0, 1.0) = red
-- Glyph alpha at (0.5, 0.5): 0.8 = mostly opaque
-- Final color: (1.0, 0.0, 0.0, 0.8) = red with 80% opacity
+**Fix.** Deferred wrap in `Screen` ([§4.2](#42-screen)) and layered draw order in
+`GLRenderer` ([§5.4](#54-glrenderer)).
 
-Edge pixel with anti-aliasing:
-- Vertex color: (1.0, 0.0, 0.0, 1.0) = red
-- Glyph alpha at edge: 0.3 = semi-transparent
-- Final color: (1.0, 0.0, 0.0, 0.3) = red with 30% opacity
-→ Smooth edges, no jaggies!
-```
-
-## Rectangle Shader (rect.vert / rect.frag)
-**Location**: `resources/shaders/rect.vert` and `rect.frag`
-
-Simpler shaders for solid rectangles (backgrounds, cursor):
-
-```glsl
-// rect.vert
-#version 330 core
-layout(location = 0) in vec2 a_position;
-layout(location = 1) in vec4 a_color;
-
-out vec4 v_color;
-uniform mat4 u_projection;
-
-void main() {
-    gl_Position = u_projection * vec4(a_position, 0.0, 1.0);
-    v_color = a_color;
-}
-
-// rect.frag
-#version 330 core
-in vec4 v_color;
-out vec4 frag_color;
-
-void main() {
-    frag_color = v_color;  // Just output the color directly
-}
-```
-
-**Use cases**:
-- Cell backgrounds (non-default background colors)
-- Cursor rectangle
-- Underlines
-- Focus borders (when implemented)
-- Selection highlighting (future)
+While in the same area, three more defects in the same byte stream were fixed:
+the `ESC \` string terminator printed a stray `\` into the grid; `\x1b[38;5;208m`
+selected no colour at all; and a UTF-8 sequence split across two pty reads became
+replacement characters.
 
 ---
 
-# Input Flow (Keyboard → Shell)
+## 9. Building, running and testing
 
-## Input Path
+### Dependencies
 
-```
-┌─────────────┐  keyPressEvent()  ┌──────────────┐  keyEventToBytes()  ┌─────────┐
-│   Qt Event  │──────────────────>│ InputHandler │────────────────────>│  VT100  │
-│   System    │                   │              │                     │  Bytes  │
-└─────────────┘                   └──────────────┘                     └─────────┘
-                                                                            │
-                                                                            │ write()
-                                                                            ▼
-                                                                        ┌─────────┐
-                                                                        │   PTY   │
-                                                                        │ (Shell) │
-                                                                        └─────────┘
-```
+- CMake ≥ 3.16
+- A C++20 compiler (Apple Clang 15+, Clang 16+, GCC 12+)
+- Qt 6 — Core, Gui, Widgets, OpenGL, OpenGLWidgets
+- FreeType ≥ 2
+- OpenGL 3.3 core profile
+- `fontconfig` (`fc-match`) is *recommended*; without it a built-in list of font
+  paths is used
 
-## InputHandler
-**Location**: `src/ui/input_handler.h/cpp`
+```bash
+# macOS
+brew install cmake qt@6 freetype fontconfig
 
-Converts Qt `QKeyEvent` to VT100 escape sequences:
-
-```cpp
-QByteArray InputHandler::keyEventToBytes(QKeyEvent* event) {
-    int key = event->key();
-    Qt::KeyboardModifiers mods = event->modifiers();
-
-    // Handle special keys
-    if (key == Qt::Key_Up) return "\x1b[A";      // Cursor up
-    if (key == Qt::Key_Down) return "\x1b[B";    // Cursor down
-    if (key == Qt::Key_Right) return "\x1b[C";   // Cursor right
-    if (key == Qt::Key_Left) return "\x1b[D";    // Cursor left
-    if (key == Qt::Key_Home) return "\x1b[H";    // Home
-    if (key == Qt::Key_End) return "\x1b[F";     // End
-
-    // Handle Ctrl combinations
-    if (mods & Qt::ControlModifier) {
-        if (key >= Qt::Key_A && key <= Qt::Key_Z) {
-            // Ctrl+A = 0x01, Ctrl+B = 0x02, ..., Ctrl+Z = 0x1A
-            int ctrl = key - Qt::Key_A + 1;
-            return QByteArray(1, ctrl);
-        }
-        if (key == Qt::Key_C) return "\x03";     // Ctrl+C = ETX
-        if (key == Qt::Key_D) return "\x04";     // Ctrl+D = EOT
-        if (key == Qt::Key_Z) return "\x1A";     // Ctrl+Z = SUB
-    }
-
-    // Handle Alt combinations (ESC prefix)
-    if (mods & Qt::AltModifier) {
-        QByteArray text = event->text().toUtf8();
-        return "\x1b" + text;  // Alt+key = ESC + key
-    }
-
-    // Normal text
-    return event->text().toUtf8();
-}
+# Debian / Ubuntu
+sudo apt install build-essential cmake qt6-base-dev libfreetype6-dev \
+                 libgl1-mesa-dev fontconfig
 ```
 
-## Examples
+### Build
 
-```
-User Action              Qt Event                   VT100 Bytes      Shell Receives
------------              --------                   -----------      --------------
-Press 'A'                Key_A                      "A"              'A' character
-Press Enter              Key_Return                 "\r"             Carriage return
-Press Backspace          Key_Backspace              "\x7F"           DEL character
-Press Ctrl+C             Key_C + ControlModifier    "\x03"           SIGINT signal
-Press Ctrl+D             Key_D + ControlModifier    "\x04"           EOF (exit shell)
-Press Up Arrow           Key_Up                     "\x1b[A"         Previous command
-Press Alt+B              Key_B + AltModifier        "\x1bB"          Move back word (readline)
-Press Tab                Key_Tab                    "\t"             Tab completion
-Press Escape             Key_Escape                 "\x1b"           ESC character
+```bash
+cmake -S . -B build
+cmake --build build -j
+./build/ratty
 ```
 
-## PTY Write
-**Location**: `src/core/pty.cpp`
+`CMAKE_BUILD_TYPE` defaults to `Release`. The build is warning-clean under
+`-Wall -Wextra -Wpedantic`.
 
-```cpp
-ssize_t PTY::write(const char* buf, size_t len) {
-    if (!isValid()) return -1;
+The project no longer pins a compiler. It used to default
+`CMAKE_CXX_COMPILER` to `/opt/homebrew/opt/llvm@20/bin/clang++`, which fails on
+any machine without that exact Homebrew formula.
 
-    // Write to PTY master fd
-    // This data appears on the slave fd (shell's stdin)
-    return ::write(master_fd_, buf, len);
-}
+### Tests
+
+```bash
+cmake -S . -B build -DRATTY_BUILD_TESTS=ON
+cmake --build build -j
+cd build && ctest --output-on-failure
 ```
 
-The shell reads from its stdin (PTY slave fd) and processes the input as if it came from a real terminal.
+| Suite | Covers |
+|---|---|
+| `test_terminal` | deferred wrap, the zsh prompt artifact, OSC termination, CSI parsing, scrolling regions, the alternate buffer, SGR colours, erase semantics, UTF-8 chunk splitting, wide characters, resize, device reports |
+| `test_input` | config keybindings resolving against real `QKeyEvent`s, shell control keys staying unbound, VT input encoding |
+| `test_splits` | pane tree surgery: nothing destroyed that should survive, nothing left invisible, directional navigation |
+| `test_render` | grid padding maths, box-drawing tiling, fallback coverage of the characters a TUI draws, font preference order, and the guarantee that no resolution path yields a proportional font |
+
+They run under `QT_QPA_PLATFORM=offscreen` and need no GPU. `tests/check.h` is a
+three-function harness, not a framework.
+
+One CMake subtlety, since it caused a confusing failure: a `.qrc` compiled into a
+**static** library registers itself from a global initializer that the linker
+discards, because nothing references it — the resources then silently do not
+exist. `RATTY_RESOURCES_ABS` is therefore compiled into each executable rather
+than into `ratty_lib`.
 
 ---
 
-# Session Lifecycle & Auto-Cleanup
+## 10. Known gaps
 
-## Session Start
+Tracked in `todo-ratty.md`; listed here with the architectural context.
 
-```
-1. User opens RaTTY application
-   └─> MainWindow created
-       └─> MainWindow::addTab() creates first tab
-           └─> SplitContainer::createLeaf() creates terminal
-               └─> TerminalWidget constructed
-                   └─> TerminalWidget::initializeGL()
-                       ├─> GLRenderer created
-                       ├─> TerminalEmulator created (e.g., 80×24 grid)
-                       └─> TerminalWidget::createPTY()
-                           └─> PTY constructed (rows=24, cols=80)
-                               ├─> forkpty() spawns shell
-                               ├─> Child process: exec("/bin/zsh")
-                               └─> Parent process: QSocketNotifier monitors master fd
+**No scrollback.** `Screen` holds exactly one viewport. The row indirection table
+is the natural place to grow one: a ring buffer of rows with a view offset, with
+`scrollUp` pushing the evicted row into history instead of clearing it. Until
+then `wheelEvent` swallows scrolling and the scroll actions are bound but inert.
 
-2. Shell starts and outputs prompt
-   └─> Shell writes to slave fd
-       └─> Master fd becomes readable
-           └─> QSocketNotifier::activated signal
-               └─> TerminalWidget::onPTYDataReady()
-                   └─> PTY::read() reads bytes
-                       └─> TerminalEmulator::processData() parses
-                           └─> Grid updated with prompt text
-                               └─> paintGL() renders to screen
-```
+**No text selection.** `copySelection()` logs and returns. `Palette` already
+carries a selection colour and `GLRenderer` has an overlay layer, so the missing
+pieces are a selection range in the widget, mouse drag handling, and a
+grid→string conversion that handles wide characters and trailing blanks.
 
-## Session End (Auto-Cleanup)
+**No mouse reporting.** Modes 1000–1006 are recognised and ignored, so
+applications that probe for mouse support correctly conclude there is none.
 
-**NEW FEATURE**: Automatic cleanup when shell exits
+**No combining marks.** `Cell` stores a single `char32_t`, so zero-width marks
+are dropped rather than composed. Fixing this properly means a side table of
+grapheme extensions keyed by cell.
 
-```
-1. User types 'exit' in shell
-   └─> Shell receives "exit\n"
-       └─> Shell executes exit command
-           └─> Shell process terminates (child exits)
+**No ligatures or complex shaping.** Rendering is glyph-per-cell with no
+HarfBuzz, which is the right default for a terminal grid but rules out
+programming ligatures.
 
-2. PTY detects child exit
-   └─> TerminalWidget::onPTYDataReady() called
-       └─> PTY::read() returns 0 (EOF)
-           └─> PTY::hasChildExited() checks child status
-               └─> waitpid(WNOHANG) returns pid (child exited)
-                   └─> Returns true
+**Emoji presentation is not negotiated.** A code point with both a text and an
+emoji form (U+26A0 for instance) always resolves to whichever font the chain
+reaches first, and the variation selectors U+FE0E/U+FE0F that would choose
+between them are dropped along with all other zero-width marks.
 
-3. TerminalWidget emits signal
-   └─> emit sessionEnded()
+**`charWidth()` is a hand-maintained table.** It covers the East Asian and emoji
+blocks that matter, but it is not generated from `UnicodeData.txt` and will drift
+from newer Unicode revisions.
 
-4. SplitContainer receives signal
-   └─> SplitContainer::onTerminalSessionEnded()
-       └─> emit sessionEnded(this)  // Forward up tree
+**No gamma-correct blending.** Glyph coverage is blended in sRGB space, which
+makes light-on-dark text slightly thinner than a gamma-aware blend would. A
+correction term in `text.frag` would be a small, self-contained improvement.
 
-5. MainWindow receives signal
-   └─> MainWindow::onSplitSessionEnded(split)
-       └─> Determine action based on context:
+**No damage tracking.** Every frame redraws the whole grid. At 80×24 this is one
+batched draw call and entirely adequate, but `Screen::revision()` and a per-row
+dirty flag are the hooks for doing better on very large windows.
 
-       Case A: Only split in tab
-           └─> closeTab(index)
-               └─> If last tab:
-                   └─> close() → Application exits
-               └─> Otherwise:
-                   └─> Remove tab, delete SplitContainer
+**`src/utils/retcodes.h` is unused.** 273 lines of error-code macros that nothing
+includes. It is kept for now because a consistent error vocabulary is a
+reasonable future direction, but it is currently dead weight.
 
-       Case B: Split within split tree
-           └─> split->closeSplit()
-               ├─> Find sibling split
-               ├─> Replace parent with sibling in tree
-               ├─> Delete this split (deleteLater())
-               └─> Delete parent container (deleteLater())
-```
-
-### Implementation Details
-
-**PTY Exit Detection** (`src/core/pty.cpp`):
-```cpp
-bool PTY::hasChildExited() const {
-    if (child_pid_ <= 0) return true;
-
-    int status;
-    pid_t result = waitpid(child_pid_, &status, WNOHANG);
-
-    // result > 0:  child has exited
-    // result == 0: child is still running
-    // result < 0:  error (child doesn't exist)
-    return result != 0;
-}
-```
-
-**Terminal Widget Detection** (`src/ui/terminal_widget.cpp`):
-```cpp
-void TerminalWidget::onPTYDataReady() {
-    char buffer[4096];
-    ssize_t n = pty_->read(buffer, sizeof(buffer));
-
-    if (n > 0) {
-        // Process data normally
-        emulator_->processData(QString::fromUtf8(buffer, n));
-        update();
-    } else if (n < 0) {
-        // Read error
-        ptyNotifier_->setEnabled(false);
-    } else if (n == 0) {
-        // EOF - check if child exited
-        if (pty_->hasChildExited()) {
-            qDebug() << "PTY session ended (child exited)";
-            ptyNotifier_->setEnabled(false);
-            emit sessionEnded();  // Trigger cleanup
-        }
-    }
-}
-```
-
-**Split Cleanup** (`src/ui/split_container.cpp`):
-```cpp
-void SplitContainer::onTerminalSessionEnded() {
-    qDebug() << "Terminal session ended";
-    emit sessionEnded(this);  // Forward to parent
-}
-
-// Connect terminal signal to split
-connect(terminal_, &TerminalWidget::sessionEnded,
-        this, &SplitContainer::onTerminalSessionEnded);
-
-// Forward child signals up tree (for containers)
-connect(child1_, &SplitContainer::sessionEnded,
-        this, &SplitContainer::sessionEnded);
-connect(child2_, &SplitContainer::sessionEnded,
-        this, &SplitContainer::sessionEnded);
-```
-
-**Main Window Orchestration** (`src/ui/main_window.cpp`):
-```cpp
-void MainWindow::onSplitSessionEnded(SplitContainer* split) {
-    // Find which tab contains this split
-    int tabIndex = findTabContainingSplit(split);
-    SplitContainer* tabRoot = tabAt(tabIndex);
-
-    if (split == tabRoot) {
-        // This is the only split in the tab
-        if (tab_widget_->count() == 1) {
-            // Last tab - close window (exit app)
-            close();
-        } else {
-            // Close this tab
-            closeTab(tabIndex);
-        }
-    } else {
-        // Split within a split tree - close just this split
-        if (split->closeSplit()) {
-            // Tree restructured - may need to update tab root
-            updateTabIfRootChanged(tabIndex, tabRoot);
-        }
-    }
-}
-```
-
-### Memory Management
-
-Qt's parent-child ownership ensures proper cleanup:
-
-```
-When SplitContainer deleted:
-    └─> Qt deletes children automatically
-        ├─> TerminalWidget deleted
-        │   ├─> ~TerminalWidget()
-        │   │   ├─> pty_.reset()
-        │   │   │   └─> ~PTY()
-        │   │   │       ├─> close(master_fd_)
-        │   │   │       └─> kill(child_pid_, SIGHUP)
-        │   │   ├─> emulator_.reset()
-        │   │   └─> renderer_.reset()
-        │   │       ├─> ~GLRenderer()
-        │   │       │   ├─> delete glyphAtlas_
-        │   │       │   │   └─> glDeleteTextures()
-        │   │       │   └─> delete shaders
-        │   │       └─> fontManager_.~FontManager()
-        │   │           └─> FT_Done_Face() for all faces
-        │   └─> Qt deletes child widgets
-        └─> QSplitter deleted (if container)
-            └─> Child SplitContainers deleted recursively
-```
-
-**No memory leaks!** Everything is properly cleaned up via:
-- Smart pointers (`std::unique_ptr`)
-- Qt parent-child relationships
-- RAII (Resource Acquisition Is Initialization)
-
----
-
-# How Everything Binds Together
-
-## Qt Signal/Slot Connections
-
-Signals and slots are Qt's way of connecting objects. Think of them as event subscriptions.
-
-### PTY Data Ready
-```cpp
-// When PTY has data to read, notify terminal widget
-connect(ptyNotifier_, &QSocketNotifier::activated,
-        this, &TerminalWidget::onPTYDataReady);
-```
-
-### Session Ended (Auto-Cleanup)
-```cpp
-// Terminal → Split
-connect(terminal_, &TerminalWidget::sessionEnded,
-        split_, &SplitContainer::onTerminalSessionEnded);
-
-// Split → MainWindow
-connect(splitRoot_, &SplitContainer::sessionEnded,
-        mainWindow_, &MainWindow::onSplitSessionEnded);
-
-// Child splits → Parent container (signal forwarding)
-connect(child1_, &SplitContainer::sessionEnded,
-        container_, &SplitContainer::sessionEnded);
-```
-
-### Tab Management
-```cpp
-// User clicks X on tab
-connect(tab_widget_, &QTabWidget::tabCloseRequested,
-        this, &MainWindow::onTabCloseRequested);
-```
-
-### Cursor Blink
-```cpp
-// Timer toggles cursor visibility every 500ms
-connect(blinkTimer_, &QTimer::timeout,
-        this, &TerminalWidget::onBlinkTimer);
-```
-
-### Window Events
-```cpp
-// Qt automatically calls these virtual functions:
-void TerminalWidget::initializeGL()  // Called once at GL context creation
-void TerminalWidget::resizeGL(w, h)  // Called when widget resized
-void TerminalWidget::paintGL()       // Called every frame (vsync)
-void TerminalWidget::keyPressEvent() // Called when key pressed
-```
-
-## Ownership Tree
-
-Qt uses **parent-child relationships** for automatic memory management:
-
-```
-MainWindow
- └─ QTabWidget (child)
-     ├─ SplitContainer (Tab 1, child of QTabWidget)
-     │   └─ TerminalWidget (child of SplitContainer)
-     │       ├─ PTY (unique_ptr, owned by TerminalWidget)
-     │       ├─ TerminalEmulator (unique_ptr, owned by TerminalWidget)
-     │       ├─ GLRenderer (unique_ptr, owned by TerminalWidget)
-     │       │   ├─ FontManager (member, owned by GLRenderer)
-     │       │   └─ GlyphAtlas (unique_ptr, owned by GLRenderer)
-     │       ├─ InputHandler (member, owned by TerminalWidget)
-     │       └─ QSocketNotifier (child, Qt-managed)
-     │
-     └─ SplitContainer (Tab 2, child of QTabWidget)
-         ├─ QSplitter (child, Qt-managed)
-         │   ├─ SplitContainer (Left pane, child of QSplitter)
-         │   │   └─ TerminalWidget (child)
-         │   │       └─ ... (same as above)
-         │   │
-         │   └─ SplitContainer (Right pane, child of QSplitter)
-         │       ├─ QSplitter (child, Qt-managed)
-         │       │   ├─ SplitContainer (Top-right, child)
-         │       │   │   └─ TerminalWidget
-         │       │   │
-         │       │   └─ SplitContainer (Bottom-right, child)
-         │       │       └─ TerminalWidget
-```
-
-**Rules**:
-- When a parent is deleted, Qt automatically deletes all children
-- `unique_ptr` provides RAII for non-Qt objects
-- No manual `delete` needed in most cases (use `deleteLater()` for Qt objects)
-
-## Data Ownership
-
-```
-Who owns what:
-
-TerminalWidget owns:
-    ├─ PTY (unique_ptr)
-    ├─ TerminalEmulator (unique_ptr)
-    │   └─ Grid (QVector of Cells)
-    ├─ GLRenderer (unique_ptr)
-    │   ├─ FontManager (value member)
-    │   │   └─ FT_Face handles (managed internally)
-    │   └─ GlyphAtlas (unique_ptr)
-    │       ├─ OpenGL texture (GLuint)
-    │       └─ Glyph cache (QHash)
-    └─ QSocketNotifier (Qt parent-child)
-
-MainWindow owns:
-    └─ QTabWidget (Qt parent-child)
-        └─ SplitContainers (Qt parent-child)
-            └─ ... (recursive tree)
-```
-
----
-
-# Performance Optimizations
-
-RaTTY is designed for **high performance** and **low latency**:
-
-## 1. GPU Rendering
-- **All text rendered on GPU**, not CPU
-- Offloads work from CPU to specialized graphics hardware
-- Parallel processing: GPU can render thousands of characters simultaneously
-- CPU is free to handle other tasks (shell I/O, parsing, etc.)
-
-## 2. Glyph Caching
-- **Rasterize once, reuse forever** (until font size changes)
-- First 'A': 2-3ms to rasterize (FreeType2)
-- Subsequent 'A': <0.001ms (hash table lookup)
-- Typical terminal: ~100 unique glyphs (letters, numbers, symbols)
-- All 100 glyphs cached after first few seconds of use
-
-## 3. Batched Drawing
-- **One draw call per frame**, not per character
-- 80×24 terminal = 1,920 characters
-- Without batching: 1,920 draw calls = ~10 FPS
-- With batching: 1 draw call = 60+ FPS
-- Reduces CPU-GPU synchronization overhead by 1000×
-
-## 4. Single-Channel Textures
-- **GL_RED format** (1 byte) vs RGBA (4 bytes)
-- **75% memory savings**
-- 1024×1024 atlas: 1 MB instead of 4 MB
-- Smaller textures = better GPU cache utilization
-- Faster texture uploads to GPU
-
-## 5. Efficient Parsing
-- **State machine** for VT sequence parsing
-- O(n) parsing - each character processed once
-- No regex or complex parsing
-- Early termination for invalid sequences
-
-## 6. Non-Blocking I/O
-- **PTY uses O_NONBLOCK** flag
-- read() never blocks the UI thread
-- Qt event loop integrates with POSIX file descriptors
-- QSocketNotifier for async I/O notifications
-
-## 7. Double Buffering
-- **Qt OpenGL widgets automatically double-buffer**
-- Front buffer displayed while back buffer rendered
-- No tearing or flickering
-- Vsync prevents wasted GPU cycles
-
-## 8. Vsync Synchronization
-- **paintGL() called at monitor refresh rate** (typically 60 Hz)
-- No rendering when not visible (minimized/hidden)
-- Energy efficient - only render when needed
-
-## 9. Dirty Regions (Future Optimization)
-- Currently: redraw entire grid every frame
-- Future: track which cells changed, only redraw those
-- Potential 10-100× reduction in vertices for static content
-
-## 10. Font Hinting
-- **FreeType2 hinting** for pixel-perfect rendering at small sizes
-- Improves readability on low-DPI displays
-- Auto-hinting for fonts without embedded hints
-
----
-
-# Summary
-
-**RaTTY** is a modern, GPU-accelerated terminal emulator that combines:
-
-## Core Technologies
-- **Qt6**: Cross-platform UI framework with OpenGL integration
-- **OpenGL 3.3**: Hardware-accelerated rendering
-- **FreeType2**: Professional-quality font rasterization
-- **PTY (Pseudo-Terminal)**: Standard Unix shell communication
-- **C++20**: Modern C++ with RAII, smart pointers, and move semantics
-
-## Architecture Highlights
-1. **Tabs & Splits**: QTabWidget + Binary tree of SplitContainers
-2. **Terminal Emulation**: State-machine parser for VT/ANSI sequences
-3. **Glyph Atlas**: Single texture cache (1024×1024, GL_RED) for all glyphs
-4. **Batched Rendering**: One draw call per frame (thousands of characters)
-5. **Auto-Cleanup**: Automatic split/tab/window cleanup when shell exits
-
-## Data Flow
-```
-Shell Process (bash/zsh)
-    ↓ write to slave fd
-PTY Master FD
-    ↓ QSocketNotifier
-TerminalWidget::onPTYDataReady()
-    ↓ read bytes
-TerminalEmulator::processData()
-    ↓ parse VT/ANSI
-Terminal Grid (Cell[][])
-    ↓ paintGL()
-GLRenderer::draw()
-    ↓ batch vertices
-GPU (OpenGL)
-    ↓ sample atlas texture
-Screen (60 FPS)
-```
-
-## Rendering Pipeline
-```
-1. Characters added to grid (TerminalEmulator)
-2. paintGL() called by Qt (vsync-timed)
-3. For each cell:
-   a. Check glyph cache (GlyphAtlas)
-   b. If miss: rasterize (FontManager) + cache
-   c. If hit: get UV coordinates
-   d. Add 6 vertices to batch (2 triangles)
-4. Upload batch to GPU (glBufferData)
-5. Bind atlas texture
-6. Single draw call (glDrawArrays)
-7. GPU samples atlas, renders all text
-```
-
-## Performance
-- **60 FPS** solid rendering
-- **<1ms** frame time for 80×24 terminal
-- **1 MB** VRAM for glyph atlas
-- **1 draw call** per frame (all text)
-- **~100 glyphs** cached for typical usage
-- **Zero tearing** (double buffering + vsync)
-
-## The Glyph Atlas Secret Sauce
-The glyph atlas is what makes RaTTY fast:
-- ✅ Rasterize once, reuse forever
-- ✅ Single texture for all glyphs (minimal GPU state changes)
-- ✅ Batched rendering (one draw call)
-- ✅ GPU texture sampling (hardware-accelerated)
-- ✅ Shelf-based packing (efficient space usage)
-- ✅ 75% memory savings (GL_RED vs RGBA)
-
-**The result**: A terminal emulator that feels **instant**, renders at **60 FPS**, and uses **minimal CPU** thanks to GPU acceleration!
-
----
-
-## File Structure Reference
-
-```
-ratty/
-├── src/
-│   ├── main.cpp                      # Application entry point
-│   ├── core/
-│   │   ├── pty.h/cpp                 # PTY (shell process) management
-│   │   ├── terminal_emulator.h/cpp   # VT/ANSI parser + terminal grid
-│   │   └── input_handler.h/cpp       # Qt events → VT100 sequences
-│   ├── ui/
-│   │   ├── main_window.h/cpp         # Top-level window + tab management
-│   │   ├── split_container.h/cpp     # Binary tree for pane splits
-│   │   └── terminal_widget.h/cpp     # OpenGL terminal widget
-│   ├── render/
-│   │   ├── gl_renderer.h/cpp         # OpenGL rendering engine
-│   │   ├── glyph_atlas.h/cpp         # Texture atlas for glyph caching
-│   │   └── font_manager.h/cpp        # FreeType2 font rasterization
-│   ├── config/
-│   │   ├── config.h/cpp              # Configuration system
-│   │   └── default_config.json       # Default settings
-│   └── utils/
-│       └── retcodes.h                # Error code definitions
-├── resources/
-│   └── shaders/
-│       ├── text.vert                 # Text vertex shader
-│       ├── text.frag                 # Text fragment shader
-│       ├── rect.vert                 # Rectangle vertex shader
-│       └── rect.frag                 # Rectangle fragment shader
-├── CMakeLists.txt                    # Build configuration
-├── README.md                         # Project README
-└── RATTY_DOCUMENTATION.md            # This file!
-```
-
----
-
-**End of Documentation**
-
-For questions or contributions, see the main [README.md](README.md) or open an issue on GitHub.
+**Geometry is not persisted.** Window size and position are read from config but
+never written back.

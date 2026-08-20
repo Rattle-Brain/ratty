@@ -10,238 +10,286 @@
 
 ## Overview
 
-Ratty is a Unix-based terminal emulator focused on performance and GPU-accelerated rendering. Built with Qt6 and OpenGL, it aims to provide a fast, responsive terminal experience with efficient text rendering using glyph atlases and hardware acceleration.
+RaTTY is a Unix terminal emulator focused on crisp text and GPU-accelerated
+rendering. Glyphs are rasterized with FreeType at physical pixel resolution,
+packed into a single-channel texture atlas, and drawn as one batched pass — a
+whole screen of text is one draw call.
 
-**Platform Support:**
-- ✅ macOS
-- ✅ Linux
-- ❌ Windows (not supported, no plans to add support)
+**Platform support**
 
-### Current Status
+- ✅ macOS (including HiDPI/Retina)
+- ✅ Linux (X11 and Wayland via Qt)
+- ❌ Windows — not supported, no plans to add support
 
-**Early Development (v0.1.0)** - The project is actively under development with core foundations in place:
+### Current status — v0.2.0
 
-- ✅ PTY (pseudo-terminal) implementation
-- ✅ Qt6-based GUI framework with OpenGL rendering context
-- ✅ FreeType font loading and glyph rasterization
-- ✅ GPU-based text rendering pipeline with shader support
-- ✅ Tab and split-pane support architecture
-- 🚧 VT escape sequence parsing (in progress)
-- 🚧 Full terminal emulation features (in progress)
-- 📋 Planned: Configuration system, scrollback buffer, mouse support
+Usable for day-to-day shell work. Full-screen TUI applications mostly work;
+scrollback and selection do not exist yet.
+
+**Working**
+
+- PTY session management with the user's login shell
+- VT100/VT220/xterm escape sequence parsing (see
+  [DOCUMENTATION.md](DOCUMENTATION.md#44-terminalemulator) for the exact list)
+- 16-colour, 256-colour and 24-bit truecolour, both `;` and `:` SGR forms
+- Application-driven theming: `OSC 4`/`10`/`11`/`12` set *and* answer queries, so
+  editors can retheme the terminal and detect whether it is light or dark
+- Application-driven cursor shape (`DECSCUSR`), as editors use to signal mode
+- **Font fallback chain** — code points the main font lacks are served from the
+  system monospaced font, and colour emoji from whatever emoji font is installed
+- **Colour emoji**, rendered from the emoji font's own bitmaps
+- **Box-drawing characters drawn geometrically**, so TUI borders tile with no
+  seams regardless of which font is in use
+- Bold, faint, italic, underline, strikethrough, inverse and invisible —
+  bold and italic select real font faces, with synthesis when a face is missing
+- Deferred (VT-correct) line wrapping, scrolling regions, alternate screen buffer
+- Incremental UTF-8 decoding and double-width (CJK/emoji) character layout
+- HiDPI-correct rendering: glyphs rasterized at physical pixel size
+- Tabs and recursive split panes with directional focus movement
+- JSON configuration with a layered override model, custom palette, keybindings
+- Bracketed paste, window-title reporting, cursor-position reports
+- Live font resizing
+
+**Not yet implemented**
+
+- Scrollback buffer
+- Text selection and copy
+- Mouse reporting for applications
+- Combining marks, ligatures, emoji presentation selectors
+- Sixel or kitty graphics
+
+See [todo-ratty.md](todo-ratty.md) for the roadmap and
+[DOCUMENTATION.md § 10](DOCUMENTATION.md#10-known-gaps) for why each gap is where
+it is.
 
 ## Dependencies
 
-### Required
+- **CMake** ≥ 3.16
+- **A C++20 compiler** — Apple Clang 15+, Clang 16+ or GCC 12+
+- **Qt6** — Core, Gui, Widgets, OpenGL, OpenGLWidgets
+- **FreeType** ≥ 2
+- **OpenGL** 3.3 core profile
+- **fontconfig** (`fc-match`) — recommended; without it a built-in list of font
+  paths is used
+- **util** — `forkpty`; part of libc on Linux, `libutil` on macOS/BSD
 
-- **CMake** >= 3.16
-- **Clang 20** C++ compiler with C++20 support
-- **Make** or another CMake-supported build system
-- **Qt6** (Core, Widgets, OpenGL, OpenGLWidgets modules)
-- **FreeType** >= 2.0 for font rendering
-- **OpenGL** 3.3+ compatible graphics driver
-- **util library** (platform-specific - typically pre-installed on Unix systems)
-
-### Platform-Specific Notes
-
-#### macOS
-- Xcode Command Line Tools or full Xcode installation recommended
-- Clang 20 can be installed via Homebrew: `brew install llvm@20`
-- Qt6 can be installed via Homebrew: `brew install qt@6`
-- FreeType can be installed via Homebrew: `brew install freetype`
-
-#### Linux
-- Install development packages for Qt6, Clang 20, and FreeType via your distribution's package manager
-- Example for Ubuntu/Debian:
-  ```bash
-  sudo apt install build-essential cmake clang-20 qt6-base-dev libfreetype6-dev libgl1-mesa-dev
-  ```
-- Note: You may need to add the LLVM repository for Clang 20
-
-## Building from Source
-
-### Quick Start
+### macOS
 
 ```bash
-# Clone the repository
-git clone https://github.com/Rattle-Brain/ratty.git
+brew install cmake qt@6 freetype fontconfig
+```
+
+### Linux
+
+```bash
+# Debian / Ubuntu
+sudo apt install build-essential cmake qt6-base-dev libfreetype6-dev \
+                 libgl1-mesa-dev fontconfig
+
+# Fedora
+sudo dnf install cmake gcc-c++ qt6-qtbase-devel freetype-devel \
+                 mesa-libGL-devel fontconfig
+
+# Arch
+sudo pacman -S cmake gcc qt6-base freetype2 fontconfig
+```
+
+## Building
+
+```bash
+git clone <repository-url> ratty
 cd ratty
-
-# Create build directory
-mkdir -p build && cd build
-
-# Configure with CMake (Clang 20 is set by default)
-cmake ..
-
-# Build
-make
-
-# Run
-./ratty
+cmake -S . -B build
+cmake --build build -j
+./build/ratty
 ```
 
-### Detailed Build Instructions
+`CMAKE_BUILD_TYPE` defaults to `Release`. To install:
 
-1. **Configure the project**
-   ```bash
-   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-   ```
-   Note: The project is configured to use Clang 20 by default. To use a different compiler, specify `-DCMAKE_CXX_COMPILER=<path-to-compiler>`
-
-2. **Build the executable**
-   ```bash
-   cmake --build build --parallel
-   ```
-
-3. **Run the terminal**
-   ```bash
-   ./build/ratty
-   ```
-
-### Build Options
-
-- **Debug build**: Replace `Release` with `Debug` in the configure step
-- **Custom Qt6 installation**: Set `Qt6_DIR` to your Qt installation path
-  ```bash
-  cmake -S . -B build -DQt6_DIR=/path/to/qt6/lib/cmake/Qt6
-  ```
-
-### Generating compile_commands.json for LSP/IDE Support
-
-The `compile_commands.json` file helps Language Server Protocols (LSP) and IDEs understand your project structure, including header locations and library dependencies. This prevents false errors and enables accurate code completion, navigation, and diagnostics.
-
-**Method 1: Using Bear (recommended)**
 ```bash
-# Install bear if not already installed
-# macOS: brew install bear
-# Linux: sudo apt install bear
-
-# Generate compile_commands.json in the project root
-bear -- make
+cmake --install build --prefix /usr/local
 ```
 
-**Method 2: Using CMake (if Method 1 doesn't work)**
+### Running the tests
+
 ```bash
-# Generate compile_commands.json in the current directory
-cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON .
-
-# Build the project
-make
+cmake -S . -B build -DRATTY_BUILD_TESTS=ON
+cmake --build build -j
+cd build && ctest --output-on-failure
 ```
 
-Most LSP implementations (clangd, ccls) will automatically detect `compile_commands.json` in the project root directory.
+The suites cover terminal semantics, key encoding, pane-tree surgery, and the
+render layer's geometry and font resolution. They run headless
+(`QT_QPA_PLATFORM=offscreen`) and need no GPU.
 
-### Troubleshooting
+## Configuration
 
-- **Qt6 not found**: Ensure Qt6 is installed and `Qt6_DIR` points to the correct location
-- **FreeType not found**: Install the FreeType development package for your platform
-- **OpenGL errors**: Ensure you have a compatible OpenGL driver (3.3+)
-- **Build artifacts in root**: Run `make clean` or remove build artifacts manually
+RaTTY reads `~/.config/ratty/config.json`. Every key is optional — the file is an
+*overlay* on the built-in defaults, so you only write what you want to change.
+
+```json
+{
+  "font": {
+    "family": ["DroidSansMono Nerd Font", "JetBrains Mono"],
+    "fallback": ["Menlo", "Apple Color Emoji"],
+    "size": 13
+  },
+
+  "cursor": {
+    "style": "block",
+    "blink": true
+  },
+
+  "colors": {
+    "background": "#1e1e1e",
+    "foreground": "#dcdcdc",
+    "cursor": "#dcdcdc",
+
+    "black":   "#000000",
+    "red":     "#cd3131",
+    "green":   "#0dbc79",
+    "yellow":  "#e5e510",
+    "blue":    "#2472c8",
+    "magenta": "#bc3fbc",
+    "cyan":    "#11a8cd",
+    "white":   "#e5e5e5",
+
+    "bright_black":   "#666666",
+    "bright_red":     "#f14c4c",
+    "bright_green":   "#23d18b",
+    "bright_yellow":  "#f5f543",
+    "bright_blue":    "#3b8eea",
+    "bright_magenta": "#d670d6",
+    "bright_cyan":    "#29b8db",
+    "bright_white":   "#ffffff"
+  },
+
+  "window": {
+    "width": 1280,
+    "height": 720,
+    "padding": 4,
+    "opacity": 1.0,
+    "fullscreen": false
+  },
+
+  "keybindings": {
+    "ctrl+shift+t": "new_tab",
+    "ctrl+shift+e": "split_horizontal",
+    "ctrl+shift+k": "none"
+  }
+}
+```
+
+Notes:
+
+- **`font.family`** accepts a single name or an array of names tried in order.
+  The default is `DroidSansMono Nerd Font`; if it is not installed, RaTTY uses
+  whatever font the system has configured as its monospaced default. A requested
+  family only counts if it is genuinely installed — fontconfig will happily
+  substitute a *proportional* font for a name it does not recognise, and RaTTY
+  rejects any face whose `i` and `W` have different advances.
+- **`font.fallback`** lists families to consult for characters the main font does
+  not have. You rarely need to set it: RaTTY already falls back to the system
+  monospaced font and to any installed colour-emoji font. It matters if you want
+  a *specific* font to supply, say, box drawing.
+- **`window.padding`** is the gap in logical pixels between the text and the
+  window edge. Default 4; set `0` for flush-to-the-edge text.
+- Cursor styles: `block`, `hollow`, `underline`, `bar`. An application's
+  `DECSCUSR` request takes precedence while it is in effect.
+- Binding an action to `"none"` removes a default binding.
+- The bundled defaults live in
+  [`src/config/default_config.json`](src/config/default_config.json).
+
+### About patched "Nerd Fonts"
+
+A patched icon font typically adds Powerline separators and file-type icons to an
+existing family — but it does not add anything that family was already missing.
+`DroidSansMono Nerd Font`, for instance, has twelve thousand glyphs and **no
+box-drawing characters**, because Droid Sans Mono never had them. Since every TUI
+draws its borders from those, such a font on its own renders a full-screen editor
+as a field of empty boxes.
+
+RaTTY handles this in two ways, so it is not something you need to configure:
+box-drawing and block characters are drawn geometrically from the cell (which
+also makes them tile perfectly), and anything else missing is taken from the
+fallback chain.
+
+### Matching a colour scheme
+
+Terminal applications draw most of the screen by *erasing* it and relying on the
+terminal's own default background — that is a normal optimisation, not a bug. So
+if your editor's theme has a background of, say, `#1f1f26`, set the same value in
+RaTTY:
+
+```json
+{ "colors": { "background": "#1f1f26" } }
+```
+
+RaTTY answers `OSC 11` queries, so Neovim and friends can also read that value
+back and pick their light or dark variant accordingly.
+
+### Default keybindings
+
+Shortcuts use `Ctrl+Shift` so that the shell keeps every plain `Ctrl` key —
+`Ctrl+C`, `Ctrl+D`, `Ctrl+W`, `Ctrl+R`, `Ctrl+Z`, `Ctrl+L` and the rest reach the
+program running in the terminal, not RaTTY.
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+Shift+T` | New tab |
+| `Ctrl+Shift+W` | Close tab |
+| `Ctrl+Shift+→` / `←` | Next / previous tab |
+| `Ctrl+Shift+1`…`9` | Go to tab *n* |
+| `Ctrl+Shift+E` or `Ctrl+Shift+\` | Split left/right |
+| `Ctrl+Shift+O` | Split top/bottom |
+| `Ctrl+Shift+D` | Close pane |
+| `Ctrl+Shift+↑` / `↓` | Move focus between panes |
+| `Ctrl+Shift+C` / `V` | Copy / paste |
+| `Ctrl+Shift++` / `Ctrl+Shift+-` | Increase / decrease font size |
+| `Ctrl+Shift+0` | Reset font size |
+| `Ctrl+Shift+Q` | Quit |
+| `F11` | Toggle fullscreen |
+
+Key names accept `ctrl`, `shift`, `alt`/`option`, `meta`/`super`/`cmd`, named
+keys (`up`, `pageup`, `escape`, `f1`…`f12`) and spelled-out punctuation
+(`plus`, `minus`, `underscore`, `backslash`, `bracketleft`, …).
+
+Shifted keys are matched tolerantly: Qt reports either the digit or the shifted
+symbol for the same physical key depending on platform and layout, so
+`ctrl+shift+1` fires whether the event arrives as `1` or `!`. Bindings on letter
+keys are still the most portable choice.
+
+## Architecture at a glance
+
+```
+src/
+├── core/      terminal model — no OpenGL, no widgets
+│              Cell, Palette, Screen, VTParser, TerminalEmulator,
+│              TerminalSession, PTY, UTF-8, char widths
+├── render/    FontManager (+ fallback chain), GlyphAtlas, GLRenderer,
+│              TerminalRenderer, box_drawing
+├── ui/        TerminalWidget, SplitContainer, MainWindow, InputHandler
+└── config/    Config
+```
+
+The layering is deliberate and enforced by convention: `core/` includes no
+OpenGL or QtWidgets header, which is why terminal behaviour is testable without a
+GPU. `render/` never reads `Config` — it is handed a palette and a layout.
+
+[DOCUMENTATION.md](DOCUMENTATION.md) covers the internals: the data flow from pty
+bytes to pixels, the glyph atlas, the HiDPI rules that keep text sharp, and the
+Qt ownership hazards in the pane tree.
 
 ## Contributing
 
-Contributions are welcome! Here's how to get started:
-
-### Opening Pull Requests
-
-1. **Fork the repository** and create a feature branch
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
-
-2. **Make your changes**
-   - Follow the existing code style and structure
-   - Keep commits focused and atomic
-   - Write clear commit messages in imperative mood (e.g., "Add feature" not "Added feature")
-
-3. **Test your changes**
-   - Ensure the project builds successfully
-   - Test the functionality on your platform
-   - Check for compiler warnings
-
-4. **Submit a pull request**
-   - Provide a clear description of what your PR does
-   - Reference any related issues
-   - Explain the motivation and context for the change
-
-### Coding Guidelines
-
-- **C++ Standard**: Use C++20 features appropriately
-- **Code Style**: Follow the existing style in the codebase
-  - Use 4 spaces for indentation
-  - Place braces on the same line for control structures
-  - Use descriptive variable and function names
-- **Header Files**: Include guards are handled by the build system
-- **Comments**: Write clear comments for complex logic; prefer self-documenting code
-
-### Development Workflow
-
-1. Check existing issues for planned work or bugs
-2. Open an issue for new features or significant changes before starting work
-3. Keep PRs focused on a single feature or fix
-4. Be responsive to code review feedback
-
-### Areas for Contribution
-
-- VT escape sequence handling and ANSI compliance
-- Performance optimizations for rendering
-- Configuration system implementation
-- macOS and Linux testing and bug fixes
-- Documentation improvements
-
-### Code of Conduct
-
-- Be respectful and constructive in discussions
-- Focus on the code and ideas, not individuals
-- Help maintain a welcoming environment for all contributors
-
-## Project Structure
-
-```
-ratty/
-├── src/
-│   ├── core/          # PTY and terminal core logic
-│   ├── ui/            # Qt widgets and UI components
-│   ├── render/        # OpenGL rendering and font management
-│   └── config/        # Configuration handling
-├── resources/
-│   └── shaders/       # GLSL shader files
-├── CMakeLists.txt     # Build configuration
-└── README.md
-```
+- Match the surrounding style: 4-space indent, `snake_case` files,
+  `PascalCase` types, `camelCase_` private members.
+- Keep the layering intact. If `core/` needs something from `render/`, the design
+  is wrong.
+- Add a test when you fix a behavioural bug. `tests/check.h` is deliberately
+  tiny; there is no framework to learn.
+- Builds must stay warning-clean under `-Wall -Wextra -Wpedantic`.
 
 ## License
 
-This project is licensed under the **GNU General Public License v2.0** (GPL-2.0).
-
-See the [LICENSE](LICENSE) file for the full license text.
-
-### What this means:
-
-- ✅ You are free to use, modify, and distribute this software
-- ✅ You can use it for commercial purposes
-- ⚠️ If you distribute modified versions, you must:
-  - Make the source code available
-  - License it under GPL-2.0
-  - State your changes
-- ⚠️ This software comes with NO WARRANTY
-
-For more information about GPL-2.0, visit: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
-
-## Acknowledgments
-
-Ratty is inspired by modern terminal emulators like Kitty and Alacritty, focusing on GPU acceleration and performance.
-
-Built with:
-- [Qt6](https://www.qt.io/) - Cross-platform application framework
-- [FreeType](https://freetype.org/) - Font rendering library
-- [OpenGL](https://www.opengl.org/) - Graphics rendering API
-
-## Contact & Support
-
-- **Issues**: Report bugs or request features via [GitHub Issues](https://github.com/Rattle-Brain/ratty/issues)
-- **Discussions**: For questions and general discussion, use [GitHub Discussions](https://github.com/Rattle-Brain/ratty/discussions)
-
----
-
-**Note**: Ratty is in active development. APIs and features may change as the project evolves.
+See [LICENSE](LICENSE).

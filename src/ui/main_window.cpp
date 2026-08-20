@@ -1,169 +1,194 @@
 /*
- * MainWindow - Top-level application window implementation
+ * MainWindow - top-level window implementation
  */
 
 #include "main_window.h"
 #include "split_container.h"
 #include "terminal_widget.h"
-#include "../config/config.h"
-#include <QKeyEvent>
-#include <QCloseEvent>
-#include <QMessageBox>
+#include <QApplication>
 #include <QDebug>
+#include <QKeyCombination>
+#include <QKeyEvent>
+#include <QTabBar>
+#include <QTabWidget>
 
-MainWindow::MainWindow(QWidget *parent)
+MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
-    , tab_widget_(nullptr)
 {
-    // Config is already loaded in main.cpp before this is created
     setupUi();
-    setupActions();
-
-    // Create initial tab
     addTab();
 }
 
-MainWindow::~MainWindow() {
-}
+MainWindow::~MainWindow() = default;
 
 void MainWindow::setupUi() {
-    setWindowTitle("Ratty Terminal");
+    const Config& config = Config::instance();
 
-    // Apply all window configuration from config
-    Config& config = Config::instance();
+    setWindowTitle(QStringLiteral("Ratty"));
     resize(config.windowWidth(), config.windowHeight());
     setWindowOpacity(config.windowOpacity());
-
-    // Apply fullscreen setting
     if (config.startFullscreen()) {
         setWindowState(Qt::WindowFullScreen);
     }
 
-    // Create tab widget
-    tab_widget_ = new QTabWidget(this);
-    tab_widget_->setTabsClosable(true);
-    tab_widget_->setMovable(true);
-    tab_widget_->setDocumentMode(true);
-    setCentralWidget(tab_widget_);
+    tabWidget_ = new QTabWidget(this);
+    tabWidget_->setTabsClosable(true);
+    tabWidget_->setMovable(true);
+    tabWidget_->setDocumentMode(true);
+    /* One pane means no tab bar: a single-terminal window should look like a
+     * terminal, not like a tabbed document. */
+    tabWidget_->tabBar()->setAutoHide(true);
+    setCentralWidget(tabWidget_);
 
-    // Connect signals
-    connect(tab_widget_, &QTabWidget::tabCloseRequested,
-            this, &MainWindow::onTabCloseRequested);
+    connect(tabWidget_, &QTabWidget::tabCloseRequested, this, &MainWindow::closeTab);
 }
 
-void MainWindow::setupActions() {
-    // Actions will be implemented in Phase 5 with Config system
-}
-
-void MainWindow::addTab(const QString& title) {
-    if (tab_widget_->count() >= WINDOW_MAX_TABS) {
-        qWarning() << "Maximum tab limit reached:" << WINDOW_MAX_TABS;
+void MainWindow::addTab() {
+    if (tabCount() >= MaxTabs) {
+        qWarning() << "MainWindow: tab limit reached (" << MaxTabs << ")";
         return;
     }
 
-    // Create a root split container with a single terminal (leaf node)
-    // The split tree is only created when the user actually splits
-    SplitContainer* splitRoot = SplitContainer::createLeaf(this);
-    splitRoot->setFocused(true);
+    SplitContainer* root = SplitContainer::createLeaf(nullptr);
+    connectRoot(root);
 
-    // Connect session ended signal
-    connect(splitRoot, &SplitContainer::sessionEnded,
-            this, &MainWindow::onSplitSessionEnded);
+    const int index = tabWidget_->addTab(root, QStringLiteral("Terminal"));
+    tabWidget_->setCurrentIndex(index);
+    root->focusPane();
+}
 
-    int index = tab_widget_->addTab(splitRoot, title);
-    tab_widget_->setCurrentIndex(index);
+void MainWindow::connectRoot(SplitContainer* root) {
+    if (!root) return;
 
-    qDebug() << "Added tab" << index << ":" << title;
+    /* Both handlers are member functions rather than lambdas: Qt rejects
+     * Qt::UniqueConnection for functors, and installTabRoot() may reconnect the
+     * same root more than once. */
+    connect(root, &SplitContainer::paneSessionEnded,
+            this, &MainWindow::onPaneSessionEnded, Qt::UniqueConnection);
+    connect(root, &SplitContainer::paneTitleChanged,
+            this, &MainWindow::onPaneTitleChanged, Qt::UniqueConnection);
+}
+
+void MainWindow::onPaneTitleChanged(const QString& title) {
+    auto* root = qobject_cast<SplitContainer*>(sender());
+    if (!root || title.isEmpty()) return;
+
+    const int index = tabWidget_->indexOf(root);
+    if (index < 0) return;
+
+    tabWidget_->setTabText(index, title);
+    if (index == tabWidget_->currentIndex()) {
+        setWindowTitle(title + QStringLiteral(" - Ratty"));
+    }
+}
+
+void MainWindow::installTabRoot(int index, SplitContainer* root) {
+    if (index < 0 || index >= tabCount() || !root) return;
+    if (tabWidget_->widget(index) == root) return;
+
+    const QString label = tabWidget_->tabText(index);
+    const bool wasCurrent = (tabWidget_->currentIndex() == index);
+
+    /*
+     * removeTab() only detaches; the old root has already been scheduled for
+     * deletion by the tree surgery that produced `root`, so there is nothing to
+     * delete here.
+     */
+    tabWidget_->removeTab(index);
+    tabWidget_->insertTab(index, root, label);
+    connectRoot(root);
+
+    if (wasCurrent) {
+        tabWidget_->setCurrentIndex(index);
+    }
 }
 
 void MainWindow::closeTab(int index) {
-    if (index < 0 || index >= tab_widget_->count()) {
-        return;
-    }
+    if (index < 0 || index >= tabCount()) return;
 
-    // Don't close the last tab
-    if (tab_widget_->count() == 1) {
-        qDebug() << "Cannot close last tab";
-        return;
-    }
+    QWidget* page = tabWidget_->widget(index);
+    tabWidget_->removeTab(index);
+    if (page) page->deleteLater();
 
-    QWidget* tab = tab_widget_->widget(index);
-    tab_widget_->removeTab(index);
-    delete tab;
-
-    qDebug() << "Closed tab" << index;
-}
-
-void MainWindow::closeCurrentTab() {
-    closeTab(tab_widget_->currentIndex());
-}
-
-void MainWindow::setActiveTab(int index) {
-    if (index >= 0 && index < tab_widget_->count()) {
-        tab_widget_->setCurrentIndex(index);
-    }
-}
-
-void MainWindow::nextTab() {
-    if (tab_widget_->count() <= 1) return;
-
-    int next = (tab_widget_->currentIndex() + 1) % tab_widget_->count();
-    tab_widget_->setCurrentIndex(next);
-}
-
-void MainWindow::prevTab() {
-    if (tab_widget_->count() <= 1) return;
-
-    int prev = (tab_widget_->currentIndex() - 1 + tab_widget_->count()) % tab_widget_->count();
-    tab_widget_->setCurrentIndex(prev);
-}
-
-void MainWindow::gotoTab(int index) {
-    // Convert from 1-based to 0-based indexing
-    int tabIndex = index - 1;
-    if (tabIndex >= 0 && tabIndex < tab_widget_->count()) {
-        tab_widget_->setCurrentIndex(tabIndex);
+    /* Closing the last tab closes the window, which is what every terminal
+     * does; leaving an empty frame behind would be a dead end. */
+    if (tabCount() == 0) {
+        close();
     }
 }
 
 int MainWindow::tabCount() const {
-    return tab_widget_->count();
+    return tabWidget_ ? tabWidget_->count() : 0;
 }
 
-SplitContainer* MainWindow::currentTab() const {
-    return qobject_cast<SplitContainer*>(tab_widget_->currentWidget());
+SplitContainer* MainWindow::currentRoot() const {
+    return tabWidget_ ? qobject_cast<SplitContainer*>(tabWidget_->currentWidget()) : nullptr;
 }
 
-SplitContainer* MainWindow::tabAt(int index) const {
-    return qobject_cast<SplitContainer*>(tab_widget_->widget(index));
+SplitContainer* MainWindow::rootAt(int index) const {
+    return tabWidget_ ? qobject_cast<SplitContainer*>(tabWidget_->widget(index)) : nullptr;
+}
+
+int MainWindow::indexOfRootContaining(const SplitContainer* node) const {
+    for (int i = 0; i < tabCount(); ++i) {
+        if (SplitContainer* root = rootAt(i); root && root->contains(node)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+SplitContainer* MainWindow::focusedPane() const {
+    SplitContainer* root = currentRoot();
+    if (!root) return nullptr;
+
+    if (SplitContainer* focused = root->findFocused()) return focused;
+
+    /* Nothing has keyboard focus (the window may have just been restored);
+     * fall back to the first leaf so shortcuts still do something sensible. */
+    SplitContainer* leaf = root;
+    while (leaf && !leaf->isLeaf()) leaf = leaf->child1();
+    return leaf;
+}
+
+void MainWindow::onPaneSessionEnded(SplitContainer* pane) {
+    if (!pane) return;
+
+    const int index = indexOfRootContaining(pane);
+    if (index < 0) return;
+
+    /* A pane with no parent is the whole tab. */
+    if (SplitContainer* newRoot = pane->closePane()) {
+        installTabRoot(index, newRoot);
+    } else {
+        closeTab(index);
+    }
 }
 
 void MainWindow::keyPressEvent(QKeyEvent* event) {
-    // Look up action from config
-    QKeySequence keySeq(event->key() | event->modifiers());
-    Action action = Config::instance().lookupAction(keySeq);
+    if (handleAction(Config::instance().lookupAction(event))) {
+        event->accept();
+        return;
+    }
 
-    // Handle action
+    QMainWindow::keyPressEvent(event);
+}
+
+bool MainWindow::handleAction(Action action) {
     switch (action) {
-    case ACTION_NEW_TAB:
-        addTab();
-        event->accept();
-        return;
-
-    case ACTION_CLOSE_TAB:
-        closeCurrentTab();
-        event->accept();
-        return;
-
+    case ACTION_NEW_TAB:            addTab(); return true;
+    case ACTION_CLOSE_TAB:          closeTab(tabWidget_->currentIndex()); return true;
     case ACTION_NEXT_TAB:
-        nextTab();
-        event->accept();
-        return;
-
+        if (tabCount() > 1) {
+            tabWidget_->setCurrentIndex((tabWidget_->currentIndex() + 1) % tabCount());
+        }
+        return true;
     case ACTION_PREV_TAB:
-        prevTab();
-        event->accept();
-        return;
+        if (tabCount() > 1) {
+            tabWidget_->setCurrentIndex(
+                (tabWidget_->currentIndex() - 1 + tabCount()) % tabCount());
+        }
+        return true;
 
     case ACTION_GOTO_TAB_1:
     case ACTION_GOTO_TAB_2:
@@ -173,197 +198,108 @@ void MainWindow::keyPressEvent(QKeyEvent* event) {
     case ACTION_GOTO_TAB_6:
     case ACTION_GOTO_TAB_7:
     case ACTION_GOTO_TAB_8:
-    case ACTION_GOTO_TAB_9: {
-        int tabNum = action - ACTION_GOTO_TAB_1 + 1;
-        gotoTab(tabNum);
-        event->accept();
-        return;
-    }
+    case ACTION_GOTO_TAB_9:
+        goToTab(action - ACTION_GOTO_TAB_1 + 1);
+        return true;
 
-    case ACTION_SPLIT_HORIZONTAL: {
-        SplitContainer* root = currentTab();
-        if (!root) return;
+    case ACTION_SPLIT_HORIZONTAL:   splitFocusedPane(true); return true;
+    case ACTION_SPLIT_VERTICAL:     splitFocusedPane(false); return true;
+    case ACTION_CLOSE_SPLIT:        closeFocusedPane(); return true;
 
-        // Find the focused terminal and split it
-        SplitContainer* focused = root->findFocused();
-        if (focused) {
-            SplitContainer* newRoot = focused->splitHorizontal();
-            // If the split created a new root, replace the tab widget
-            if (newRoot && !newRoot->parent()) {
-                int index = tab_widget_->currentIndex();
-                tab_widget_->removeTab(index);
-                tab_widget_->insertTab(index, newRoot, "Terminal");
-                tab_widget_->setCurrentIndex(index);
-            }
-        }
-        event->accept();
-        return;
-    }
+    case ACTION_FOCUS_LEFT:         focusNeighbour(Qt::Horizontal, false); return true;
+    case ACTION_FOCUS_RIGHT:        focusNeighbour(Qt::Horizontal, true); return true;
+    case ACTION_FOCUS_UP:           focusNeighbour(Qt::Vertical, false); return true;
+    case ACTION_FOCUS_DOWN:         focusNeighbour(Qt::Vertical, true); return true;
 
-    case ACTION_SPLIT_VERTICAL: {
-        SplitContainer* root = currentTab();
-        if (!root) return;
-
-        // Find the focused terminal and split it
-        SplitContainer* focused = root->findFocused();
-        if (focused) {
-            SplitContainer* newRoot = focused->splitVertical();
-            // If the split created a new root, replace the tab widget
-            if (newRoot && !newRoot->parent()) {
-                int index = tab_widget_->currentIndex();
-                tab_widget_->removeTab(index);
-                tab_widget_->insertTab(index, newRoot, "Terminal");
-                tab_widget_->setCurrentIndex(index);
-            }
-        }
-        event->accept();
-        return;
-    }
-
-    case ACTION_CLOSE_SPLIT: {
-        SplitContainer* root = currentTab();
-        if (!root) return;
-
-        // Find the focused terminal and close it
-        SplitContainer* focused = root->findFocused();
-        if (focused && focused != root) {
-            focused->closeSplit();
-        }
-        event->accept();
-        return;
-    }
-
-    case ACTION_QUIT:
-        close();
-        event->accept();
-        return;
-
+    case ACTION_QUIT:               close(); return true;
     case ACTION_FULLSCREEN:
-        if (isFullScreen()) {
-            showNormal();
-        } else {
-            showFullScreen();
+        if (isFullScreen()) showNormal();
+        else showFullScreen();
+        return true;
+
+    case ACTION_COPY:
+        if (SplitContainer* pane = focusedPane(); pane && pane->terminal()) {
+            pane->terminal()->copySelection();
         }
-        event->accept();
-        return;
-
-    case ACTION_COPY: {
-        SplitContainer* root = currentTab();
-        if (root) {
-            SplitContainer* focused = root->findFocused();
-            if (focused && focused->terminal()) {
-                focused->terminal()->copySelection();
-            }
+        return true;
+    case ACTION_PASTE:
+        if (SplitContainer* pane = focusedPane(); pane && pane->terminal()) {
+            pane->terminal()->paste();
         }
-        event->accept();
-        return;
+        return true;
+
+    case ACTION_INCREASE_FONT_SIZE: changeFontSize(+1); return true;
+    case ACTION_DECREASE_FONT_SIZE: changeFontSize(-1); return true;
+    case ACTION_RESET_FONT_SIZE:    changeFontSize(0); return true;
+
+    case ACTION_SCROLL_UP:
+    case ACTION_SCROLL_DOWN:
+    case ACTION_CLEAR_SCROLLBACK:
+        /* Bound so they do not leak into the shell, but inert until the
+         * scrollback buffer exists. See todo-ratty.md. */
+        return true;
+
+    case ACTION_NONE:
+        break;
     }
-
-    case ACTION_PASTE: {
-        SplitContainer* root = currentTab();
-        if (root) {
-            SplitContainer* focused = root->findFocused();
-            if (focused && focused->terminal()) {
-                focused->terminal()->paste();
-            }
-        }
-        event->accept();
-        return;
-    }
-
-    default:
-        // No action bound, pass to parent
-        QMainWindow::keyPressEvent(event);
-        return;
-    }
-}
-
-void MainWindow::closeEvent(QCloseEvent* event) {
-    // Save window size to config
-    Config::instance().setWindowWidth(width());
-    Config::instance().setWindowHeight(height());
-    Config::instance().save();
-
-    event->accept();
-}
-
-void MainWindow::onTabCloseRequested(int index) {
-    closeTab(index);
-}
-
-void MainWindow::onSplitSessionEnded(SplitContainer* split) {
-    if (!split) return;
-
-    qDebug() << "MainWindow: Handling session end for split";
-
-    // Find which tab contains this split
-    int tabIndex = -1;
-    SplitContainer* tabRoot = nullptr;
-    for (int i = 0; i < tab_widget_->count(); ++i) {
-        SplitContainer* root = tabAt(i);
-        if (!root) continue;
-
-        // Check if this split is the root or a descendant
-        if (root == split || isDescendant(root, split)) {
-            tabIndex = i;
-            tabRoot = root;
-            break;
-        }
-    }
-
-    if (tabIndex < 0) {
-        qWarning() << "MainWindow: Could not find tab containing split";
-        return;
-    }
-
-    // Case 1: This is the root split (only split in the tab)
-    if (split == tabRoot) {
-        qDebug() << "MainWindow: Closing tab" << tabIndex << "(last split in tab)";
-
-        // If this is the last tab, close the window
-        if (tab_widget_->count() == 1) {
-            qDebug() << "MainWindow: Last tab closed, closing window";
-            close();
-            return;
-        }
-
-        // Otherwise just close this tab
-        closeTab(tabIndex);
-        return;
-    }
-
-    // Case 2: This is a split within a split tree
-    qDebug() << "MainWindow: Closing split (not root)";
-
-    // Close the split (this will restructure the tree)
-    if (split->closeSplit()) {
-        // If closeSplit succeeded, the tree was restructured
-        // We need to check if the new root changed
-        // (This happens when the parent was the old root)
-        SplitContainer* currentRoot = tabAt(tabIndex);
-        if (currentRoot != tabRoot) {
-            // Root changed, need to update tab widget
-            qDebug() << "MainWindow: Split tree root changed, updating tab";
-            tab_widget_->removeTab(tabIndex);
-            tab_widget_->insertTab(tabIndex, currentRoot, "Terminal");
-            tab_widget_->setCurrentIndex(tabIndex);
-
-            // Connect session ended signal to new root
-            connect(currentRoot, &SplitContainer::sessionEnded,
-                    this, &MainWindow::onSplitSessionEnded);
-        }
-    }
-}
-
-// Helper to check if a split is a descendant of a container
-bool MainWindow::isDescendant(SplitContainer* container, SplitContainer* split) {
-    if (!container || !split) return false;
-    if (container == split) return true;
-
-    if (container->isContainer()) {
-        return isDescendant(container->child1(), split) ||
-               isDescendant(container->child2(), split);
-    }
-
     return false;
+}
+
+void MainWindow::goToTab(int oneBasedIndex) {
+    const int index = oneBasedIndex - 1;
+    if (index >= 0 && index < tabCount()) {
+        tabWidget_->setCurrentIndex(index);
+    }
+}
+
+void MainWindow::splitFocusedPane(bool horizontal) {
+    SplitContainer* pane = focusedPane();
+    if (!pane) return;
+
+    const int index = tabWidget_->currentIndex();
+    SplitContainer* newRoot = horizontal ? pane->splitHorizontal() : pane->splitVertical();
+    if (newRoot) {
+        installTabRoot(index, newRoot);
+    }
+}
+
+void MainWindow::closeFocusedPane() {
+    SplitContainer* pane = focusedPane();
+    if (!pane) return;
+
+    const int index = tabWidget_->currentIndex();
+    if (SplitContainer* newRoot = pane->closePane()) {
+        installTabRoot(index, newRoot);
+    } else {
+        closeTab(index);
+    }
+}
+
+void MainWindow::focusNeighbour(Qt::Orientation orientation, bool forward) {
+    SplitContainer* pane = focusedPane();
+    if (!pane) return;
+
+    if (SplitContainer* target = pane->findInDirection(orientation, forward)) {
+        target->focusPane();
+    }
+}
+
+void MainWindow::changeFontSize(int delta) {
+    Config& config = Config::instance();
+
+    const int newSize = (delta == 0) ? Config::DEFAULT_FONT_SIZE
+                                     : config.fontSize() + delta;
+    if (newSize == config.fontSize()) return;
+
+    config.setFontSize(newSize);
+
+    /* Every pane in every tab shares the font, so all of them must re-rasterize
+     * and recompute their grid size. */
+    for (int i = 0; i < tabCount(); ++i) {
+        if (SplitContainer* root = rootAt(i)) {
+            root->forEachLeaf([](SplitContainer* leaf) {
+                if (leaf->terminal()) leaf->terminal()->reloadFont();
+            });
+        }
+    }
 }

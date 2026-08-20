@@ -1,529 +1,597 @@
 /*
- * TerminalEmulator - ANSI/VT100 terminal emulation implementation
+ * TerminalEmulator - VT semantics implementation
  */
 
 #include "terminal_emulator.h"
-#include <QDebug>
+#include "char_width.h"
+#include <QString>
+#include <QStringList>
+#include <algorithm>
 
-// Initialize static members
-QColor TerminalEmulator::defaultForeground_(220, 220, 220);
-QColor TerminalEmulator::defaultBackground_(30, 30, 30);
-QVector<QColor> TerminalEmulator::ansiColors_;
-
-void TerminalEmulator::initializeColors() {
-    if (!ansiColors_.isEmpty()) return;
-
-    // Standard 16 ANSI colors (0-15)
-    ansiColors_ = {
-        // Normal colors (0-7)
-        QColor(0, 0, 0),         // Black
-        QColor(205, 49, 49),     // Red
-        QColor(13, 188, 121),    // Green
-        QColor(229, 229, 16),    // Yellow
-        QColor(36, 114, 200),    // Blue
-        QColor(188, 63, 188),    // Magenta
-        QColor(17, 168, 205),    // Cyan
-        QColor(229, 229, 229),   // White
-
-        // Bright colors (8-15)
-        QColor(102, 102, 102),   // Bright Black (Gray)
-        QColor(241, 76, 76),     // Bright Red
-        QColor(35, 209, 139),    // Bright Green
-        QColor(245, 245, 67),    // Bright Yellow
-        QColor(59, 142, 234),    // Bright Blue
-        QColor(214, 112, 214),   // Bright Magenta
-        QColor(41, 184, 219),    // Bright Cyan
-        QColor(255, 255, 255)    // Bright White
-    };
-}
-
-QColor TerminalEmulator::getAnsiColor(int index) {
-    initializeColors();
-
-    if (index >= 0 && index < ansiColors_.size()) {
-        return ansiColors_[index];
-    }
-
-    return defaultForeground_;
-}
+namespace {
+constexpr int kMaxRows = 4096;
+constexpr int kMaxCols = 4096;
+} // namespace
 
 TerminalEmulator::TerminalEmulator(int rows, int cols)
-    : rows_(rows)
-    , cols_(cols)
-    , cursorRow_(0)
-    , cursorCol_(0)
-    , state_(StateGround)
+    : primary_(rows, cols)
+    , alternate_(rows, cols)
+    , active_(&primary_)
 {
-    initializeColors();
-
-    // Initialize grid
-    grid_.resize(rows_);
-    for (int i = 0; i < rows_; ++i) {
-        grid_[i].resize(cols_);
-    }
-
-    currentAttrs_.foreground = defaultForeground_;
-    currentAttrs_.background = defaultBackground_;
+    parser_.setHandler(this);
 }
 
-const Cell& TerminalEmulator::cellAt(int row, int col) const {
-    static Cell emptyCell;
-
-    if (row >= 0 && row < rows_ && col >= 0 && col < cols_) {
-        return grid_[row][col];
-    }
-
-    return emptyCell;
+void TerminalEmulator::write(const char* data, size_t length) {
+    scratch_.clear();
+    decoder_.decode(data, length, scratch_);
+    parser_.advance(scratch_.data(), scratch_.size());
 }
 
 void TerminalEmulator::resize(int rows, int cols) {
-    QVector<QVector<Cell>> newGrid;
-    newGrid.resize(rows);
-
-    for (int i = 0; i < rows; ++i) {
-        newGrid[i].resize(cols);
-
-        // Copy old content
-        if (i < grid_.size()) {
-            for (int j = 0; j < cols && j < grid_[i].size(); ++j) {
-                newGrid[i][j] = grid_[i][j];
-            }
-        }
-    }
-
-    grid_ = newGrid;
-    rows_ = rows;
-    cols_ = cols;
-
-    // Clamp cursor
-    if (cursorRow_ >= rows_) cursorRow_ = rows_ - 1;
-    if (cursorCol_ >= cols_) cursorCol_ = cols_ - 1;
-    if (cursorRow_ < 0) cursorRow_ = 0;
-    if (cursorCol_ < 0) cursorCol_ = 0;
+    rows = std::clamp(rows, 1, kMaxRows);
+    cols = std::clamp(cols, 1, kMaxCols);
+    primary_.resize(rows, cols, pen_);
+    alternate_.resize(rows, cols, pen_);
 }
 
-void TerminalEmulator::clear() {
-    for (int i = 0; i < rows_; ++i) {
-        for (int j = 0; j < cols_; ++j) {
-            grid_[i][j].ch = ' ';
-            grid_[i][j].attrs.foreground = defaultForeground_;
-            grid_[i][j].attrs.background = defaultBackground_;
-            grid_[i][j].attrs.bold = false;
-            grid_[i][j].attrs.italic = false;
-            grid_[i][j].attrs.underline = false;
-            grid_[i][j].attrs.inverse = false;
-        }
-    }
-    cursorRow_ = 0;
-    cursorCol_ = 0;
+void TerminalEmulator::setBasePalette(const Palette& base) {
+    basePalette_ = base;
+    palette_ = base;
 }
 
-void TerminalEmulator::processData(const QString& data) {
-    for (QChar ch : data) {
-        processChar(ch);
-    }
+void TerminalEmulator::reset() {
+    pen_.reset();
+    palette_ = basePalette_;
+    cursorStyleRequested_ = false;
+    savedPen_ = pen_;
+    primary_.reset(pen_);
+    alternate_.reset(pen_);
+    active_ = &primary_;
+    alternateActive_ = false;
+    bracketedPaste_ = false;
+    applicationCursorKeys_ = false;
+    newlineMode_ = false;
+    parser_.reset();
+    decoder_.reset();
 }
 
-void TerminalEmulator::processChar(QChar ch) {
-    switch (state_) {
-    case StateGround:
-        if (ch == '\x1b') {  // ESC
-            state_ = StateEscape;
-        } else if (ch == '\n') {
-            newLine();
-        } else if (ch == '\r') {
-            carriageReturn();
-        } else if (ch == '\t') {
-            // Tab: move to next tab stop (every 8 columns)
-            cursorCol_ = ((cursorCol_ / 8) + 1) * 8;
-            if (cursorCol_ >= cols_) {
-                cursorCol_ = cols_ - 1;
-            }
-        } else if (ch == '\b') {
-            // Backspace
-            if (cursorCol_ > 0) {
-                cursorCol_--;
-            }
-        } else if (ch.isPrint()) {
-            putChar(ch);
-        }
-        // Ignore other control characters
-        break;
+void TerminalEmulator::sendReply(const std::string& text) {
+    if (reply_) reply_(text);
+}
 
-    case StateEscape:
-        handleEscapeSequence(ch);
-        break;
+/* ------------------------------------------------------------ VTHandler */
 
-    case StateCSI:
-        handleCSI(ch);
-        break;
+void TerminalEmulator::print(char32_t ch) {
+    active_->print(ch, pen_, charWidth(ch));
+}
 
-    case StateOSC:
-    case StateOSCString:
-        handleOSC(ch);
+void TerminalEmulator::control(uint8_t code) {
+    switch (code) {
+    case C0_BEL:
+        if (bellSink_) bellSink_();
+        break;
+    case C0_BS:
+        active_->backspace();
+        break;
+    case C0_HT:
+        active_->tab();
+        break;
+    case C0_LF:
+    case C0_VT:
+    case C0_FF:
+        /*
+         * A bare LF only moves down a row; the carriage return comes from the
+         * shell's own CR (or from LNM). The previous implementation folded CR
+         * into LF unconditionally, which hid missing-CR bugs and broke any
+         * application that relies on plain index movement.
+         */
+        if (newlineMode_) active_->carriageReturn();
+        active_->lineFeed(pen_);
+        break;
+    case C0_CR:
+        active_->carriageReturn();
+        break;
+    case C0_SO:
+    case C0_SI:
+        /* Character-set shifts: only the US-ASCII/DEC-graphics pair matters and
+         * it is not implemented yet, so stay in the current set. */
+        break;
+    default:
         break;
     }
 }
 
-void TerminalEmulator::handleEscapeSequence(QChar ch) {
-    if (ch == '[') {
-        state_ = StateCSI;
-        csiParams_.clear();
-    } else if (ch == ']') {
-        state_ = StateOSC;
-        oscString_.clear();
-    } else if (ch == 'c') {
-        // Reset terminal
-        clear();
-        currentAttrs_ = CellAttributes();
-        state_ = StateGround;
-    } else {
-        // Unknown escape sequence, return to ground
-        state_ = StateGround;
-    }
-}
-
-void TerminalEmulator::handleCSI(QChar ch) {
-    if (ch.isDigit() || ch == ';' || ch == '?') {
-        csiParams_.append(ch);
-    } else {
-        // Command character - append it and execute
-        csiParams_.append(ch);
-        executeCSI();
-        state_ = StateGround;
-    }
-}
-
-void TerminalEmulator::executeCSI() {
-    if (csiParams_.isEmpty()) {
+void TerminalEmulator::escDispatch(char intermediate, char final) {
+    if (intermediate != 0) {
+        /* ESC ( B / ESC ) 0 etc. select character sets - accepted and ignored. */
         return;
     }
 
-    // Get the command character (last char in the sequence)
-    QChar cmd = csiParams_.back();
-    QString params = csiParams_.left(csiParams_.length() - 1);
-
-    // Parse parameters
-    QStringList paramList = params.split(';');
-    QVector<int> paramInts;
-    for (const QString& p : paramList) {
-        paramInts.append(p.isEmpty() ? 0 : p.toInt());
-    }
-
-    // Execute command
-    switch (cmd.toLatin1()) {
-    case 'm':  // SGR - Select Graphic Rendition
-        handleSGR();
+    switch (final) {
+    case 'D':  // IND - index
+        active_->lineFeed(pen_);
         break;
-
-    case 'H':  // CUP - Cursor Position
-    case 'f':  // HVP - Horizontal and Vertical Position
-    {
-        int row = (paramInts.size() > 0 && paramInts[0] > 0) ? paramInts[0] - 1 : 0;
-        int col = (paramInts.size() > 1 && paramInts[1] > 0) ? paramInts[1] - 1 : 0;
-        moveCursor(row, col);
+    case 'E':  // NEL - next line
+        active_->carriageReturn();
+        active_->lineFeed(pen_);
         break;
-    }
-
-    case 'A':  // CUU - Cursor Up
-    {
-        int n = (paramInts.size() > 0 && paramInts[0] > 0) ? paramInts[0] : 1;
-        cursorRow_ = qMax(0, cursorRow_ - n);
+    case 'M':  // RI - reverse index
+        active_->reverseIndex(pen_);
+        break;
+    case '7':  // DECSC - save cursor and rendition
+        active_->saveCursor();
+        savedPen_ = pen_;
+        break;
+    case '8':  // DECRC - restore cursor and rendition
+        active_->restoreCursor();
+        pen_ = savedPen_;
+        break;
+    case 'c':  // RIS - full reset
+        reset();
+        break;
+    case '=':  // DECKPAM - application keypad
+    case '>':  // DECKPNM - numeric keypad
+        break;
+    default:
         break;
     }
+}
 
-    case 'B':  // CUD - Cursor Down
-    {
-        int n = (paramInts.size() > 0 && paramInts[0] > 0) ? paramInts[0] : 1;
-        cursorRow_ = qMin(rows_ - 1, cursorRow_ + n);
-        break;
+void TerminalEmulator::csiDispatch(const CsiSequence& seq) {
+    /* DEC private sequences: CSI ? ... h/l and friends. */
+    if (seq.privateMarker == '?') {
+        if (seq.final == 'h') { setMode(seq, true); return; }
+        if (seq.final == 'l') { setMode(seq, false); return; }
+        return;  // DECRQM and other private queries are not answered yet
+    }
+    if (seq.privateMarker != 0) {
+        /* CSI > / CSI < / CSI = : terminal identification and XTerm extensions.
+         * They are recognised (so their parameters are never printed as text)
+         * and otherwise ignored. */
+        return;
     }
 
-    case 'C':  // CUF - Cursor Forward
-    {
-        int n = (paramInts.size() > 0 && paramInts[0] > 0) ? paramInts[0] : 1;
-        cursorCol_ = qMin(cols_ - 1, cursorCol_ + n);
+    switch (seq.final) {
+    case '@':  // ICH - insert blank characters
+        active_->insertChars(seq.param(0, 1), pen_);
+        break;
+    case 'A':  // CUU
+        active_->moveBy(-std::max(1, seq.param(0, 1)), 0);
+        break;
+    case 'B':  // CUD
+    case 'e':  // VPR
+        active_->moveBy(std::max(1, seq.param(0, 1)), 0);
+        break;
+    case 'C':  // CUF
+    case 'a':  // HPR
+        active_->moveBy(0, std::max(1, seq.param(0, 1)));
+        break;
+    case 'D':  // CUB
+        active_->moveBy(0, -std::max(1, seq.param(0, 1)));
+        break;
+    case 'E':  // CNL - cursor next line
+        active_->moveBy(std::max(1, seq.param(0, 1)), 0);
+        active_->moveToColumn(0);
+        break;
+    case 'F':  // CPL - cursor previous line
+        active_->moveBy(-std::max(1, seq.param(0, 1)), 0);
+        active_->moveToColumn(0);
+        break;
+    case 'G':  // CHA - cursor horizontal absolute
+    case '`':  // HPA
+        active_->moveToColumn(std::max(1, seq.param(0, 1)) - 1);
+        break;
+    case 'd':  // VPA - vertical position absolute
+        active_->moveToRow(std::max(1, seq.param(0, 1)) - 1);
+        break;
+    case 'H':  // CUP
+    case 'f':  // HVP
+        active_->moveTo(std::max(1, seq.param(0, 1)) - 1,
+                        std::max(1, seq.param(1, 1)) - 1);
+        break;
+    case 'I':  // CHT - forward tab stops
+        active_->tab(std::max(1, seq.param(0, 1)));
+        break;
+    case 'Z':  // CBT - backward tab stops
+        active_->backTab(std::max(1, seq.param(0, 1)));
+        break;
+    case 'J':  // ED
+        active_->eraseInDisplay(seq.param(0, 0), pen_);
+        break;
+    case 'K':  // EL
+        active_->eraseInLine(seq.param(0, 0), pen_);
+        break;
+    case 'L':  // IL - insert lines
+        active_->insertLines(seq.param(0, 1), pen_);
+        break;
+    case 'M':  // DL - delete lines
+        active_->deleteLines(seq.param(0, 1), pen_);
+        break;
+    case 'P':  // DCH - delete characters
+        active_->deleteChars(seq.param(0, 1), pen_);
+        break;
+    case 'S':  // SU - scroll up
+        active_->scrollUp(seq.param(0, 1), pen_);
+        break;
+    case 'T':  // SD - scroll down
+        active_->scrollDown(seq.param(0, 1), pen_);
+        break;
+    case 'X':  // ECH - erase characters
+        active_->eraseChars(seq.param(0, 1), pen_);
+        break;
+    case 'm':  // SGR
+        applySgr(seq);
+        break;
+    case 'n':  // DSR
+        deviceStatusReport(seq);
+        break;
+    case 'c':  // DA1 - primary device attributes: "VT220 with colour"
+        sendReply("\x1b[?62;1;6;22c");
+        break;
+    case 'r':  // DECSTBM - set scrolling region
+        if (seq.count() == 0) {
+            active_->resetScrollRegion();
+            active_->moveTo(0, 0);
+        } else {
+            active_->setScrollRegion(std::max(1, seq.param(0, 1)) - 1,
+                                     seq.param(1, active_->rows()) - 1);
+        }
+        break;
+    case 's':  // SCOSC - save cursor
+        active_->saveCursor();
+        savedPen_ = pen_;
+        break;
+    case 'u':  // SCORC - restore cursor
+        active_->restoreCursor();
+        pen_ = savedPen_;
+        break;
+    case 'h':  // SM - ANSI modes
+    case 'l':  // RM
+        setMode(seq, seq.final == 'h');
+        break;
+    case 't':  // XTWINOPS - window manipulation, deliberately not implemented
+        break;
+    case 'q':
+        /* DECSCUSR is "CSI n SP q"; the space intermediate distinguishes it
+         * from other 'q' finals. */
+        if (seq.intermediate == ' ') {
+            setCursorStyle(seq.param(0, 0));
+        }
+        break;
+    default:
         break;
     }
+}
 
-    case 'D':  // CUB - Cursor Back
-    {
-        int n = (paramInts.size() > 0 && paramInts[0] > 0) ? paramInts[0] : 1;
-        cursorCol_ = qMax(0, cursorCol_ - n);
+void TerminalEmulator::oscDispatch(int command, const std::u32string& data) {
+    switch (command) {
+    case 0:  // set icon name and window title
+    case 2:  // set window title
+        if (titleSink_) titleSink_(utf8Encode(data));
         break;
-    }
 
-    case 'J':  // ED - Erase in Display
-    {
-        int mode = (paramInts.size() > 0) ? paramInts[0] : 0;
-        eraseInDisplay(mode);
+    case 4:    // set/query one or more palette entries
+        handlePaletteOsc(data, /*reset=*/false);
         break;
-    }
+    case 104:  // reset palette entries (all of them when no parameter)
+        handlePaletteOsc(data, /*reset=*/true);
+        break;
 
-    case 'K':  // EL - Erase in Line
-    {
-        int mode = (paramInts.size() > 0) ? paramInts[0] : 0;
-        eraseInLine(mode);
+    case 10:   // default foreground
+    case 11:   // default background
+    case 12:   // cursor colour
+        handleDynamicColorOsc(command, data);
         break;
-    }
+    case 110:  // reset default foreground
+    case 111:  // reset default background
+    case 112:  // reset cursor colour
+        resetDynamicColor(command - 100);
+        break;
 
     default:
-        // Unknown CSI command
+        /* OSC 1 (icon name), 7 (working directory), 8 (hyperlinks), 52
+         * (clipboard) and 133 (prompt marks) are recognised by the parser and
+         * dropped here. */
         break;
     }
 }
 
-void TerminalEmulator::handleSGR() {
-    QString params = csiParams_.left(csiParams_.length() - 1);
+/*
+ * OSC 4 ; index ; spec [ ; index ; spec ]...   set palette entries
+ * OSC 4 ; index ; ?                            query a palette entry
+ * OSC 104                                      reset the whole palette
+ * OSC 104 ; index [ ; index ]...               reset specific entries
+ */
+void TerminalEmulator::handlePaletteOsc(const std::u32string& data, bool reset) {
+    const QString text = QString::fromStdString(utf8Encode(data));
 
-    if (params.isEmpty() || params == "0") {
-        // Reset to default
-        currentAttrs_ = CellAttributes();
-        currentAttrs_.foreground = defaultForeground_;
-        currentAttrs_.background = defaultBackground_;
+    if (reset && text.isEmpty()) {
+        palette_ = basePalette_;
         return;
     }
 
-    QStringList paramList = params.split(';');
+    const QStringList fields = text.split(QLatin1Char(';'));
 
-    for (int i = 0; i < paramList.size(); ++i) {
-        int code = paramList[i].toInt();
+    if (reset) {
+        for (const QString& field : fields) {
+            bool ok = false;
+            const int index = field.trimmed().toInt(&ok);
+            if (!ok) continue;
+            /* Restore from the configured palette, not the built-in one, so a
+             * user's themed slot survives an application's reset. */
+            palette_.setEntry(index, basePalette_.entry(index));
+        }
+        return;
+    }
+
+    /* Set/query pairs. */
+    for (int i = 0; i + 1 < fields.size(); i += 2) {
+        bool ok = false;
+        const int index = fields[i].trimmed().toInt(&ok);
+        if (!ok || index < 0 || index >= Palette::PaletteSize) continue;
+
+        const QString spec = fields[i + 1].trimmed();
+
+        if (spec == QLatin1String("?")) {
+            const QString reply = QStringLiteral("\x1b]4;%1;%2\x1b\\")
+                                      .arg(index)
+                                      .arg(formatColorSpec(palette_.entry(index)));
+            sendReply(reply.toStdString());
+            continue;
+        }
+
+        if (const QColor color = parseColorSpec(spec); color.isValid()) {
+            palette_.setEntry(index, color);
+        }
+    }
+}
+
+/*
+ * OSC 10 / 11 / 12 - default foreground, default background, cursor colour.
+ * A spec of "?" is a query, which is how applications discover whether the
+ * terminal is light or dark. Neovim asks "OSC 11 ; ?" at start-up and, with no
+ * answer, has to guess -- which gets a light colour scheme wrong.
+ */
+void TerminalEmulator::handleDynamicColorOsc(int which, const std::u32string& data) {
+    const QString spec = QString::fromStdString(utf8Encode(data)).trimmed();
+    if (spec.isEmpty()) return;
+
+    auto current = [&]() {
+        switch (which) {
+        case 10: return palette_.defaultForeground();
+        case 11: return palette_.defaultBackground();
+        default: return palette_.cursorColor();
+        }
+    };
+
+    if (spec == QLatin1String("?")) {
+        const QString reply = QStringLiteral("\x1b]%1;%2\x1b\\")
+                                  .arg(which)
+                                  .arg(formatColorSpec(current()));
+        sendReply(reply.toStdString());
+        return;
+    }
+
+    const QColor color = parseColorSpec(spec);
+    if (!color.isValid()) return;
+
+    switch (which) {
+    case 10: palette_.setDefaultForeground(color); break;
+    case 11: palette_.setDefaultBackground(color); break;
+    case 12: palette_.setCursorColor(color); break;
+    default: break;
+    }
+}
+
+void TerminalEmulator::resetDynamicColor(int which) {
+    switch (which) {
+    case 10: palette_.setDefaultForeground(basePalette_.defaultForeground()); break;
+    case 11: palette_.setDefaultBackground(basePalette_.defaultBackground()); break;
+    case 12: palette_.setCursorColor(basePalette_.cursorColor()); break;
+    default: break;
+    }
+}
+
+/*
+ * DECSCUSR - CSI n SP q. Editors use this to show the mode: a bar while
+ * inserting, a block otherwise.
+ */
+void TerminalEmulator::setCursorStyle(int parameter) {
+    switch (parameter) {
+    case 0:  // default
+        cursorStyleRequested_ = false;
+        cursorBlinkRequested_ = true;
+        return;
+    case 1: requestedCursorStyle_ = CursorStyle::Block;     cursorBlinkRequested_ = true;  break;
+    case 2: requestedCursorStyle_ = CursorStyle::Block;     cursorBlinkRequested_ = false; break;
+    case 3: requestedCursorStyle_ = CursorStyle::Underline; cursorBlinkRequested_ = true;  break;
+    case 4: requestedCursorStyle_ = CursorStyle::Underline; cursorBlinkRequested_ = false; break;
+    case 5: requestedCursorStyle_ = CursorStyle::Bar;       cursorBlinkRequested_ = true;  break;
+    case 6: requestedCursorStyle_ = CursorStyle::Bar;       cursorBlinkRequested_ = false; break;
+    default:
+        return;
+    }
+    cursorStyleRequested_ = true;
+}
+
+/* ----------------------------------------------------------------- modes */
+
+void TerminalEmulator::setMode(const CsiSequence& seq, bool enable) {
+    const bool isPrivate = seq.privateMarker == '?';
+
+    for (size_t i = 0; i < seq.count(); ++i) {
+        const int mode = seq.param(i, 0);
+
+        if (!isPrivate) {
+            switch (mode) {
+            case 20:  // LNM - line feed / new line mode
+                newlineMode_ = enable;
+                break;
+            default:
+                break;
+            }
+            continue;
+        }
+
+        switch (mode) {
+        case 1:     // DECCKM - application cursor keys
+            applicationCursorKeys_ = enable;
+            break;
+        case 7:     // DECAWM - autowrap
+            primary_.setAutoWrap(enable);
+            alternate_.setAutoWrap(enable);
+            break;
+        case 25:    // DECTCEM - cursor visibility
+            active_->setCursorVisible(enable);
+            break;
+        case 1047:  // alternate screen buffer
+        case 1049:  // alternate buffer + save/restore cursor
+            useAlternateScreen(enable);
+            break;
+        case 1048:  // save/restore cursor only
+            if (enable) { active_->saveCursor(); savedPen_ = pen_; }
+            else        { active_->restoreCursor(); pen_ = savedPen_; }
+            break;
+        case 2004:  // bracketed paste
+            bracketedPaste_ = enable;
+            break;
+        default:
+            /* Mouse reporting (1000-1006), focus events (1004), sixel
+             * scrolling and the rest are not implemented; ignoring them is the
+             * correct behaviour, since applications probe by feature. */
+            break;
+        }
+    }
+}
+
+void TerminalEmulator::useAlternateScreen(bool enable) {
+    if (enable == alternateActive_) return;
+
+    if (enable) {
+        active_->saveCursor();
+        savedPen_ = pen_;
+        alternate_.reset(pen_);
+        active_ = &alternate_;
+        alternateActive_ = true;
+    } else {
+        active_ = &primary_;
+        alternateActive_ = false;
+        pen_ = savedPen_;
+        active_->restoreCursor();
+    }
+}
+
+void TerminalEmulator::deviceStatusReport(const CsiSequence& seq) {
+    switch (seq.param(0, 0)) {
+    case 5:  // "terminal ok"
+        sendReply("\x1b[0n");
+        break;
+    case 6: {  // CPR - report cursor position, 1-based
+        std::string reply = "\x1b[";
+        reply += std::to_string(active_->cursorRow() + 1);
+        reply += ';';
+        reply += std::to_string(active_->cursorCol() + 1);
+        reply += 'R';
+        sendReply(reply);
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+/* ------------------------------------------------------------------- SGR */
+
+size_t TerminalEmulator::parseExtendedColor(const CsiSequence& seq, size_t index, Color& out) {
+    /*
+     * Handles both spellings of the extended-colour forms:
+     *
+     *   38;5;N        38:5:N        indexed
+     *   38;2;R;G;B    38:2:R:G:B    direct RGB
+     *
+     * The old code fed every parameter through a flat switch, so "38;5;208"
+     * matched nothing for 38, then hit `5` (blink) and `208` (unknown) - which
+     * is why 256-colour output came out uncoloured.
+     *
+     * Returns the number of parameters consumed, including the 38/48 itself.
+     */
+    const int selector = seq.param(index + 1, -1);
+
+    if (selector == 5) {
+        const int value = seq.param(index + 2, -1);
+        if (value >= 0 && value <= 255) {
+            out = Color::indexed(static_cast<uint8_t>(value));
+        }
+        return 3;
+    }
+
+    if (selector == 2) {
+        /* Some emitters use the colon form with a colour-space id:
+         * 38:2::R:G:B. Skip an empty slot if that is what we are looking at. */
+        size_t base = index + 2;
+        if (seq.param(base, -1) < 0 && seq.count() > base + 3) {
+            ++base;
+        }
+        const int r = seq.param(base + 0, -1);
+        const int g = seq.param(base + 1, -1);
+        const int b = seq.param(base + 2, -1);
+        if (r >= 0 && g >= 0 && b >= 0) {
+            out = Color::rgb(static_cast<uint8_t>(std::min(r, 255)),
+                             static_cast<uint8_t>(std::min(g, 255)),
+                             static_cast<uint8_t>(std::min(b, 255)));
+        }
+        return (base - index) + 3;
+    }
+
+    /* Unknown selector: consume just the 38/48 so parsing resynchronises. */
+    return 1;
+}
+
+void TerminalEmulator::applySgr(const CsiSequence& seq) {
+    if (seq.count() == 0) {
+        pen_.reset();
+        return;
+    }
+
+    for (size_t i = 0; i < seq.count(); ++i) {
+        const int code = seq.param(i, 0);
 
         switch (code) {
-        case 0:  // Reset
-            currentAttrs_ = CellAttributes();
-            currentAttrs_.foreground = defaultForeground_;
-            currentAttrs_.background = defaultBackground_;
-            break;
+        case 0:  pen_.reset(); break;
+        case 1:  pen_.setFlag(CellFlagBold, true); break;
+        case 2:  pen_.setFlag(CellFlagFaint, true); break;
+        case 3:  pen_.setFlag(CellFlagItalic, true); break;
+        case 4:  pen_.setFlag(CellFlagUnderline, true); break;
+        case 5:
+        case 6:  pen_.setFlag(CellFlagBlink, true); break;
+        case 7:  pen_.setFlag(CellFlagInverse, true); break;
+        case 8:  pen_.setFlag(CellFlagInvisible, true); break;
+        case 9:  pen_.setFlag(CellFlagStrike, true); break;
+        case 21:
+        case 22: pen_.setFlag(CellFlagBold | CellFlagFaint, false); break;
+        case 23: pen_.setFlag(CellFlagItalic, false); break;
+        case 24: pen_.setFlag(CellFlagUnderline, false); break;
+        case 25: pen_.setFlag(CellFlagBlink, false); break;
+        case 27: pen_.setFlag(CellFlagInverse, false); break;
+        case 28: pen_.setFlag(CellFlagInvisible, false); break;
+        case 29: pen_.setFlag(CellFlagStrike, false); break;
 
-        case 1:  // Bold
-            currentAttrs_.bold = true;
-            break;
-
-        case 3:  // Italic
-            currentAttrs_.italic = true;
-            break;
-
-        case 4:  // Underline
-            currentAttrs_.underline = true;
-            break;
-
-        case 7:  // Inverse
-            currentAttrs_.inverse = true;
-            break;
-
-        case 22: // Normal intensity (not bold)
-            currentAttrs_.bold = false;
-            break;
-
-        case 23: // Not italic
-            currentAttrs_.italic = false;
-            break;
-
-        case 24: // Not underlined
-            currentAttrs_.underline = false;
-            break;
-
-        case 27: // Not inverse
-            currentAttrs_.inverse = false;
-            break;
-
-        // Foreground colors (30-37)
-        case 30: currentAttrs_.foreground = getAnsiColor(0); break;
-        case 31: currentAttrs_.foreground = getAnsiColor(1); break;
-        case 32: currentAttrs_.foreground = getAnsiColor(2); break;
-        case 33: currentAttrs_.foreground = getAnsiColor(3); break;
-        case 34: currentAttrs_.foreground = getAnsiColor(4); break;
-        case 35: currentAttrs_.foreground = getAnsiColor(5); break;
-        case 36: currentAttrs_.foreground = getAnsiColor(6); break;
-        case 37: currentAttrs_.foreground = getAnsiColor(7); break;
-
-        // Bright foreground colors (90-97)
-        case 90: currentAttrs_.foreground = getAnsiColor(8); break;
-        case 91: currentAttrs_.foreground = getAnsiColor(9); break;
-        case 92: currentAttrs_.foreground = getAnsiColor(10); break;
-        case 93: currentAttrs_.foreground = getAnsiColor(11); break;
-        case 94: currentAttrs_.foreground = getAnsiColor(12); break;
-        case 95: currentAttrs_.foreground = getAnsiColor(13); break;
-        case 96: currentAttrs_.foreground = getAnsiColor(14); break;
-        case 97: currentAttrs_.foreground = getAnsiColor(15); break;
-
-        // Background colors (40-47)
-        case 40: currentAttrs_.background = getAnsiColor(0); break;
-        case 41: currentAttrs_.background = getAnsiColor(1); break;
-        case 42: currentAttrs_.background = getAnsiColor(2); break;
-        case 43: currentAttrs_.background = getAnsiColor(3); break;
-        case 44: currentAttrs_.background = getAnsiColor(4); break;
-        case 45: currentAttrs_.background = getAnsiColor(5); break;
-        case 46: currentAttrs_.background = getAnsiColor(6); break;
-        case 47: currentAttrs_.background = getAnsiColor(7); break;
-
-        // Bright background colors (100-107)
-        case 100: currentAttrs_.background = getAnsiColor(8); break;
-        case 101: currentAttrs_.background = getAnsiColor(9); break;
-        case 102: currentAttrs_.background = getAnsiColor(10); break;
-        case 103: currentAttrs_.background = getAnsiColor(11); break;
-        case 104: currentAttrs_.background = getAnsiColor(12); break;
-        case 105: currentAttrs_.background = getAnsiColor(13); break;
-        case 106: currentAttrs_.background = getAnsiColor(14); break;
-        case 107: currentAttrs_.background = getAnsiColor(15); break;
-
-        case 39: // Default foreground
-            currentAttrs_.foreground = defaultForeground_;
-            break;
-
-        case 49: // Default background
-            currentAttrs_.background = defaultBackground_;
-            break;
+        case 38: i += parseExtendedColor(seq, i, pen_.fg) - 1; break;
+        case 48: i += parseExtendedColor(seq, i, pen_.bg) - 1; break;
+        case 39: pen_.fg = Color::defaultColor(); break;
+        case 49: pen_.bg = Color::defaultColor(); break;
 
         default:
-            // Unsupported SGR code
+            if (code >= 30 && code <= 37) {
+                pen_.fg = Color::indexed(static_cast<uint8_t>(code - 30));
+            } else if (code >= 40 && code <= 47) {
+                pen_.bg = Color::indexed(static_cast<uint8_t>(code - 40));
+            } else if (code >= 90 && code <= 97) {
+                pen_.fg = Color::indexed(static_cast<uint8_t>(code - 90 + 8));
+            } else if (code >= 100 && code <= 107) {
+                pen_.bg = Color::indexed(static_cast<uint8_t>(code - 100 + 8));
+            }
             break;
         }
-    }
-}
-
-void TerminalEmulator::handleOSC(QChar ch) {
-    if (state_ == StateOSC) {
-        // First character after ESC ]
-        state_ = StateOSCString;
-        oscString_.append(ch);
-    } else {
-        // In OSC string
-        if (ch == '\x07' || ch == '\x1b') {  // BEL or ESC terminates OSC
-            // Process OSC command (mostly used for window title, etc.)
-            // We can ignore these for now
-            state_ = StateGround;
-            oscString_.clear();
-        } else {
-            oscString_.append(ch);
-        }
-    }
-}
-
-void TerminalEmulator::putChar(QChar ch) {
-    if (cursorRow_ < 0 || cursorRow_ >= rows_ || cursorCol_ < 0 || cursorCol_ >= cols_) {
-        return;
-    }
-
-    grid_[cursorRow_][cursorCol_].ch = ch;
-    grid_[cursorRow_][cursorCol_].attrs = currentAttrs_;
-
-    cursorCol_++;
-
-    // Wrap to next line
-    if (cursorCol_ >= cols_) {
-        cursorCol_ = 0;
-        cursorRow_++;
-
-        // Scroll if at bottom
-        if (cursorRow_ >= rows_) {
-            scrollUp(1);
-            cursorRow_ = rows_ - 1;
-        }
-    }
-}
-
-void TerminalEmulator::newLine() {
-    // Modern terminal behavior: LF acts like CR+LF (newline)
-    // Move to next line AND reset column to 0
-    cursorCol_ = 0;
-    cursorRow_++;
-
-    // Scroll if at bottom
-    if (cursorRow_ >= rows_) {
-        scrollUp(1);
-        cursorRow_ = rows_ - 1;
-    }
-}
-
-void TerminalEmulator::carriageReturn() {
-    cursorCol_ = 0;
-}
-
-void TerminalEmulator::moveCursor(int row, int col) {
-    cursorRow_ = qBound(0, row, rows_ - 1);
-    cursorCol_ = qBound(0, col, cols_ - 1);
-}
-
-void TerminalEmulator::scrollUp(int lines) {
-    if (lines <= 0 || lines >= rows_) {
-        return;
-    }
-
-    // Move lines up
-    for (int i = 0; i < rows_ - lines; ++i) {
-        grid_[i] = grid_[i + lines];
-    }
-
-    // Clear bottom lines
-    for (int i = rows_ - lines; i < rows_; ++i) {
-        for (int j = 0; j < cols_; ++j) {
-            grid_[i][j].ch = ' ';
-            grid_[i][j].attrs.foreground = defaultForeground_;
-            grid_[i][j].attrs.background = defaultBackground_;
-            grid_[i][j].attrs.bold = false;
-            grid_[i][j].attrs.italic = false;
-            grid_[i][j].attrs.underline = false;
-            grid_[i][j].attrs.inverse = false;
-        }
-    }
-}
-
-void TerminalEmulator::eraseInDisplay(int mode) {
-    switch (mode) {
-    case 0:  // Clear from cursor to end of screen
-        eraseInLine(0);
-        for (int i = cursorRow_ + 1; i < rows_; ++i) {
-            for (int j = 0; j < cols_; ++j) {
-                grid_[i][j].ch = ' ';
-                grid_[i][j].attrs = currentAttrs_;
-            }
-        }
-        break;
-
-    case 1:  // Clear from cursor to beginning of screen
-        eraseInLine(1);
-        for (int i = 0; i < cursorRow_; ++i) {
-            for (int j = 0; j < cols_; ++j) {
-                grid_[i][j].ch = ' ';
-                grid_[i][j].attrs = currentAttrs_;
-            }
-        }
-        break;
-
-    case 2:  // Clear entire screen
-    case 3:  // Clear entire screen + scrollback (we don't have scrollback yet)
-        clear();
-        break;
-    }
-}
-
-void TerminalEmulator::eraseInLine(int mode) {
-    if (cursorRow_ < 0 || cursorRow_ >= rows_) {
-        return;
-    }
-
-    switch (mode) {
-    case 0:  // Clear from cursor to end of line
-        for (int j = cursorCol_; j < cols_; ++j) {
-            grid_[cursorRow_][j].ch = ' ';
-            grid_[cursorRow_][j].attrs = currentAttrs_;
-        }
-        break;
-
-    case 1:  // Clear from cursor to beginning of line
-        for (int j = 0; j <= cursorCol_ && j < cols_; ++j) {
-            grid_[cursorRow_][j].ch = ' ';
-            grid_[cursorRow_][j].attrs = currentAttrs_;
-        }
-        break;
-
-    case 2:  // Clear entire line
-        for (int j = 0; j < cols_; ++j) {
-            grid_[cursorRow_][j].ch = ' ';
-            grid_[cursorRow_][j].attrs = currentAttrs_;
-        }
-        break;
     }
 }

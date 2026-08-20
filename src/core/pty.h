@@ -1,14 +1,15 @@
 /*
- * Pseudo Terminal (PTY) - C++ RAII wrapper for shell spawning
+ * PTY - RAII wrapper around a pseudo-terminal and its shell process
  *
- * Spawns a shell (bash, sh, zsh, fish, etc) defaulted by the user
- * or sh if obtaining the default shell fails
+ * Spawns the user's shell (from $SHELL, else the password database, else
+ * /bin/sh) on the slave side of a new pty and hands back a non-blocking master
+ * descriptor suitable for a Qt socket notifier.
  *
  * Author: Rattle-Brain
  */
 
-#ifndef PTY_H
-#define PTY_H
+#ifndef CORE_PTY_H
+#define CORE_PTY_H
 
 #include <pwd.h>
 #include <sys/types.h>
@@ -22,96 +23,56 @@
   #include <util.h>
 #endif
 
-/*
- * PTY - Pseudo Terminal handle
- *
- * RAII wrapper for a pseudo-terminal that manages the lifecycle of a shell process.
- * Encapsulates everything needed to communicate with a shell:
- * - master_fd: File descriptor for reading/writing to the shell
- * - child_pid: PID of the shell process (for signals, waiting)
- * - rows/cols: Terminal dimensions (for resize signals)
- */
 class PTY {
 public:
-    /*
-     * Create a PTY with specified dimensions
-     * Forks a new shell process and sets up the pseudo-terminal
-     */
-    PTY(int rows, int cols);
+    /* Outcome of a read. The three non-data cases used to be conflated into a
+     * single 0/-1 return, which made "no data right now" indistinguishable
+     * from "the shell exited". */
+    struct ReadResult {
+        ssize_t bytes = 0;
+        bool wouldBlock = false;
+        bool eof = false;
+        bool error = false;
+    };
 
-    /*
-     * Destructor - cleans up file descriptors and terminates child process
-     */
+    PTY(int rows, int cols);
     ~PTY();
 
-    // Delete copy constructor and copy assignment (not copyable)
     PTY(const PTY&) = delete;
     PTY& operator=(const PTY&) = delete;
-
-    // Allow move semantics
     PTY(PTY&& other) noexcept;
     PTY& operator=(PTY&& other) noexcept;
 
-    /*
-     * Read from PTY (non-blocking)
-     * Returns number of bytes read, 0 if no data, -1 on error
-     */
-    ssize_t read(char* buf, size_t len);
-
-    /*
-     * Write to PTY
-     * Returns number of bytes written, -1 on error
-     */
+    ReadResult read(char* buf, size_t len);
     ssize_t write(const char* buf, size_t len);
 
-    /*
-     * Resize the terminal
-     * Sends TIOCSWINSZ ioctl and SIGWINCH signal to shell
-     */
+    /* Push the new window size to the slave and signal the foreground group. */
     void resize(int rows, int cols);
 
-    /*
-     * Get the master file descriptor
-     * Use this for integrating with event loops (select, poll, epoll, Qt notifiers)
-     */
     int masterFd() const { return master_fd_; }
-
-    /*
-     * Get the child process PID
-     */
     pid_t childPid() const { return child_pid_; }
-
-    /*
-     * Get current dimensions
-     */
     int rows() const { return rows_; }
     int cols() const { return cols_; }
 
-    /*
-     * Check if PTY is valid
-     */
     bool isValid() const { return master_fd_ >= 0 && child_pid_ > 0; }
 
-    /*
-     * Check if the child process has exited
-     * Returns true if the process has exited, false otherwise
-     */
-    bool hasChildExited() const;
+    /* Reaps the child if it has exited. Once true, stays true: the previous
+     * implementation called waitpid() from a const method on every poll, so the
+     * first call consumed the exit status and later cleanup could not reap. */
+    bool hasChildExited();
 
-    /*
-     * Get the user's default shell
-     * Checks $SHELL env var, then password database, fallback to /bin/sh
-     */
     static std::string getUserShell();
 
 private:
-    int master_fd_;       // Master side file descriptor
-    pid_t child_pid_;     // Shell process PID
-    int rows_;            // Terminal rows
-    int cols_;            // Terminal columns
-
-    // Helper for cleanup
     void cleanup();
+    /* Runs in the forked child; never returns. */
+    [[noreturn]] void execChild(const std::string& shell);
+
+    int master_fd_ = -1;
+    pid_t child_pid_ = -1;
+    int rows_ = 0;
+    int cols_ = 0;
+    bool child_exited_ = false;
 };
 
-#endif /* PTY_H */
+#endif /* CORE_PTY_H */

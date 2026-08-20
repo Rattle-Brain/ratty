@@ -1,122 +1,132 @@
 /*
- * TerminalEmulator - ANSI/VT100 terminal emulation
+ * TerminalEmulator - VT semantics on top of a Screen
  *
- * Handles:
- * - ANSI escape sequence parsing (CSI, OSC, etc.)
- * - Terminal grid with character cells and attributes
- * - Cursor positioning and scrolling
- * - SGR (color and text attributes)
+ * Layering: PTY bytes -> Utf8Decoder -> VTParser (syntax) -> TerminalEmulator
+ * (semantics) -> Screen (state). This class is the only place that knows what
+ * "CSI 2 J" or "SGR 38;5;208" *mean*; the parser knows only their shape and the
+ * screen only how to store the result.
+ *
+ * It owns two screens so that the alternate buffer (DECSET 1049, used by vim,
+ * less, htop...) does not destroy the shell's scrollback view, and it owns the
+ * pen (current graphic rendition) that printed characters inherit.
  */
 
 #ifndef CORE_TERMINAL_EMULATOR_H
 #define CORE_TERMINAL_EMULATOR_H
 
-#include <QVector>
-#include <QString>
-#include <QColor>
-#include <cstdint>
+#include "cell.h"
+#include "cursor.h"
+#include "palette.h"
+#include "screen.h"
+#include "utf8.h"
+#include "vt_parser.h"
+#include <functional>
+#include <string>
+#include <vector>
 
-/* Terminal cell attributes */
-struct CellAttributes {
-    QColor foreground;
-    QColor background;
-    bool bold;
-    bool italic;
-    bool underline;
-    bool inverse;
-
-    CellAttributes()
-        : foreground(220, 220, 220)
-        , background(30, 30, 30)
-        , bold(false)
-        , italic(false)
-        , underline(false)
-        , inverse(false)
-    {}
-};
-
-/* Terminal cell (character + attributes) */
-struct Cell {
-    QChar ch;
-    CellAttributes attrs;
-
-    Cell() : ch(' ') {}
-};
-
-/* Terminal emulator state machine states */
-enum ParserState {
-    StateGround,        // Normal text
-    StateEscape,        // After ESC
-    StateCSI,           // Control Sequence Introducer (ESC [)
-    StateOSC,           // Operating System Command (ESC ])
-    StateOSCString      // OSC string content
-};
-
-class TerminalEmulator {
+class TerminalEmulator : public VTHandler {
 public:
     TerminalEmulator(int rows, int cols);
+    ~TerminalEmulator() override = default;
 
-    // Process incoming data
-    void processData(const QString& data);
+    TerminalEmulator(const TerminalEmulator&) = delete;
+    TerminalEmulator& operator=(const TerminalEmulator&) = delete;
 
-    // Grid access
-    const Cell& cellAt(int row, int col) const;
-    int rows() const { return rows_; }
-    int cols() const { return cols_; }
+    /* Feed raw PTY bytes. UTF-8 sequences may be split across calls. */
+    void write(const char* data, size_t length);
 
-    // Cursor position
-    int cursorRow() const { return cursorRow_; }
-    int cursorCol() const { return cursorCol_; }
+    /* The screen currently being displayed (primary or alternate). */
+    const Screen& screen() const { return *active_; }
 
-    // Resize terminal
+    int rows() const { return active_->rows(); }
+    int cols() const { return active_->cols(); }
     void resize(int rows, int cols);
+    void reset();
 
-    // Clear screen
-    void clear();
+    /*
+     * Colours are owned per session, not globally, because OSC 4/10/11/12 let a
+     * running application retheme *its own* terminal -- one pane changing its
+     * background must not disturb another. `base` supplies the configured
+     * defaults and is what OSC 104/110/111/112 restore to.
+     */
+    void setBasePalette(const Palette& base);
+    const Palette& palette() const { return palette_; }
+
+    /*
+     * Cursor shape requested by the application through DECSCUSR (CSI n q).
+     * Empty until an application asks, so the user's configured style wins by
+     * default. Editors set this per mode -- a bar in insert mode, a block in
+     * normal mode -- and ignoring it made the cursor look stuck.
+     */
+    bool hasRequestedCursorStyle() const { return cursorStyleRequested_; }
+    CursorStyle requestedCursorStyle() const { return requestedCursorStyle_; }
+    bool cursorBlinkRequested() const { return cursorBlinkRequested_; }
+
+    /* Where the emulator wants replies sent (DSR, DA, ...). */
+    using ReplySink = std::function<void(const std::string& utf8)>;
+    void setReplySink(ReplySink sink) { reply_ = std::move(sink); }
+
+    /* Notifications for the UI layer. Titles are UTF-8. */
+    using TitleSink = std::function<void(const std::string& utf8)>;
+    using BellSink = std::function<void()>;
+    void setTitleSink(TitleSink sink) { titleSink_ = std::move(sink); }
+    void setBellSink(BellSink sink) { bellSink_ = std::move(sink); }
+
+    /* True while an application has requested bracketed paste (DECSET 2004). */
+    bool bracketedPaste() const { return bracketedPaste_; }
+    /* True while the cursor keys should send SS3 rather than CSI (DECCKM). */
+    bool applicationCursorKeys() const { return applicationCursorKeys_; }
+
+    /* VTHandler */
+    void print(char32_t ch) override;
+    void control(uint8_t code) override;
+    void csiDispatch(const CsiSequence& seq) override;
+    void escDispatch(char intermediate, char final) override;
+    void oscDispatch(int command, const std::u32string& data) override;
 
 private:
-    // Parser methods
-    void processChar(QChar ch);
-    void handleEscapeSequence(QChar ch);
-    void handleCSI(QChar ch);
-    void executeCSI();
-    void handleOSC(QChar ch);
-    void handleSGR();
+    void applySgr(const CsiSequence& seq);
+    /* Parses one SGR extended-colour spec starting at `index`; returns the
+     * number of parameters consumed. */
+    size_t parseExtendedColor(const CsiSequence& seq, size_t index, Color& out);
+    void setMode(const CsiSequence& seq, bool enable);
+    void setCursorStyle(int parameter);
+    /* OSC 4/5 palette control. */
+    void handlePaletteOsc(const std::u32string& data, bool reset);
+    /* OSC 10/11/12 default colour control; `which` is the OSC number. */
+    void handleDynamicColorOsc(int which, const std::u32string& data);
+    void resetDynamicColor(int which);
+    void useAlternateScreen(bool enable);
+    void deviceStatusReport(const CsiSequence& seq);
+    void sendReply(const std::string& text);
 
-    // Terminal operations
-    void putChar(QChar ch);
-    void newLine();
-    void carriageReturn();
-    void moveCursor(int row, int col);
-    void scrollUp(int lines = 1);
-    void eraseInDisplay(int mode);
-    void eraseInLine(int mode);
+    Screen primary_;
+    Screen alternate_;
+    Screen* active_;
 
-    // Grid
-    QVector<QVector<Cell>> grid_;
-    int rows_;
-    int cols_;
+    Pen pen_;
+    Pen savedPen_;
 
-    // Cursor
-    int cursorRow_;
-    int cursorCol_;
+    Palette basePalette_;   // the configured colours; the reset target
+    Palette palette_;       // live colours, mutated by OSC
 
-    // Current attributes
-    CellAttributes currentAttrs_;
+    bool cursorStyleRequested_ = false;
+    CursorStyle requestedCursorStyle_ = CursorStyle::Block;
+    bool cursorBlinkRequested_ = true;
 
-    // Parser state
-    ParserState state_;
-    QString csiParams_;
-    QString oscString_;
+    VTParser parser_;
+    Utf8Decoder decoder_;
+    std::vector<char32_t> scratch_;
 
-    // Default colors
-    static QColor defaultForeground_;
-    static QColor defaultBackground_;
+    bool alternateActive_ = false;
+    bool bracketedPaste_ = false;
+    bool applicationCursorKeys_ = false;
+    /* DECSET 20 / LNM: when set, LF also performs a carriage return. */
+    bool newlineMode_ = false;
 
-    // ANSI color palette
-    static QVector<QColor> ansiColors_;
-    static void initializeColors();
-    static QColor getAnsiColor(int index);
+    ReplySink reply_;
+    TitleSink titleSink_;
+    BellSink bellSink_;
 };
 
 #endif /* CORE_TERMINAL_EMULATOR_H */

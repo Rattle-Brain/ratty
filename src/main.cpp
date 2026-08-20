@@ -1,36 +1,46 @@
+/*
+ * Ratty - a GPU-accelerated terminal emulator
+ */
+
+#include "config/config.h"
+#include "ui/main_window.h"
 #include <QApplication>
 #include <QIcon>
 #include <QSurfaceFormat>
-#include <QDebug>
-#include "ui/main_window.h"
-#include "config/config.h"
 
-int main(int argc, char *argv[]) {
-    // Set default OpenGL format before creating QApplication
-    // This ensures all OpenGL widgets use OpenGL 3.3 Core Profile
-    QSurfaceFormat defaultFormat;
-    defaultFormat.setVersion(3, 3);
-    defaultFormat.setProfile(QSurfaceFormat::CoreProfile);
-    defaultFormat.setDepthBufferSize(24);
-    defaultFormat.setStencilBufferSize(8);
-    defaultFormat.setSamples(4);  // 4x MSAA
-    QSurfaceFormat::setDefaultFormat(defaultFormat);
+int main(int argc, char* argv[]) {
+    /*
+     * The surface format has to be set before QApplication exists, because the
+     * platform integration reads it when it creates the first GL context.
+     *
+     * No multisampling and no depth/stencil buffer: everything drawn is
+     * axis-aligned, alpha-blended 2D. MSAA cannot improve a glyph quad's edges
+     * (there are none - the shape lives in the texture's alpha) and only costs
+     * a resolve blit that very slightly blurs the result.
+     */
+    QSurfaceFormat format;
+    format.setVersion(3, 3);
+    format.setProfile(QSurfaceFormat::CoreProfile);
+    format.setRenderableType(QSurfaceFormat::OpenGL);
+    format.setDepthBufferSize(0);
+    format.setStencilBufferSize(0);
+    format.setSamples(0);
+    format.setSwapBehavior(QSurfaceFormat::DoubleBuffer);
+    QSurfaceFormat::setDefaultFormat(format);
 
     QApplication app(argc, argv);
-    app.setWindowIcon(QIcon("resources/images/ratty-logo.ico"));
 
-    // Set application metadata
-    QCoreApplication::setOrganizationName("Ratty");
-    QCoreApplication::setApplicationName("Ratty Terminal");
-    QCoreApplication::setApplicationVersion("0.1.1");
+    QCoreApplication::setOrganizationName(QStringLiteral("Ratty"));
+    QCoreApplication::setApplicationName(QStringLiteral("Ratty"));
+    QCoreApplication::setApplicationVersion(QStringLiteral("0.2.0"));
 
-    // Load configuration ONCE at startup - before creating any windows/widgets
-    // This ensures all components can safely use Config::instance() throughout
-    qDebug() << "Loading configuration...";
+    /* From the resource bundle, not a path relative to the working directory. */
+    app.setWindowIcon(QIcon(QStringLiteral(":/icons/ratty-logo.png")));
+
+    /* Load once, up front: every widget reads Config::instance() during
+     * construction. */
     Config::instance().load();
-    qDebug() << "Configuration loaded successfully";
 
-    // Create and show main window (setupUi handles all window configuration)
     MainWindow window;
     window.show();
 
