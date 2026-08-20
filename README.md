@@ -51,6 +51,7 @@ scrollback and selection do not exist yet.
 - HiDPI-correct rendering: glyphs rasterized at physical pixel size
 - Tabs and recursive split panes with directional focus movement
 - YAML configuration with a layered override model, custom palette, keybindings
+- A thin, self-drawn tab bar in five styles, at the top or bottom of the window
 - Bracketed paste, window-title reporting, cursor-position reports
 - Live font resizing
 
@@ -197,6 +198,16 @@ colors:
   bright_cyan:    "#29b8db"
   bright_white:   "#ffffff"
 
+tab_bar:
+  # minimal | underline | blocks | pills | powerline
+  style: minimal
+  # bottom | top
+  position: bottom
+  # always | multiple | never   ("multiple" hides the bar until a 2nd tab)
+  show: multiple
+  # All optional; anything left out is derived from the palette above.
+  colors: {}
+
 window:
   width: 1280
   height: 720
@@ -236,6 +247,9 @@ Notes:
   a *specific* font to supply, say, box drawing.
 - **`window.padding`** is the gap in logical pixels between the text and the
   window edge. Default 4; set `0` for flush-to-the-edge text.
+- **`tab_bar`** picks one of five styles and puts the bar at the bottom (default)
+  or top. Its colours derive from the terminal palette, so a colour theme does
+  not have to restate them — see below.
 - Cursor styles: `block`, `hollow`, `underline`, `bar`. An application's
   `DECSCUSR` request takes precedence while it is in effect.
 - Binding an action to `"none"` removes a default binding.
@@ -256,6 +270,38 @@ RaTTY handles this in two ways, so it is not something you need to configure:
 box-drawing and block characters are drawn geometrically from the cell (which
 also makes them tile perfectly), and anything else missing is taken from the
 fallback chain.
+
+### Tab bar
+
+The tab bar is drawn by RaTTY rather than by the platform, so it stays thin —
+about one line of text — and takes its colours and its font from the terminal.
+With a single tab open there is no bar at all, so a one-terminal window looks
+like a terminal.
+
+| `style` | Look |
+|---|---|
+| `minimal` | text only, with a short accent along the edge facing the terminal |
+| `underline` | a full-width accent rule and a faint wash behind the active tab |
+| `blocks` | the active tab is a filled block, tabs divided by hairlines |
+| `pills` | the active tab is a filled rounded capsule |
+| `powerline` | angled chevrons, echoing a Powerline prompt |
+
+`position: bottom` (the default) keeps the tabs next to the shell prompt rather
+than across the window from it. The accent always sits on the edge that faces the
+terminal, whichever position is used.
+
+Close a tab by clicking the `×` on the active or hovered tab, or with a middle
+click anywhere on it. Tabs can be dragged to reorder.
+
+Every chrome colour is optional and derived from the palette when unset, so
+themes work without enumerating them:
+
+```yaml
+tab_bar:
+  style: pills
+  colors:
+    accent: "#e5c07b"
+```
 
 ### Matching a colour scheme
 
@@ -329,7 +375,7 @@ src/
 │              TerminalSession, PTY, UTF-8, char widths
 ├── render/    FontManager (+ fallback chain), GlyphAtlas, GLRenderer,
 │              TerminalRenderer, box_drawing
-├── ui/        TerminalWidget, SplitContainer, MainWindow, InputHandler
+├── ui/        TerminalWidget, SplitContainer, MainWindow, TabBar, InputHandler
 └── config/    Config (layered YAML)
 ```
 

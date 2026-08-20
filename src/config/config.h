@@ -19,6 +19,7 @@
 #ifndef CONFIG_CONFIG_H
 #define CONFIG_CONFIG_H
 
+#include "chrome.h"
 #include "../core/cursor.h"
 #include "../core/palette.h"
 #include <QColor>
@@ -145,6 +146,12 @@ public:
      * pixels. Scaled by the device pixel ratio at use. */
     int windowPadding() const { return windowPadding_; }
 
+    /* Tab bar */
+    TabBarStyle tabBarStyle() const { return tabBarStyle_; }
+    TabBarPosition tabBarPosition() const { return tabBarPosition_; }
+    TabBarVisibility tabBarVisibility() const { return tabBarVisibility_; }
+    const ChromeColors& chromeColors() const { return chromeColors_; }
+
     /* Cursor */
     CursorStyle cursorStyle() const { return cursorStyle_; }
     bool cursorBlink() const { return cursorBlink_; }
@@ -236,6 +243,11 @@ private:
 
     CursorStyle cursorStyle_ = CursorStyle::Block;
     bool cursorBlink_ = true;
+
+    TabBarStyle tabBarStyle_ = TabBarStyle::Minimal;
+    TabBarPosition tabBarPosition_ = TabBarPosition::Bottom;
+    TabBarVisibility tabBarVisibility_ = TabBarVisibility::MultipleTabs;
+    ChromeColors chromeColors_;
 
     int windowWidth_ = DEFAULT_WINDOW_WIDTH;
     int windowHeight_ = DEFAULT_WINDOW_HEIGHT;

@@ -58,6 +58,32 @@ colors:
   bright_cyan:    "#29b8db"
   bright_white:   "#ffffff"
 
+tab_bar:
+  # minimal   text only, with a short accent along the edge facing the terminal
+  # underline a full-width accent rule and a faint wash behind the active tab
+  # blocks    the active tab is a filled rectangle, tabs divided by hairlines
+  # pills     the active tab is a filled rounded capsule
+  # powerline angled chevrons, echoing a Powerline prompt
+  style: minimal
+
+  # bottom | top
+  position: bottom
+
+  # always | multiple | never
+  #   multiple hides the bar until a second tab exists, so a single-terminal
+  #   window looks like a terminal rather than a tabbed document.
+  show: multiple
+
+  # Every colour here is optional. Left out, it is derived from the terminal
+  # palette above, so a colour theme does not have to restate the chrome.
+  colors: {}
+  #   background:          "#252525"
+  #   border:              "#3a3a3a"
+  #   active_background:   "#1e1e1e"
+  #   active_foreground:   "#dcdcdc"
+  #   inactive_foreground: "#8a8a8a"
+  #   accent:              "#3b8eea"
+
 window:
   width: 1280
   height: 720

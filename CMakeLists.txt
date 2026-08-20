@@ -55,8 +55,10 @@ set(RATTY_SOURCES
     src/ui/input_handler.cpp
     src/ui/main_window.cpp
     src/ui/split_container.cpp
+    src/ui/tab_bar.cpp
     src/ui/terminal_widget.cpp
 
+    src/config/chrome.cpp
     src/config/config.cpp
 )
 
@@ -82,8 +84,10 @@ set(RATTY_HEADERS
     src/ui/input_handler.h
     src/ui/main_window.h
     src/ui/split_container.h
+    src/ui/tab_bar.h
     src/ui/terminal_widget.h
 
+    src/config/chrome.h
     src/config/config.h
 )
 

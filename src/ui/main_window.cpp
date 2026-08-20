@@ -4,6 +4,7 @@
 
 #include "main_window.h"
 #include "split_container.h"
+#include "tab_bar.h"
 #include "terminal_widget.h"
 #include <QApplication>
 #include <QDebug>
@@ -31,16 +32,45 @@ void MainWindow::setupUi() {
         setWindowState(Qt::WindowFullScreen);
     }
 
-    tabWidget_ = new QTabWidget(this);
-    tabWidget_->setTabsClosable(true);
-    tabWidget_->setMovable(true);
+    auto* tabs = new TabWidget(this);
+    tabWidget_ = tabs;
     tabWidget_->setDocumentMode(true);
-    /* One pane means no tab bar: a single-terminal window should look like a
-     * terminal, not like a tabbed document. */
-    tabWidget_->tabBar()->setAutoHide(true);
-    setCentralWidget(tabWidget_);
+    /* The close affordance and the tab painting are the custom bar's job; Qt's
+     * own closable-tab buttons are platform-styled widgets that do not fit a bar
+     * this thin. */
+    tabWidget_->setTabsClosable(false);
 
-    connect(tabWidget_, &QTabWidget::tabCloseRequested, this, &MainWindow::closeTab);
+    tabBar_ = tabs->rattyTabBar();
+    connect(tabBar_, &TabBar::tabCloseClicked, this, &MainWindow::closeTab);
+
+    setCentralWidget(tabWidget_);
+    applyTabBarConfiguration();
+}
+
+void MainWindow::applyTabBarConfiguration() {
+    if (!tabWidget_ || !tabBar_) return;
+
+    const Config& config = Config::instance();
+
+    tabWidget_->setTabPosition(config.tabBarPosition() == TabBarPosition::Bottom
+                                   ? QTabWidget::South
+                                   : QTabWidget::North);
+    tabBar_->applyConfiguration();
+    updateTabBarVisibility();
+}
+
+void MainWindow::updateTabBarVisibility() {
+    if (!tabBar_) return;
+
+    /* A single-terminal window should look like a terminal, not like a tabbed
+     * document, so the default hides the bar until there is a second tab. */
+    bool visible = true;
+    switch (Config::instance().tabBarVisibility()) {
+    case TabBarVisibility::Always:       visible = true; break;
+    case TabBarVisibility::MultipleTabs: visible = tabCount() > 1; break;
+    case TabBarVisibility::Never:        visible = false; break;
+    }
+    tabBar_->setVisible(visible);
 }
 
 void MainWindow::addTab() {
@@ -54,6 +84,7 @@ void MainWindow::addTab() {
 
     const int index = tabWidget_->addTab(root, QStringLiteral("Terminal"));
     tabWidget_->setCurrentIndex(index);
+    updateTabBarVisibility();
     root->focusPane();
 }
 
@@ -114,7 +145,9 @@ void MainWindow::closeTab(int index) {
      * does; leaving an empty frame behind would be a dead end. */
     if (tabCount() == 0) {
         close();
+        return;
     }
+    updateTabBarVisibility();
 }
 
 int MainWindow::tabCount() const {
@@ -292,6 +325,9 @@ void MainWindow::changeFontSize(int delta) {
     if (newSize == config.fontSize()) return;
 
     config.setFontSize(newSize);
+
+    /* The tab bar sizes itself from the terminal font, so it has to follow. */
+    applyTabBarConfiguration();
 
     /* Every pane in every tab shares the font, so all of them must re-rasterize
      * and recompute their grid size. */

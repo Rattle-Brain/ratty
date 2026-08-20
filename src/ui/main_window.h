@@ -15,6 +15,7 @@
 
 class QTabWidget;
 class SplitContainer;
+class TabBar;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -41,6 +42,9 @@ private slots:
 
 private:
     void setupUi();
+    /* Re-read the tab bar's style, position and visibility from the config. */
+    void applyTabBarConfiguration();
+    void updateTabBarVisibility();
     /* Puts `root` at `index`, taking over the tab's previous widget. */
     void installTabRoot(int index, SplitContainer* root);
     void connectRoot(SplitContainer* root);
@@ -57,6 +61,7 @@ private:
     SplitContainer* focusedPane() const;
 
     QTabWidget* tabWidget_ = nullptr;
+    TabBar* tabBar_ = nullptr;
 };
 
 #endif /* UI_MAIN_WINDOW_H */

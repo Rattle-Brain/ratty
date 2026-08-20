@@ -289,6 +289,19 @@ test_config/fast:
 .PHONY : test_config/fast
 
 #=============================================================================
+# Target rules for targets named test_tabbar
+
+# Build rule for target.
+test_tabbar: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_tabbar
+.PHONY : test_tabbar
+
+# fast build rule for target.
+test_tabbar/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_tabbar.dir/build.make tests/CMakeFiles/test_tabbar.dir/build
+.PHONY : test_tabbar/fast
+
+#=============================================================================
 # Target rules for targets named ratty_lib_autogen_timestamp_deps
 
 # Build rule for target.
@@ -444,6 +457,32 @@ test_config_autogen/fast:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_config_autogen.dir/build.make tests/CMakeFiles/test_config_autogen.dir/build
 .PHONY : test_config_autogen/fast
 
+#=============================================================================
+# Target rules for targets named test_tabbar_autogen_timestamp_deps
+
+# Build rule for target.
+test_tabbar_autogen_timestamp_deps: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_tabbar_autogen_timestamp_deps
+.PHONY : test_tabbar_autogen_timestamp_deps
+
+# fast build rule for target.
+test_tabbar_autogen_timestamp_deps/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_tabbar_autogen_timestamp_deps.dir/build.make tests/CMakeFiles/test_tabbar_autogen_timestamp_deps.dir/build
+.PHONY : test_tabbar_autogen_timestamp_deps/fast
+
+#=============================================================================
+# Target rules for targets named test_tabbar_autogen
+
+# Build rule for target.
+test_tabbar_autogen: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_tabbar_autogen
+.PHONY : test_tabbar_autogen
+
+# fast build rule for target.
+test_tabbar_autogen/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_tabbar_autogen.dir/build.make tests/CMakeFiles/test_tabbar_autogen.dir/build
+.PHONY : test_tabbar_autogen/fast
+
 ratty_autogen/3YJK5W5UP7/qrc_config.o: ratty_autogen/3YJK5W5UP7/qrc_config.cpp.o
 .PHONY : ratty_autogen/3YJK5W5UP7/qrc_config.o
 
@@ -515,6 +554,30 @@ ratty_autogen/mocs_compilation.s: ratty_autogen/mocs_compilation.cpp.s
 ratty_autogen/mocs_compilation.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/ratty_autogen/mocs_compilation.cpp.s
 .PHONY : ratty_autogen/mocs_compilation.cpp.s
+
+src/config/chrome.o: src/config/chrome.cpp.o
+.PHONY : src/config/chrome.o
+
+# target to build an object file
+src/config/chrome.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/src/config/chrome.cpp.o
+.PHONY : src/config/chrome.cpp.o
+
+src/config/chrome.i: src/config/chrome.cpp.i
+.PHONY : src/config/chrome.i
+
+# target to preprocess a source file
+src/config/chrome.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/src/config/chrome.cpp.i
+.PHONY : src/config/chrome.cpp.i
+
+src/config/chrome.s: src/config/chrome.cpp.s
+.PHONY : src/config/chrome.s
+
+# target to generate assembly for a file
+src/config/chrome.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/src/config/chrome.cpp.s
+.PHONY : src/config/chrome.cpp.s
 
 src/config/config.o: src/config/config.cpp.o
 .PHONY : src/config/config.o
@@ -900,6 +963,30 @@ src/ui/split_container.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/src/ui/split_container.cpp.s
 .PHONY : src/ui/split_container.cpp.s
 
+src/ui/tab_bar.o: src/ui/tab_bar.cpp.o
+.PHONY : src/ui/tab_bar.o
+
+# target to build an object file
+src/ui/tab_bar.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/src/ui/tab_bar.cpp.o
+.PHONY : src/ui/tab_bar.cpp.o
+
+src/ui/tab_bar.i: src/ui/tab_bar.cpp.i
+.PHONY : src/ui/tab_bar.i
+
+# target to preprocess a source file
+src/ui/tab_bar.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/src/ui/tab_bar.cpp.i
+.PHONY : src/ui/tab_bar.cpp.i
+
+src/ui/tab_bar.s: src/ui/tab_bar.cpp.s
+.PHONY : src/ui/tab_bar.s
+
+# target to generate assembly for a file
+src/ui/tab_bar.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/src/ui/tab_bar.cpp.s
+.PHONY : src/ui/tab_bar.cpp.s
+
 src/ui/terminal_widget.o: src/ui/terminal_widget.cpp.o
 .PHONY : src/ui/terminal_widget.o
 
@@ -949,6 +1036,8 @@ help:
 	@echo "... test_render_autogen_timestamp_deps"
 	@echo "... test_splits_autogen"
 	@echo "... test_splits_autogen_timestamp_deps"
+	@echo "... test_tabbar_autogen"
+	@echo "... test_tabbar_autogen_timestamp_deps"
 	@echo "... test_terminal_autogen"
 	@echo "... test_terminal_autogen_timestamp_deps"
 	@echo "... ratty"
@@ -957,6 +1046,7 @@ help:
 	@echo "... test_input"
 	@echo "... test_render"
 	@echo "... test_splits"
+	@echo "... test_tabbar"
 	@echo "... test_terminal"
 	@echo "... ratty_autogen/3YJK5W5UP7/qrc_config.o"
 	@echo "... ratty_autogen/3YJK5W5UP7/qrc_config.i"
@@ -967,6 +1057,9 @@ help:
 	@echo "... ratty_autogen/mocs_compilation.o"
 	@echo "... ratty_autogen/mocs_compilation.i"
 	@echo "... ratty_autogen/mocs_compilation.s"
+	@echo "... src/config/chrome.o"
+	@echo "... src/config/chrome.i"
+	@echo "... src/config/chrome.s"
 	@echo "... src/config/config.o"
 	@echo "... src/config/config.i"
 	@echo "... src/config/config.s"
@@ -1015,6 +1108,9 @@ help:
 	@echo "... src/ui/split_container.o"
 	@echo "... src/ui/split_container.i"
 	@echo "... src/ui/split_container.s"
+	@echo "... src/ui/tab_bar.o"
+	@echo "... src/ui/tab_bar.i"
+	@echo "... src/ui/tab_bar.s"
 	@echo "... src/ui/terminal_widget.o"
 	@echo "... src/ui/terminal_widget.i"
 	@echo "... src/ui/terminal_widget.s"

@@ -99,6 +99,12 @@ Polish       ████████░░░░░░░░░░░░ no scr
 
 ### UI
 - [x] Tabs, with the tab bar auto-hidden when there is only one
+- [x] Custom thin tab bar drawn by RaTTY, in five styles (`minimal`,
+      `underline`, `blocks`, `pills`, `powerline`), positioned top or bottom
+      (default bottom), sized from the terminal font, with a painted close
+      affordance and middle-click close
+- [x] Chrome colours derived from the terminal palette, so a theme need not
+      restate them; luminance-aware so light themes work too
 - [x] Recursive split panes over `QSplitter`, with correct Qt ownership on both
       split and close
 - [x] Directional focus movement between panes
@@ -289,6 +295,7 @@ The single most missed feature.
 - [ ] URL detection and click-to-open
 - [ ] Visual bell as an alternative to the audible one
 - [ ] Tab context menu: rename, duplicate, close others
+- [ ] A "+" affordance on the tab bar for opening a tab by mouse
 - [ ] Config reload without a restart (file watcher)
 
 ### Project health

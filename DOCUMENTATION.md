@@ -119,6 +119,8 @@ easy to violate again:
 | `ui/terminal_widget.h/.cpp` | `QOpenGLWidget`; DPI handling, events, paint. |
 | `ui/split_container.h/.cpp` | Binary pane tree over `QSplitter`. |
 | `ui/main_window.h/.cpp` | Tabs, shortcut dispatch, window title. |
+| `ui/tab_bar.h/.cpp` | The self-drawn tab bar, and the `QTabWidget` that hosts it. |
+| `config/chrome.h/.cpp` | Chrome colours, derived from the palette when unset. |
 | `ui/input_handler.h/.cpp` | Qt key events → VT input bytes. |
 | `config/config.h/.cpp` | Layered YAML settings and keybindings. |
 
@@ -784,7 +786,51 @@ through a `QStackedWidget` — which every tab page has — comes back carrying
 reattachment points therefore call `show()` explicitly. This is verified by
 `tests/test_splits.cpp`; the failure mode is a pane that silently vanishes.
 
-### 6.3 `MainWindow`
+### 6.3 `TabBar`
+
+Qt's stock tab bar is a document-style control: tall, boxy, and styled by the
+platform rather than by the terminal's theme. `TabBar` subclasses `QTabBar` and
+replaces only the **drawing and the metrics**, keeping the model — page
+association, ordering, drag-to-reorder, keyboard navigation, accessibility. That
+is a much smaller surface than reimplementing tabs over a `QStackedWidget`, and
+it does not quietly drop behaviour.
+
+Three decisions are worth knowing:
+
+- **The close affordance is painted, not a child widget.** `QTabBar`'s built-in
+  one is a platform-styled button whose size fights a bar this thin. It is drawn
+  only for the hovered and current tab; on every tab at once it reads as clutter.
+  Space for it is reserved unconditionally in `tabSizeHint()`, so a label does
+  not shift sideways when the pointer enters a tab. A drag that starts on the
+  affordance is swallowed, so it cannot begin a reorder.
+- **Metrics come from the terminal font.** The bar is one text line plus padding,
+  and the label is drawn in the configured family at 85% size. That is most of
+  what makes it look like part of the terminal rather than part of the window
+  manager, and it means the bar scales with the font instead of being a fixed
+  pixel count that looks wrong at either extreme.
+- **The accent follows the edge that faces the terminal**, read from the bar's own
+  `shape()`. `QTabWidget::setTabPosition` is the only thing `MainWindow` has to
+  set; the bar works out the rest.
+
+`QTabWidget::setTabBar()` is protected, so a replacement can only be installed
+from a subclass. `TabWidget` exists for that one reason and adds nothing else.
+
+#### Chrome colours
+
+`ChromeColors` holds six optional colours and `resolve()` fills the gaps from the
+terminal palette. Keeping them out of `Palette` matters: `Palette` is the
+terminal's own colours, and an application's `OSC 4` request must not be able to
+repaint the window chrome.
+
+The derivation is deliberately luminance-aware. `shift()` lightens a dark colour
+and darkens a light one, because always going one way leaves a white bar on a
+white terminal. The offset is large enough (45) that a filled active tab reads as
+a distinct surface — at a smaller value the `blocks` style was
+indistinguishable from `minimal`. The accent defaults to palette slot 12, the
+bright blue, which every theme defines and which therefore tracks the theme
+without being stated.
+
+### 6.4 `MainWindow`
 
 Tabs, shortcut dispatch and the window title. `handleAction()` is a single
 `switch` over `Action`, and the tab bar auto-hides when there is only one tab so
@@ -794,7 +840,7 @@ Note that both `paneSessionEnded` and `paneTitleChanged` connect to *member
 functions*: `Qt::UniqueConnection` is silently rejected for lambdas, and
 `installTabRoot()` may reconnect the same root more than once.
 
-### 6.4 `InputHandler`
+### 6.5 `InputHandler`
 
 Qt key events to VT bytes, with xterm's modifier encoding (`CSI 1 ; mod A`), so
 Shift+Arrow and Ctrl+Arrow are distinguishable from the bare key. Cursor keys
@@ -1158,6 +1204,7 @@ cd build && ctest --output-on-failure
 | `test_input` | both keybinding sets resolving against real `QKeyEvent`s, set exclusivity, layout tolerance, shell control keys staying unbound, VT input encoding |
 | `test_splits` | pane tree surgery: nothing destroyed that should survive, nothing left invisible, directional navigation |
 | `test_config` | the real load path against a sandboxed HOME: overlay semantics, colours, keybinding add/remove, `mac_os_bindings` resolution, the unquoted-colour trap, malformed files, clamping |
+| `test_tabbar` | style and position parsing, chrome derivation on dark *and light* palettes, bar thinness, tab metrics, and that every style paints something |
 | `test_render` | grid padding maths, box-drawing tiling, fallback coverage of the characters a TUI draws, text-vs-emoji font selection, font preference order, and the guarantee that no resolution path yields a proportional font |
 
 They run under `QT_QPA_PLATFORM=offscreen` and need no GPU. `tests/check.h` is a

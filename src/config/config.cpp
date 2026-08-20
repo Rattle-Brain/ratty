@@ -184,6 +184,7 @@ struct Config::Parser {
         if (const YAML::Node node = root["font"]; node && node.IsMap()) font(node);
         if (const YAML::Node node = root["cursor"]; node && node.IsMap()) cursor(node);
         if (const YAML::Node node = root["window"]; node && node.IsMap()) window(node);
+        if (const YAML::Node node = root["tab_bar"]; node && node.IsMap()) tabBar(node);
         if (const YAML::Node node = root["mac_os_bindings"]; node) {
             platformBindings(node);
         }
@@ -261,6 +262,54 @@ struct Config::Parser {
         }
         if (const auto size = readInt(node, "size")) {
             config.setFontSize(*size);
+        }
+    }
+
+    void tabBar(const YAML::Node& node) {
+        if (const auto style = readString(node, "style")) {
+            const QString lowered = style->toLower();
+            if (lowered == QLatin1String("minimal"))        config.tabBarStyle_ = TabBarStyle::Minimal;
+            else if (lowered == QLatin1String("underline")) config.tabBarStyle_ = TabBarStyle::Underline;
+            else if (lowered == QLatin1String("blocks"))    config.tabBarStyle_ = TabBarStyle::Blocks;
+            else if (lowered == QLatin1String("pills"))     config.tabBarStyle_ = TabBarStyle::Pills;
+            else if (lowered == QLatin1String("powerline")) config.tabBarStyle_ = TabBarStyle::Powerline;
+            else if (!lowered.isEmpty()) {
+                qWarning() << "Config: unknown tab bar style" << *style
+                           << "- expected minimal, underline, blocks, pills or powerline";
+            }
+        }
+
+        if (const auto position = readString(node, "position")) {
+            const QString lowered = position->toLower();
+            if (lowered == QLatin1String("bottom"))   config.tabBarPosition_ = TabBarPosition::Bottom;
+            else if (lowered == QLatin1String("top")) config.tabBarPosition_ = TabBarPosition::Top;
+            else if (!lowered.isEmpty()) {
+                qWarning() << "Config: tab bar position should be top or bottom, got"
+                           << *position;
+            }
+        }
+
+        if (const auto show = readString(node, "show")) {
+            const QString lowered = show->toLower();
+            if (lowered == QLatin1String("always"))            config.tabBarVisibility_ = TabBarVisibility::Always;
+            else if (lowered == QLatin1String("multiple"))     config.tabBarVisibility_ = TabBarVisibility::MultipleTabs;
+            else if (lowered == QLatin1String("never"))        config.tabBarVisibility_ = TabBarVisibility::Never;
+            else if (!lowered.isEmpty()) {
+                qWarning() << "Config: tab bar `show` should be always, multiple or never, got"
+                           << *show;
+            }
+        }
+
+        /* Chrome colours are optional; anything left out is derived from the
+         * terminal palette by ChromeColors::resolve(). */
+        if (const YAML::Node colorsNode = node["colors"]; colorsNode && colorsNode.IsMap()) {
+            ChromeColors& chrome = config.chromeColors_;
+            if (const auto color = readColor(colorsNode, "background")) chrome.tabBarBackground = *color;
+            if (const auto color = readColor(colorsNode, "border")) chrome.tabBarBorder = *color;
+            if (const auto color = readColor(colorsNode, "active_background")) chrome.activeTabBackground = *color;
+            if (const auto color = readColor(colorsNode, "active_foreground")) chrome.activeTabForeground = *color;
+            if (const auto color = readColor(colorsNode, "inactive_foreground")) chrome.inactiveTabForeground = *color;
+            if (const auto color = readColor(colorsNode, "accent")) chrome.accent = *color;
         }
     }
 
@@ -379,6 +428,10 @@ void Config::applyBuiltInDefaults() {
     windowPadding_ = DEFAULT_WINDOW_PADDING;
     cursorStyle_ = CursorStyle::Block;
     cursorBlink_ = true;
+    tabBarStyle_ = TabBarStyle::Minimal;
+    tabBarPosition_ = TabBarPosition::Bottom;
+    tabBarVisibility_ = TabBarVisibility::MultipleTabs;
+    chromeColors_ = ChromeColors{};
     windowWidth_ = DEFAULT_WINDOW_WIDTH;
     windowHeight_ = DEFAULT_WINDOW_HEIGHT;
     windowOpacity_ = 1.0f;
