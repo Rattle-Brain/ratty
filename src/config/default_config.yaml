@@ -30,7 +30,7 @@ font:
 cursor:
   # block | hollow | underline | bar
   # An application's own request (DECSCUSR) takes precedence while it applies.
-  style: block
+  style: bar
   blink: true
 
 # The colour scheme. One of the themes that ship with RaTTY:
@@ -71,7 +71,7 @@ tab_bar:
   # blocks    the active tab is a filled rectangle, tabs divided by hairlines
   # pills     the active tab is a filled rounded capsule
   # powerline angled chevrons, echoing a Powerline prompt
-  style: minimal
+  style: powerline
 
   # bottom | top
   position: bottom

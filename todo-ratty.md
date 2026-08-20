@@ -4,7 +4,7 @@ Last updated for **v0.2.0**.
 
 This file tracks what works, what is broken, and what comes next. Items marked
 🔍 have a design note in
-[DOCUMENTATION.md § 10](DOCUMENTATION.md#10-known-gaps) explaining why the gap is
+[doc/known-gaps.md](doc/known-gaps.md) explaining why the gap is
 where it is.
 
 ---
@@ -145,7 +145,7 @@ Polish       ████████░░░░░░░░░░░░ no scr
 ## 🐛 Fixed in v0.2.0
 
 Recorded because the causes are instructive; full write-ups in
-[DOCUMENTATION.md § 8](DOCUMENTATION.md#8-two-bugs-worth-understanding).
+[doc/notable-bugs.md](doc/notable-bugs.md).
 
 - [x] **Blurry text.** The projection was built from the widget's *logical* size
       while Qt had set the viewport to *device* pixels, so the scene was
@@ -312,7 +312,7 @@ The single most missed feature.
 
 ### UI
 - [ ] Persist window geometry 🔍
-- [ ] Search within the scrollback (depends on §1)
+- [ ] Search within the scrollback (depends on the scrollback buffer)
 - [ ] Drag a splitter and have the pty resize live (works, but unthrottled)
 - [ ] Move panes between tabs; detach a pane into a new window
 - [ ] URL detection and click-to-open

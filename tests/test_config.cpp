@@ -65,8 +65,15 @@ void testBundledDefaults() {
                 "the default font preference list is not empty");
     check::that(config.fontFamilies().first().contains(QLatin1String("Nerd")),
                 "the preferred family is the Nerd Font");
-    check::that(config.cursorStyle() == CursorStyle::Block, "default cursor style");
+    /* The shipped cursor *style* is taste; that it blinks by default is
+     * documented behaviour. Assert the second, not the first. */
     check::that(config.cursorBlink(), "the cursor blinks by default");
+
+    const CursorStyle shippedCursor = config.cursorStyle();
+    loadWithUserConfig("cursor:\n  style: nonsense\n");
+    check::that(Config::instance().cursorStyle() == shippedCursor,
+                "an unusable cursor style keeps the default");
+    loadWithUserConfig(nullptr);
 
     /* A config file without a keybindings section must not leave the
      * application with none at all. Both platform sets put new_tab on Meta. */

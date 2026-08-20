@@ -76,9 +76,9 @@ exactly — one opaque block per Enter, each on its own row:
 ```
  0 |echo hola                    |
  1 |<opaque block>               |
- 2 |dalvarez@MM repos/ratty (main) > |
+ 2 |user@host repo (main) >      |
  3 |<opaque block>               |
- 4 |dalvarez@MM repos/ratty (main) > |
+ 4 |user@host repo (main) >      |
 --> opaque blocks drawn over text: 3
 ```
 
