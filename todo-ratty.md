@@ -107,11 +107,16 @@ Polish       ████████░░░░░░░░░░░░ no scr
 - [x] xterm modifier encoding (`CSI 1;mod A`) and `DECCKM` SS3 forms
 - [x] Bracketed paste, `LF`→`CR` translation on paste
 - [x] Live font resizing across every pane in every tab
+- [x] Platform keybinding sets: `keybindings_macos` (Command) and `keybindings`
+      (Ctrl+Shift), selected by `mac_os_bindings: auto | true | false`
+- [x] Font-size shortcuts on both sets, covering every key event "plus" and
+      "minus" can arrive as
 - [x] Cursor styles (block / hollow / underline / bar); blink only when focused
 - [x] Window title from `OSC`, per-tab
 
 ### Project
-- [x] Layered JSON config: built-in → bundled resource → user overlay
+- [x] Layered **YAML** config: built-in -> bundled resource -> user overlay, with
+      per-key optional overrides and a named diagnostic for every failure mode
 - [x] Full 256-colour palette, 16 base colours overridable by name
 - [x] `"none"` unbinds a default keybinding
 - [x] Headless test suites (terminal / input / splits) with `ctest`
@@ -182,6 +187,10 @@ Recorded because the causes are instructive; full write-ups in
       changed shape.
 - [x] **`OSC 11` queries went unanswered**, leaving Neovim to guess whether the
       terminal was light or dark.
+- [x] **On macOS, Command+C sent SIGINT and Ctrl+C did nothing.** Qt swaps
+      Control and Meta on that platform by default, and `InputHandler` maps
+      `Qt::ControlModifier` to the C0 control characters. Fixed with
+      `Qt::AA_MacDontSwapCtrlAndMeta`, which also makes `cmd+` bindings possible.
 - [x] **A patched icon font turned a TUI into a field of empty boxes.** There was
       no fallback chain, and `DroidSansMono Nerd Font` -- like the family it was
       patched from -- has no box-drawing characters, which is what every TUI

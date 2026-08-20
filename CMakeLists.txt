@@ -19,6 +19,8 @@ endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets)
 find_package(Freetype REQUIRED)
+# Configuration is YAML; see src/config/config.h for why.
+find_package(yaml-cpp REQUIRED)
 
 if(APPLE)
     find_library(UTIL_LIB util REQUIRED)
@@ -127,6 +129,7 @@ target_link_libraries(ratty PRIVATE
     Qt6::OpenGL
     Qt6::OpenGLWidgets
     Freetype::Freetype
+    yaml-cpp::yaml-cpp
     ${UTIL_LIB}
 )
 

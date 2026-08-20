@@ -28,6 +28,16 @@ int main(int argc, char* argv[]) {
     format.setSwapBehavior(QSurfaceFormat::DoubleBuffer);
     QSurfaceFormat::setDefaultFormat(format);
 
+    /*
+     * On macOS Qt swaps Control and Meta by default: Qt::ControlModifier means
+     * the Command key and Qt::MetaModifier means the physical Control key. For a
+     * terminal that is exactly backwards -- it makes Command+C send SIGINT while
+     * physical Ctrl+C does nothing -- and it would make a "cmd+t" keybinding fire
+     * on Ctrl+T. Turning the swap off makes both modifiers mean the same thing on
+     * every platform: Ctrl is Ctrl, and Meta ("cmd") is Command.
+     */
+    QCoreApplication::setAttribute(Qt::AA_MacDontSwapCtrlAndMeta, true);
+
     QApplication app(argc, argv);
 
     QCoreApplication::setOrganizationName(QStringLiteral("Ratty"));

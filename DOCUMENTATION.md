@@ -42,7 +42,7 @@ places and drifted.
 exactly one place (`Palette`). Cells store *symbolic* colours — "default",
 "palette slot 208", "this RGB triple" — and only the palette turns them into
 pixels. When three separate classes each hard-coded their own idea of "default
-background", a custom background in `config.json` made every cell paint an
+background", a custom background in the config made every cell paint an
 opaque rectangle in the old colour.
 
 **Physical pixels everywhere in the renderer.** No part of the drawing code
@@ -120,7 +120,7 @@ easy to violate again:
 | `ui/split_container.h/.cpp` | Binary pane tree over `QSplitter`. |
 | `ui/main_window.h/.cpp` | Tabs, shortcut dispatch, window title. |
 | `ui/input_handler.h/.cpp` | Qt key events → VT input bytes. |
-| `config/config.h/.cpp` | Layered JSON settings and keybindings. |
+| `config/config.h/.cpp` | Layered YAML settings and keybindings. |
 
 ---
 
@@ -807,35 +807,81 @@ Covered by `tests/test_input.cpp`, including the check that shell control keys
 
 ## 7. Configuration
 
-Settings are loaded in layers, each overriding only the keys it contains:
+Settings are **YAML**, loaded in layers, each overriding only the keys it
+contains:
 
 1. built-in defaults (`Palette`'s constructor and `Config::applyBuiltInDefaults`)
-2. `:/config/default_config.json` — compiled into the binary from
-   `src/config/default_config.json`
-3. `~/.config/ratty/config.json` — the user's overlay
+2. `:/config/default_config.yaml` — compiled into the binary from
+   `src/config/default_config.yaml`
+3. `~/.config/ratty/config.yaml` — the user's overlay
 
-This fixes two concrete problems. A config file without a `keybindings` section
-used to leave the application with *no* keybindings at all, because the loader
-cleared the table and then only inserted what the file listed. And the bundled
-defaults were looked up through the relative path
-`src/config/default_config.json`, so they were only found when the binary
-happened to be run from the project root.
+The layering is the important property: an overlay is not a replacement, so a
+file that mentions only `font.size` changes only that. A config without a
+`keybindings` section must not leave the application with no keybindings, and the
+bundled defaults must be found regardless of the working directory.
 
-```json
-{
-  "font":   { "family": ["DroidSansMono Nerd Font", "Menlo"], "size": 13 },
-  "cursor": { "style": "block", "blink": true },
-  "colors": {
-    "background": "#1e1e1e",
-    "foreground": "#dcdcdc",
-    "cursor": "#dcdcdc",
-    "red": "#cd3131",
-    "bright_red": "#f14c4c"
-  },
-  "window": { "width": 1280, "height": 720, "padding": 4, "opacity": 1.0,
-              "fullscreen": false },
-  "keybindings": { "ctrl+shift+t": "new_tab", "ctrl+shift+w": "none" }
-}
+YAML rather than JSON because a file people edit by hand wants comments, and
+needs neither quoting of every key nor comma discipline. The parsing uses
+`yaml-cpp`, kept out of every other translation unit by a nested
+`Config::Parser` declared in the header and defined in the implementation file —
+a nested class has access to its enclosing class's private members, so no
+friendship is needed.
+
+#### The one YAML sharp edge
+
+`#` starts a comment, so `background: #1e1e1e` parses as an *empty value*, not a
+colour. Every scalar reader returns `std::optional`, and the colour reader
+recognises this specific case and says so:
+
+```
+Config: colour background is empty - hex colours must be quoted in YAML, e.g. "#1e1e1e"
+```
+
+The shipped default quotes every colour and documents the rule at the top of the
+file. Silently reading an empty value here would paint the terminal black.
+
+#### Failure behaviour
+
+Each layer is independent and each key optional, so a broken overlay degrades
+predictably rather than half-applying:
+
+| Input | Result |
+|---|---|
+| YAML syntax error | whole overlay discarded, with line and column reported |
+| top level is not a mapping | overlay discarded |
+| empty file | no-op |
+| unusable scalar (`size: "abc"`) | that key skipped and named; the rest of the file still applies |
+| out-of-range value | clamped (`MIN_FONT_SIZE`..`MAX_FONT_SIZE`, padding, opacity) |
+| unknown action name | reported and skipped |
+| a `config.json` left over from before | reported as no longer read, with the path to move it to |
+
+```yaml
+font:
+  family: [DroidSansMono Nerd Font, Menlo]   # or a single name
+  fallback: []
+  size: 13
+
+cursor:
+  style: block        # block | hollow | underline | bar
+  blink: true
+
+colors:
+  background: "#1e1e1e"
+  foreground: "#dcdcdc"
+  cursor: "#dcdcdc"
+  red: "#cd3131"
+  bright_red: "#f14c4c"
+
+window:
+  width: 1280
+  height: 720
+  padding: 4
+  opacity: 1.0
+  fullscreen: false
+
+keybindings:
+  ctrl+shift+t: new_tab
+  ctrl+shift+w: none    # removes a default binding
 ```
 
 - All 16 base ANSI colours are overridable by name (`black`, `red`, …,
@@ -862,6 +908,40 @@ Key sequences accept `ctrl`/`control`, `shift`, `alt`/`option`,
 `backslash`, `bracketleft`, …) — the last because `ctrl+shift++` cannot be split
 on `+` unambiguously.
 
+### Two keybinding sets
+
+The configuration carries `keybindings` and `keybindings_macos`, and exactly one
+is active. `mac_os_bindings` accepts `true`, `false`, or `auto` (the default),
+which follows the platform.
+
+Resolution is deliberately **two-phase**. The parser fills both sets as it reads
+each layer, and `resolveKeybindings()` picks one only after every layer has been
+read — because `mac_os_bindings` may appear in any layer, and in any position
+within a file, and streaming the decision would make the result depend on key
+order. Each set is overlaid independently, so `none` removals and additions apply
+to whichever set they were written in.
+
+If the macOS set is active but empty while the other one is not, the other is used
+and a warning is logged: a config that edits the inactive set would otherwise
+appear to do nothing at all.
+
+### `cmd` and `ctrl` mean the same thing everywhere
+
+Qt swaps Control and Meta on macOS by default: `Qt::ControlModifier` is the
+Command key and `Qt::MetaModifier` is physical Control. For a terminal that is
+backwards in the worst way — `InputHandler` maps `Qt::ControlModifier` to C0
+control characters, so **Command+C sent SIGINT and physical Ctrl+C did nothing**
+— and it would make a `cmd+t` binding fire on Ctrl+T.
+
+`main()` therefore sets `Qt::AA_MacDontSwapCtrlAndMeta`, after which
+`Qt::ControlModifier` is always physical Control and `Qt::MetaModifier` is always
+Command. Verified:
+
+```
+default:                  Qt::ControlModifier + T -> ⌘T    Qt::MetaModifier + T -> ⌃T
+AA_MacDontSwapCtrlAndMeta: Qt::ControlModifier + T -> ⌃T    Qt::MetaModifier + T -> ⌘T
+```
+
 ### Layout tolerance
 
 Qt reports either the unshifted key or the shifted symbol for the same physical
@@ -878,6 +958,12 @@ A consequence worth keeping in mind when editing the defaults: two actions must
 never be bound to the two halves of the same physical key, because which one wins
 would then depend on the user's keyboard. The default bindings put font sizing on
 `+`/`-` and splits on letters (plus `\` as an alias) for exactly this reason.
+
+Font sizing needs care for the same reason, since "plus" is not one key event.
+`⌘=`, `⌘⇧=` (which types `+`) and a numeric-keypad `⌘+` are three different
+combinations, so the macOS set binds `cmd+equal`, `cmd+shift+equal` and
+`cmd+plus`, with `cmd+minus` and `cmd+shift+minus` mirroring it. All six are
+covered by `tests/test_input.cpp`.
 
 `Config::save()` no longer exists. It was a no-op that logged "not yet
 implemented" while `closeEvent` dutifully wrote the window size into it;
@@ -987,17 +1073,18 @@ replacement characters.
 - A C++20 compiler (Apple Clang 15+, Clang 16+, GCC 12+)
 - Qt 6 — Core, Gui, Widgets, OpenGL, OpenGLWidgets
 - FreeType ≥ 2
+- yaml-cpp ≥ 0.7
 - OpenGL 3.3 core profile
 - `fontconfig` (`fc-match`) is *recommended*; without it a built-in list of font
   paths is used
 
 ```bash
 # macOS
-brew install cmake qt@6 freetype fontconfig
+brew install cmake qt@6 freetype fontconfig yaml-cpp
 
 # Debian / Ubuntu
 sudo apt install build-essential cmake qt6-base-dev libfreetype6-dev \
-                 libgl1-mesa-dev fontconfig
+                 libgl1-mesa-dev fontconfig libyaml-cpp-dev
 ```
 
 ### Build
@@ -1026,8 +1113,9 @@ cd build && ctest --output-on-failure
 | Suite | Covers |
 |---|---|
 | `test_terminal` | deferred wrap, the zsh prompt artifact, OSC termination and colour control, CSI parsing, scrolling regions, the alternate buffer, SGR colours, erase semantics, emoji presentation selectors, grapheme clustering, UTF-8 chunk splitting, wide characters, resize, device reports |
-| `test_input` | config keybindings resolving against real `QKeyEvent`s, shell control keys staying unbound, VT input encoding |
+| `test_input` | both keybinding sets resolving against real `QKeyEvent`s, set exclusivity, layout tolerance, shell control keys staying unbound, VT input encoding |
 | `test_splits` | pane tree surgery: nothing destroyed that should survive, nothing left invisible, directional navigation |
+| `test_config` | the real load path against a sandboxed HOME: overlay semantics, colours, keybinding add/remove, `mac_os_bindings` resolution, the unquoted-colour trap, malformed files, clamping |
 | `test_render` | grid padding maths, box-drawing tiling, fallback coverage of the characters a TUI draws, text-vs-emoji font selection, font preference order, and the guarantee that no resolution path yields a proportional font |
 
 They run under `QT_QPA_PLATFORM=offscreen` and need no GPU. `tests/check.h` is a

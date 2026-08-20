@@ -11,7 +11,7 @@ target_include_directories(ratty_lib PUBLIC
 )
 target_link_libraries(ratty_lib PUBLIC
     Qt6::Core Qt6::Gui Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets
-    Freetype::Freetype ${UTIL_LIB}
+    Freetype::Freetype yaml-cpp::yaml-cpp ${UTIL_LIB}
 )
 
 function(ratty_add_test name)
@@ -28,3 +28,4 @@ ratty_add_test(test_terminal)
 ratty_add_test(test_input)
 ratty_add_test(test_splits)
 ratty_add_test(test_render)
+ratty_add_test(test_config)

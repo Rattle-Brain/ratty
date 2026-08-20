@@ -50,7 +50,7 @@ scrollback and selection do not exist yet.
 - Incremental UTF-8 decoding and double-width (CJK/emoji) character layout
 - HiDPI-correct rendering: glyphs rasterized at physical pixel size
 - Tabs and recursive split panes with directional focus movement
-- JSON configuration with a layered override model, custom palette, keybindings
+- YAML configuration with a layered override model, custom palette, keybindings
 - Bracketed paste, window-title reporting, cursor-position reports
 - Live font resizing
 
@@ -73,6 +73,7 @@ it is.
 - **A C++20 compiler** — Apple Clang 15+, Clang 16+ or GCC 12+
 - **Qt6** — Core, Gui, Widgets, OpenGL, OpenGLWidgets
 - **FreeType** ≥ 2
+- **yaml-cpp** ≥ 0.7 for configuration parsing
 - **OpenGL** 3.3 core profile
 - **fontconfig** (`fc-match`) — recommended; without it a built-in list of font
   paths is used
@@ -81,7 +82,7 @@ it is.
 ### macOS
 
 ```bash
-brew install cmake qt@6 freetype fontconfig
+brew install cmake qt@6 freetype fontconfig yaml-cpp
 ```
 
 ### Linux
@@ -89,14 +90,14 @@ brew install cmake qt@6 freetype fontconfig
 ```bash
 # Debian / Ubuntu
 sudo apt install build-essential cmake qt6-base-dev libfreetype6-dev \
-                 libgl1-mesa-dev fontconfig
+                 libgl1-mesa-dev fontconfig libyaml-cpp-dev
 
 # Fedora
 sudo dnf install cmake gcc-c++ qt6-qtbase-devel freetype-devel \
-                 mesa-libGL-devel fontconfig
+                 mesa-libGL-devel fontconfig yaml-cpp-devel
 
 # Arch
-sudo pacman -S cmake gcc qt6-base freetype2 fontconfig
+sudo pacman -S cmake gcc qt6-base freetype2 fontconfig yaml-cpp
 ```
 
 ## Building
@@ -123,67 +124,87 @@ cmake --build build -j
 cd build && ctest --output-on-failure
 ```
 
-The suites cover terminal semantics, key encoding, pane-tree surgery, and the
-render layer's geometry and font resolution. They run headless
+The suites cover terminal semantics, key encoding, pane-tree surgery, the render
+layer's geometry and font resolution, and configuration loading. They run headless
 (`QT_QPA_PLATFORM=offscreen`) and need no GPU.
 
 ## Configuration
 
-RaTTY reads `~/.config/ratty/config.json`. Every key is optional — the file is an
-*overlay* on the built-in defaults, so you only write what you want to change.
+RaTTY reads `~/.config/ratty/config.yaml`. Every key is optional — the file is an
+*overlay* on the built-in defaults, so you only write what you want to change:
 
-```json
-{
-  "font": {
-    "family": ["DroidSansMono Nerd Font", "JetBrains Mono"],
-    "fallback": ["Menlo", "Apple Color Emoji"],
-    "size": 13
-  },
-
-  "cursor": {
-    "style": "block",
-    "blink": true
-  },
-
-  "colors": {
-    "background": "#1e1e1e",
-    "foreground": "#dcdcdc",
-    "cursor": "#dcdcdc",
-
-    "black":   "#000000",
-    "red":     "#cd3131",
-    "green":   "#0dbc79",
-    "yellow":  "#e5e510",
-    "blue":    "#2472c8",
-    "magenta": "#bc3fbc",
-    "cyan":    "#11a8cd",
-    "white":   "#e5e5e5",
-
-    "bright_black":   "#666666",
-    "bright_red":     "#f14c4c",
-    "bright_green":   "#23d18b",
-    "bright_yellow":  "#f5f543",
-    "bright_blue":    "#3b8eea",
-    "bright_magenta": "#d670d6",
-    "bright_cyan":    "#29b8db",
-    "bright_white":   "#ffffff"
-  },
-
-  "window": {
-    "width": 1280,
-    "height": 720,
-    "padding": 4,
-    "opacity": 1.0,
-    "fullscreen": false
-  },
-
-  "keybindings": {
-    "ctrl+shift+t": "new_tab",
-    "ctrl+shift+e": "split_horizontal",
-    "ctrl+shift+k": "none"
-  }
-}
+```yaml
+font:
+  size: 15
+colors:
+  background: "#101418"
 ```
+
+That is a complete, valid config. The full set of keys:
+
+```yaml
+font:
+  # Tried in order; the first installed family wins. If none are installed,
+  # RaTTY uses the font the system has set as its monospaced default.
+  family:
+    - DroidSansMono Nerd Font
+    - JetBrains Mono
+  # For characters the main font lacks. Rarely needed - the system monospaced
+  # font and any installed colour emoji font are already used.
+  fallback: []
+  size: 13
+
+cursor:
+  style: block        # block | hollow | underline | bar
+  blink: true
+
+colors:
+  background: "#1e1e1e"
+  foreground: "#dcdcdc"
+  cursor: "#dcdcdc"
+  selection_background: "#6495ed80"
+
+  black:          "#000000"
+  red:            "#cd3131"
+  green:          "#0dbc79"
+  yellow:         "#e5e510"
+  blue:           "#2472c8"
+  magenta:        "#bc3fbc"
+  cyan:           "#11a8cd"
+  white:          "#e5e5e5"
+  bright_black:   "#666666"
+  bright_red:     "#f14c4c"
+  bright_green:   "#23d18b"
+  bright_yellow:  "#f5f543"
+  bright_blue:    "#3b8eea"
+  bright_magenta: "#d670d6"
+  bright_cyan:    "#29b8db"
+  bright_white:   "#ffffff"
+
+window:
+  width: 1280
+  height: 720
+  padding: 4          # gap in logical pixels between text and window edge
+  opacity: 1.0
+  fullscreen: false
+
+mac_os_bindings: auto     # auto | true | false
+
+# Only the active set is read; `auto` picks by platform.
+keybindings_macos:
+  cmd+t: new_tab
+  cmd+d: split_horizontal
+  cmd+k: none             # removes a default binding
+
+keybindings:
+  ctrl+shift+t: new_tab
+  ctrl+shift+e: split_horizontal
+  ctrl+shift+k: none
+```
+
+> **Quote your colours.** In YAML `#` starts a comment, so `background: #101418`
+> is an empty value, not a colour. RaTTY notices and tells you, but the quotes
+> are the fix.
 
 Notes:
 
@@ -203,7 +224,8 @@ Notes:
   `DECSCUSR` request takes precedence while it is in effect.
 - Binding an action to `"none"` removes a default binding.
 - The bundled defaults live in
-  [`src/config/default_config.json`](src/config/default_config.json).
+  [`src/config/default_config.yaml`](src/config/default_config.yaml), which is
+  commented and worth reading.
 
 ### About patched "Nerd Fonts"
 
@@ -226,8 +248,9 @@ terminal's own default background — that is a normal optimisation, not a bug. 
 if your editor's theme has a background of, say, `#1f1f26`, set the same value in
 RaTTY:
 
-```json
-{ "colors": { "background": "#1f1f26" } }
+```yaml
+colors:
+  background: "#1f1f26"
 ```
 
 RaTTY answers `OSC 11` queries, so Neovim and friends can also read that value
@@ -235,25 +258,42 @@ back and pick their light or dark variant accordingly.
 
 ### Default keybindings
 
-Shortcuts use `Ctrl+Shift` so that the shell keeps every plain `Ctrl` key —
-`Ctrl+C`, `Ctrl+D`, `Ctrl+W`, `Ctrl+R`, `Ctrl+Z`, `Ctrl+L` and the rest reach the
-program running in the terminal, not RaTTY.
+There are two sets, and exactly one is active. `mac_os_bindings` decides which:
 
-| Shortcut | Action |
-|---|---|
-| `Ctrl+Shift+T` | New tab |
-| `Ctrl+Shift+W` | Close tab |
-| `Ctrl+Shift+→` / `←` | Next / previous tab |
-| `Ctrl+Shift+1`…`9` | Go to tab *n* |
-| `Ctrl+Shift+E` or `Ctrl+Shift+\` | Split left/right |
-| `Ctrl+Shift+O` | Split top/bottom |
-| `Ctrl+Shift+D` | Close pane |
-| `Ctrl+Shift+↑` / `↓` | Move focus between panes |
-| `Ctrl+Shift+C` / `V` | Copy / paste |
-| `Ctrl+Shift++` / `Ctrl+Shift+-` | Increase / decrease font size |
-| `Ctrl+Shift+0` | Reset font size |
-| `Ctrl+Shift+Q` | Quit |
-| `F11` | Toggle fullscreen |
+```yaml
+mac_os_bindings: auto     # auto (default) | true | false
+```
+
+`auto` follows the platform — the Command set on macOS, the Ctrl+Shift set
+elsewhere. Only the active set is read, so on macOS edit `keybindings_macos` and
+elsewhere edit `keybindings`.
+
+| Action | macOS | Linux / Windows |
+|---|---|---|
+| New tab | `⌘T` | `Ctrl+Shift+T` |
+| Close tab | `⌘W` | `Ctrl+Shift+W` |
+| Next / previous tab | `⌘⇧→` / `⌘⇧←` | `Ctrl+Shift+→` / `←` |
+| Go to tab *n* | `⌘1`…`⌘9` | `Ctrl+Shift+1`…`9` |
+| Split left/right | `⌘D` | `Ctrl+Shift+E` or `Ctrl+Shift+\` |
+| Split top/bottom | `⌘⇧D` | `Ctrl+Shift+O` |
+| Close pane | `⌘⇧W` | `Ctrl+Shift+D` |
+| Move focus between panes | `⌘⌥↑` / `⌘⌥↓` | `Ctrl+Shift+↑` / `↓` |
+| Copy / paste | `⌘C` / `⌘V` | `Ctrl+Shift+C` / `V` |
+| Increase font size | `⌘+` / `⌘=` | `Ctrl+Shift++` |
+| Decrease font size | `⌘-` | `Ctrl+Shift+-` |
+| Reset font size | `⌘0` | `Ctrl+Shift+0` |
+| Clear scrollback | `⌘K` | `Ctrl+Shift+K` |
+| Quit | `⌘Q` | `Ctrl+Shift+Q` |
+| Toggle fullscreen | `⌘⌃F` or `F11` | `F11` |
+
+Either way the shell keeps every plain `Ctrl` key: `Ctrl+C`, `Ctrl+D`, `Ctrl+W`,
+`Ctrl+R`, `Ctrl+Z`, `Ctrl+L` and the rest reach the program running in the
+terminal, not RaTTY.
+
+In a config file `cmd` is always the Command key and `ctrl` is always the
+physical Control key. Qt normally swaps the two on macOS, which would make
+`Command+C` send an interrupt instead of copying; RaTTY turns that off so both
+modifiers mean the same thing on every platform.
 
 Key names accept `ctrl`, `shift`, `alt`/`option`, `meta`/`super`/`cmd`, named
 keys (`up`, `pageup`, `escape`, `f1`…`f12`) and spelled-out punctuation
@@ -274,7 +314,7 @@ src/
 ├── render/    FontManager (+ fallback chain), GlyphAtlas, GLRenderer,
 │              TerminalRenderer, box_drawing
 ├── ui/        TerminalWidget, SplitContainer, MainWindow, InputHandler
-└── config/    Config
+└── config/    Config (layered YAML)
 ```
 
 The layering is deliberate and enforced by convention: `core/` includes no

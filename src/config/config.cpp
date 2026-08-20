@@ -6,17 +6,16 @@
 #include <QDebug>
 #include <QDir>
 #include <QFile>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonParseError>
 #include <QKeyCombination>
 #include <QKeyEvent>
+#include <yaml-cpp/yaml.h>
 #include <algorithm>
+#include <optional>
 
 namespace {
 
 /* Bundled defaults, compiled into the binary via resources/config.qrc. */
-const char kBundledDefaultsPath[] = ":/config/default_config.json";
+const char kBundledDefaultsPath[] = ":/config/default_config.yaml";
 
 struct ActionName {
     Action action;
@@ -65,19 +64,267 @@ constexpr const char* kAnsiColorKeys[16] = {
     "bright_blue", "bright_magenta", "bright_cyan", "bright_white",
 };
 
-QColor readColor(const QJsonObject& object, const char* key, const QColor& fallback) {
-    const QJsonValue value = object.value(QLatin1String(key));
-    if (!value.isString()) return fallback;
+/*
+ * Scalar readers. Each returns nullopt when the key is absent or unusable, so a
+ * layer only overrides what it actually specifies.
+ */
 
-    const QColor color(value.toString());
+std::optional<QString> readString(const YAML::Node& node, const char* key) {
+    const YAML::Node value = node[key];
+    if (!value || !value.IsScalar()) return std::nullopt;
+    return QString::fromStdString(value.Scalar()).trimmed();
+}
+
+std::optional<int> readInt(const YAML::Node& node, const char* key) {
+    const YAML::Node value = node[key];
+    if (!value || !value.IsScalar()) return std::nullopt;
+    try {
+        return value.as<int>();
+    } catch (const YAML::Exception&) {
+        qWarning() << "Config:" << key << "should be a whole number, got"
+                   << QString::fromStdString(value.Scalar());
+        return std::nullopt;
+    }
+}
+
+std::optional<double> readDouble(const YAML::Node& node, const char* key) {
+    const YAML::Node value = node[key];
+    if (!value || !value.IsScalar()) return std::nullopt;
+    try {
+        return value.as<double>();
+    } catch (const YAML::Exception&) {
+        qWarning() << "Config:" << key << "should be a number, got"
+                   << QString::fromStdString(value.Scalar());
+        return std::nullopt;
+    }
+}
+
+std::optional<bool> readBool(const YAML::Node& node, const char* key) {
+    const YAML::Node value = node[key];
+    if (!value || !value.IsScalar()) return std::nullopt;
+    try {
+        return value.as<bool>();
+    } catch (const YAML::Exception&) {
+        qWarning() << "Config:" << key << "should be true or false, got"
+                   << QString::fromStdString(value.Scalar());
+        return std::nullopt;
+    }
+}
+
+/* A single name or a sequence of them, which is how font families are given. */
+std::optional<QStringList> readStringList(const YAML::Node& node, const char* key) {
+    const YAML::Node value = node[key];
+    if (!value) return std::nullopt;
+
+    QStringList result;
+    if (value.IsScalar()) {
+        result << QString::fromStdString(value.Scalar()).trimmed();
+        return result;
+    }
+    if (value.IsSequence()) {
+        for (const YAML::Node& entry : value) {
+            if (!entry.IsScalar()) continue;
+            const QString name = QString::fromStdString(entry.Scalar()).trimmed();
+            if (!name.isEmpty()) result << name;
+        }
+        return result;
+    }
+    return std::nullopt;
+}
+
+std::optional<QColor> readColor(const YAML::Node& node, const char* key) {
+    const YAML::Node value = node[key];
+    if (!value) return std::nullopt;
+
+    /*
+     * The commonest YAML mistake by far, and one worth naming explicitly: '#'
+     * starts a comment, so `background: #1e1e1e` parses as an empty value rather
+     * than a colour.
+     */
+    if (value.IsNull() || (value.IsScalar() && value.Scalar().empty())) {
+        qWarning() << "Config: colour" << key
+                   << "is empty - hex colours must be quoted in YAML, e.g. \"#1e1e1e\"";
+        return std::nullopt;
+    }
+    if (!value.IsScalar()) return std::nullopt;
+
+    const QString text = QString::fromStdString(value.Scalar()).trimmed();
+    const QColor color(text);
     if (!color.isValid()) {
-        qWarning() << "Config: invalid colour for" << key << ":" << value.toString();
-        return fallback;
+        qWarning() << "Config: invalid colour for" << key << ":" << text;
+        return std::nullopt;
     }
     return color;
 }
 
 } // namespace
+
+/*
+ * Parser - one YAML document applied over the current settings.
+ *
+ * Split out as a nested type so the YAML dependency stays inside this file, and
+ * so each section reads as a flat list of "if the key is present, take it".
+ */
+struct Config::Parser {
+    Config& config;
+
+    void apply(const YAML::Node& root) {
+        if (const YAML::Node node = root["colors"]; node && node.IsMap()) colors(node);
+        if (const YAML::Node node = root["font"]; node && node.IsMap()) font(node);
+        if (const YAML::Node node = root["cursor"]; node && node.IsMap()) cursor(node);
+        if (const YAML::Node node = root["window"]; node && node.IsMap()) window(node);
+        if (const YAML::Node node = root["mac_os_bindings"]; node) {
+            platformBindings(node);
+        }
+        if (const YAML::Node node = root["keybindings"]; node && node.IsMap()) {
+            keybindings(node, config.bindingsDefault_);
+        }
+        if (const YAML::Node node = root["keybindings_macos"]; node && node.IsMap()) {
+            keybindings(node, config.bindingsMacOs_);
+        }
+    }
+
+    /* `mac_os_bindings` accepts true, false, or "auto" to follow the platform. */
+    void platformBindings(const YAML::Node& node) {
+        if (!node.IsScalar()) return;
+
+        const QString text = QString::fromStdString(node.Scalar()).trimmed().toLower();
+        if (text == QLatin1String("auto") || text.isEmpty()) {
+            config.macOsBindingsOverride_.reset();
+            return;
+        }
+        try {
+            config.macOsBindingsOverride_ = node.as<bool>();
+        } catch (const YAML::Exception&) {
+            qWarning() << "Config: mac_os_bindings should be true, false or auto, got"
+                       << text;
+        }
+    }
+
+    void colors(const YAML::Node& node) {
+        Palette& palette = config.palette_;
+
+        if (const auto color = readColor(node, "background")) {
+            palette.setDefaultBackground(*color);
+        }
+        if (const auto color = readColor(node, "foreground")) {
+            palette.setDefaultForeground(*color);
+            /* The cursor follows the foreground unless given explicitly, which
+             * is what a foreground-only config implies. */
+            palette.setCursorColor(*color);
+        }
+        if (const auto color = readColor(node, "cursor")) {
+            palette.setCursorColor(*color);
+        }
+        if (const auto color = readColor(node, "selection_background")) {
+            palette.setSelectionBackground(*color);
+        }
+
+        for (int i = 0; i < 16; ++i) {
+            if (const auto color = readColor(node, kAnsiColorKeys[i])) {
+                palette.setEntry(i, *color);
+            }
+        }
+    }
+
+    void font(const YAML::Node& node) {
+        /* "Monospace" is a fontconfig alias rather than a real family; treat it
+         * and the empty string alike as "let the platform decide". */
+        auto normalize = [](const QStringList& names) {
+            QStringList result;
+            for (const QString& name : names) {
+                if (name.isEmpty()) continue;
+                if (name.compare(QLatin1String("monospace"), Qt::CaseInsensitive) == 0) {
+                    continue;
+                }
+                result << name;
+            }
+            return result;
+        };
+
+        if (const auto families = readStringList(node, "family")) {
+            config.fontFamilies_ = normalize(*families);
+        }
+        if (const auto fallbacks = readStringList(node, "fallback")) {
+            config.fontFallbacks_ = normalize(*fallbacks);
+        }
+        if (const auto size = readInt(node, "size")) {
+            config.setFontSize(*size);
+        }
+    }
+
+    void cursor(const YAML::Node& node) {
+        if (const auto style = readString(node, "style")) {
+            const QString lowered = style->toLower();
+            if (lowered == QLatin1String("block"))          config.cursorStyle_ = CursorStyle::Block;
+            else if (lowered == QLatin1String("hollow"))    config.cursorStyle_ = CursorStyle::HollowBlock;
+            else if (lowered == QLatin1String("underline")) config.cursorStyle_ = CursorStyle::Underline;
+            else if (lowered == QLatin1String("bar")
+                  || lowered == QLatin1String("beam"))      config.cursorStyle_ = CursorStyle::Bar;
+            else if (!lowered.isEmpty()) {
+                qWarning() << "Config: unknown cursor style" << *style;
+            }
+        }
+        if (const auto blink = readBool(node, "blink")) {
+            config.cursorBlink_ = *blink;
+        }
+    }
+
+    void window(const YAML::Node& node) {
+        if (const auto width = readInt(node, "width")) {
+            config.windowWidth_ = std::max(200, *width);
+        }
+        if (const auto height = readInt(node, "height")) {
+            config.windowHeight_ = std::max(150, *height);
+        }
+        if (const auto opacity = readDouble(node, "opacity")) {
+            config.windowOpacity_ = std::clamp(static_cast<float>(*opacity), 0.1f, 1.0f);
+        }
+        if (const auto fullscreen = readBool(node, "fullscreen")) {
+            config.startFullscreen_ = *fullscreen;
+        }
+        if (const auto padding = readInt(node, "padding")) {
+            config.windowPadding_ = std::clamp(*padding, 0, MAX_WINDOW_PADDING);
+        }
+    }
+
+    void keybindings(const YAML::Node& node, QHash<QKeySequence, Action>& target) {
+        for (const auto& entry : node) {
+            /* Read the key as a raw scalar rather than through as<std::string>:
+             * a binding written as `y` or `n` would otherwise be coerced to a
+             * boolean by YAML's type inference. */
+            const QString keyText = QString::fromStdString(entry.first.Scalar()).trimmed();
+            if (keyText.isEmpty()) continue;
+
+            const QKeySequence sequence = parseKeySequence(keyText);
+            if (sequence.isEmpty()) {
+                qWarning() << "Config: unparseable key sequence" << keyText;
+                continue;
+            }
+
+            if (!entry.second.IsScalar()) {
+                qWarning() << "Config: keybinding" << keyText << "needs an action name";
+                continue;
+            }
+            const QString actionName =
+                QString::fromStdString(entry.second.Scalar()).trimmed();
+
+            /* An explicit "none" unbinds a default, which is the only way for a
+             * user overlay to remove a binding it did not create. */
+            if (actionName.compare(QLatin1String("none"), Qt::CaseInsensitive) == 0) {
+                target.remove(sequence);
+                continue;
+            }
+
+            const Action action = stringToAction(actionName);
+            if (action == ACTION_NONE) {
+                qWarning() << "Config: unknown action" << actionName << "for" << keyText;
+                continue;
+            }
+            target.insert(sequence, action);
+        }
+    }
+};
 
 Config::Config() {
     applyBuiltInDefaults();
@@ -103,204 +350,114 @@ void Config::applyBuiltInDefaults() {
     windowHeight_ = DEFAULT_WINDOW_HEIGHT;
     windowOpacity_ = 1.0f;
     startFullscreen_ = false;
+
+    bindingsDefault_.clear();
+    bindingsMacOs_.clear();
     keybindings_.clear();
+    macOsBindingsOverride_.reset();
+    macOsBindings_ = macOsBindingsByDefault();
+}
+
+bool Config::macOsBindingsByDefault() {
+#if defined(Q_OS_MACOS)
+    return true;
+#else
+    return false;
+#endif
+}
+
+void Config::resolveKeybindings() {
+    macOsBindings_ = macOsBindingsOverride_.value_or(macOsBindingsByDefault());
+    keybindings_ = macOsBindings_ ? bindingsMacOs_ : bindingsDefault_;
+
+    /*
+     * A configuration that edits the inactive set would otherwise appear to do
+     * nothing at all, which is a confusing way to spend an afternoon.
+     */
+    if (macOsBindings_ && bindingsMacOs_.isEmpty() && !bindingsDefault_.isEmpty()) {
+        qWarning() << "Config: macOS bindings are active but no keybindings_macos "
+                      "section was found; falling back to the keybindings section";
+        keybindings_ = bindingsDefault_;
+    }
 }
 
 QString Config::userConfigPath() {
+    return QDir::homePath() + QStringLiteral("/.config/ratty/config.yaml");
+}
+
+QString Config::legacyUserConfigPath() {
     return QDir::homePath() + QStringLiteral("/.config/ratty/config.json");
 }
 
 void Config::load() {
     applyBuiltInDefaults();
 
-    if (!applyJsonFile(QString::fromLatin1(kBundledDefaultsPath))) {
+    if (!applyFile(QString::fromLatin1(kBundledDefaultsPath))) {
         qWarning() << "Config: bundled defaults missing from resources";
     }
 
     const QString userPath = userConfigPath();
     if (QFile::exists(userPath)) {
-        if (applyJsonFile(userPath)) {
+        if (applyFile(userPath)) {
             qInfo() << "Config: loaded user overrides from" << userPath;
         }
+    } else if (QFile::exists(legacyUserConfigPath())) {
+        /* Say so rather than ignoring it: a config that has quietly stopped
+         * being read is worse than one that fails loudly. */
+        qWarning() << "Config:" << legacyUserConfigPath()
+                   << "is the old JSON format and is no longer read. Convert it to"
+                   << userPath;
     }
+
+    resolveKeybindings();
 
     qInfo() << "Config: font preference"
             << (fontFamilies_.isEmpty() ? QStringLiteral("<system monospace>")
                                         : fontFamilies_.join(QStringLiteral(" > ")))
             << "at" << fontSize_ << "pt,"
             << "padding" << windowPadding_ << "px,"
-            << keybindings_.size() << "keybindings";
+            << keybindings_.size()
+            << (macOsBindings_ ? "macOS keybindings" : "keybindings");
 }
 
-bool Config::applyJsonFile(const QString& path) {
+bool Config::applyFile(const QString& path) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         return false;
     }
+    const QByteArray bytes = file.readAll();
+    return applyDocument(bytes.toStdString(), path);
+}
 
-    QJsonParseError parseError{};
-    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+bool Config::applyDocument(const std::string& text, const QString& sourceLabel) {
+    if (text.empty()) return false;
 
-    if (parseError.error != QJsonParseError::NoError) {
-        qWarning() << "Config:" << path << "-" << parseError.errorString()
-                   << "at offset" << parseError.offset;
+    YAML::Node root;
+    try {
+        root = YAML::Load(text);
+    } catch (const YAML::Exception& error) {
+        /* Report the line and column: a YAML error without a position is close
+         * to useless in a hand-edited file. */
+        qWarning() << "Config:" << sourceLabel << "- YAML error at line"
+                   << error.mark.line + 1 << "column" << error.mark.column + 1
+                   << ":" << QString::fromStdString(error.msg);
         return false;
     }
-    if (!document.isObject()) {
-        qWarning() << "Config:" << path << "- root value is not an object";
+
+    if (!root || !root.IsMap()) {
+        qWarning() << "Config:" << sourceLabel << "- top level should be a mapping";
         return false;
     }
 
-    const QJsonObject root = document.object();
-    if (root.value(QStringLiteral("colors")).isObject()) {
-        applyColors(root.value(QStringLiteral("colors")).toObject());
-    }
-    if (root.value(QStringLiteral("font")).isObject()) {
-        applyFont(root.value(QStringLiteral("font")).toObject());
-    }
-    if (root.value(QStringLiteral("cursor")).isObject()) {
-        applyCursor(root.value(QStringLiteral("cursor")).toObject());
-    }
-    if (root.value(QStringLiteral("window")).isObject()) {
-        applyWindow(root.value(QStringLiteral("window")).toObject());
-    }
-    if (root.value(QStringLiteral("keybindings")).isObject()) {
-        applyKeybindings(root.value(QStringLiteral("keybindings")).toObject());
+    Parser parser{*this};
+    try {
+        parser.apply(root);
+    } catch (const YAML::Exception& error) {
+        qWarning() << "Config:" << sourceLabel << "- error reading settings:"
+                   << QString::fromStdString(error.msg);
+        return false;
     }
     return true;
-}
-
-void Config::applyColors(const QJsonObject& colors) {
-    palette_.setDefaultBackground(readColor(colors, "background", palette_.defaultBackground()));
-    palette_.setDefaultForeground(readColor(colors, "foreground", palette_.defaultForeground()));
-    /* The cursor defaults to the foreground colour unless overridden, which is
-     * what users expect from a "foreground: ..." only config. */
-    palette_.setCursorColor(readColor(colors, "cursor", palette_.defaultForeground()));
-    palette_.setSelectionBackground(
-        readColor(colors, "selection_background", palette_.selectionBackground()));
-
-    for (int i = 0; i < 16; ++i) {
-        const QColor color = readColor(colors, kAnsiColorKeys[i], palette_.entry(i));
-        palette_.setEntry(i, color);
-    }
-}
-
-void Config::applyFont(const QJsonObject& font) {
-    const QJsonValue family = font.value(QStringLiteral("family"));
-
-    /*
-     * "family" accepts a single name or an array of names to try in order. The
-     * array form is how a config can ask for a preferred font and still degrade
-     * gracefully on a machine where it is not installed.
-     */
-    auto normalize = [](const QString& name) -> QString {
-        const QString trimmed = name.trimmed();
-        /* "Monospace" is a fontconfig alias rather than a real family, so treat
-         * it the same as an empty string: let the platform decide. */
-        if (trimmed.compare(QLatin1String("monospace"), Qt::CaseInsensitive) == 0) {
-            return QString();
-        }
-        return trimmed;
-    };
-
-    if (family.isString()) {
-        fontFamilies_.clear();
-        if (const QString name = normalize(family.toString()); !name.isEmpty()) {
-            fontFamilies_ << name;
-        }
-    } else if (family.isArray()) {
-        fontFamilies_.clear();
-        for (const QJsonValue& entry : family.toArray()) {
-            if (!entry.isString()) continue;
-            if (const QString name = normalize(entry.toString()); !name.isEmpty()) {
-                fontFamilies_ << name;
-            }
-        }
-    }
-
-    /* Fallbacks are always a list; a bare string is accepted for convenience. */
-    const QJsonValue fallback = font.value(QStringLiteral("fallback"));
-    if (fallback.isString()) {
-        fontFallbacks_.clear();
-        if (const QString name = normalize(fallback.toString()); !name.isEmpty()) {
-            fontFallbacks_ << name;
-        }
-    } else if (fallback.isArray()) {
-        fontFallbacks_.clear();
-        for (const QJsonValue& entry : fallback.toArray()) {
-            if (!entry.isString()) continue;
-            if (const QString name = normalize(entry.toString()); !name.isEmpty()) {
-                fontFallbacks_ << name;
-            }
-        }
-    }
-
-    if (font.value(QStringLiteral("size")).isDouble()) {
-        setFontSize(font.value(QStringLiteral("size")).toInt(fontSize_));
-    }
-}
-
-void Config::applyCursor(const QJsonObject& cursor) {
-    const QString style = cursor.value(QStringLiteral("style")).toString().toLower();
-    if (style == QLatin1String("block"))          cursorStyle_ = CursorStyle::Block;
-    else if (style == QLatin1String("hollow"))    cursorStyle_ = CursorStyle::HollowBlock;
-    else if (style == QLatin1String("underline")) cursorStyle_ = CursorStyle::Underline;
-    else if (style == QLatin1String("bar") || style == QLatin1String("beam")) {
-        cursorStyle_ = CursorStyle::Bar;
-    } else if (!style.isEmpty()) {
-        qWarning() << "Config: unknown cursor style" << style;
-    }
-
-    if (cursor.value(QStringLiteral("blink")).isBool()) {
-        cursorBlink_ = cursor.value(QStringLiteral("blink")).toBool();
-    }
-}
-
-void Config::applyWindow(const QJsonObject& window) {
-    if (window.value(QStringLiteral("width")).isDouble()) {
-        windowWidth_ = std::max(200, window.value(QStringLiteral("width")).toInt(windowWidth_));
-    }
-    if (window.value(QStringLiteral("height")).isDouble()) {
-        windowHeight_ = std::max(150, window.value(QStringLiteral("height")).toInt(windowHeight_));
-    }
-    if (window.value(QStringLiteral("opacity")).isDouble()) {
-        windowOpacity_ = std::clamp(
-            static_cast<float>(window.value(QStringLiteral("opacity")).toDouble(windowOpacity_)),
-            0.1f, 1.0f);
-    }
-    if (window.value(QStringLiteral("fullscreen")).isBool()) {
-        startFullscreen_ = window.value(QStringLiteral("fullscreen")).toBool();
-    }
-    if (window.value(QStringLiteral("padding")).isDouble()) {
-        windowPadding_ = std::clamp(
-            window.value(QStringLiteral("padding")).toInt(windowPadding_),
-            0, MAX_WINDOW_PADDING);
-    }
-}
-
-void Config::applyKeybindings(const QJsonObject& keybindings) {
-    for (auto it = keybindings.begin(); it != keybindings.end(); ++it) {
-        const QKeySequence sequence = parseKeySequence(it.key());
-        if (sequence.isEmpty()) {
-            qWarning() << "Config: unparseable key sequence" << it.key();
-            continue;
-        }
-
-        const QString actionName = it.value().toString();
-        /* An explicit "none" unbinds a default, which is the only way for a
-         * user overlay to remove a binding it did not create. */
-        if (actionName.compare(QLatin1String("none"), Qt::CaseInsensitive) == 0) {
-            keybindings_.remove(sequence);
-            continue;
-        }
-
-        const Action action = stringToAction(actionName);
-        if (action == ACTION_NONE) {
-            qWarning() << "Config: unknown action" << actionName << "for" << it.key();
-            continue;
-        }
-        keybindings_.insert(sequence, action);
-    }
 }
 
 QKeySequence Config::parseKeySequence(const QString& text) {

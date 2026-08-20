@@ -276,6 +276,19 @@ test_render/fast:
 .PHONY : test_render/fast
 
 #=============================================================================
+# Target rules for targets named test_config
+
+# Build rule for target.
+test_config: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_config
+.PHONY : test_config
+
+# fast build rule for target.
+test_config/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_config.dir/build.make tests/CMakeFiles/test_config.dir/build
+.PHONY : test_config/fast
+
+#=============================================================================
 # Target rules for targets named ratty_lib_autogen_timestamp_deps
 
 # Build rule for target.
@@ -404,6 +417,32 @@ test_render_autogen: cmake_check_build_system
 test_render_autogen/fast:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_render_autogen.dir/build.make tests/CMakeFiles/test_render_autogen.dir/build
 .PHONY : test_render_autogen/fast
+
+#=============================================================================
+# Target rules for targets named test_config_autogen_timestamp_deps
+
+# Build rule for target.
+test_config_autogen_timestamp_deps: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_config_autogen_timestamp_deps
+.PHONY : test_config_autogen_timestamp_deps
+
+# fast build rule for target.
+test_config_autogen_timestamp_deps/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_config_autogen_timestamp_deps.dir/build.make tests/CMakeFiles/test_config_autogen_timestamp_deps.dir/build
+.PHONY : test_config_autogen_timestamp_deps/fast
+
+#=============================================================================
+# Target rules for targets named test_config_autogen
+
+# Build rule for target.
+test_config_autogen: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_config_autogen
+.PHONY : test_config_autogen
+
+# fast build rule for target.
+test_config_autogen/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_config_autogen.dir/build.make tests/CMakeFiles/test_config_autogen.dir/build
+.PHONY : test_config_autogen/fast
 
 ratty_autogen/3YJK5W5UP7/qrc_config.o: ratty_autogen/3YJK5W5UP7/qrc_config.cpp.o
 .PHONY : ratty_autogen/3YJK5W5UP7/qrc_config.o
@@ -902,6 +941,8 @@ help:
 	@echo "... ratty_autogen_timestamp_deps"
 	@echo "... ratty_lib_autogen"
 	@echo "... ratty_lib_autogen_timestamp_deps"
+	@echo "... test_config_autogen"
+	@echo "... test_config_autogen_timestamp_deps"
 	@echo "... test_input_autogen"
 	@echo "... test_input_autogen_timestamp_deps"
 	@echo "... test_render_autogen"
@@ -912,6 +953,7 @@ help:
 	@echo "... test_terminal_autogen_timestamp_deps"
 	@echo "... ratty"
 	@echo "... ratty_lib"
+	@echo "... test_config"
 	@echo "... test_input"
 	@echo "... test_render"
 	@echo "... test_splits"

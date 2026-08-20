@@ -1,15 +1,19 @@
 /*
- * Config - application settings loaded from JSON
+ * Config - application settings loaded from YAML
  *
- * Load order is: built-in defaults, then the bundled default_config.json from
- * the Qt resource system, then ~/.config/ratty/config.json as an overlay. Each
+ * Load order is: built-in defaults, then the bundled default_config.yaml from
+ * the Qt resource system, then ~/.config/ratty/config.yaml as an overlay. Each
  * layer only overrides the keys it actually contains.
  *
- * That layering fixes two concrete problems with the previous version: a config
- * file without a "keybindings" section silently left the application with *no*
- * keybindings at all, and the bundled defaults were looked up through a
- * relative path, so they were only found when the binary happened to be run
- * from the project root.
+ * That layering matters: a config file without a "keybindings" section must not
+ * leave the application with *no* keybindings, and the bundled defaults must be
+ * found regardless of the working directory the binary was started from.
+ *
+ * YAML rather than JSON because a configuration file people edit by hand wants
+ * comments, and needs neither quoting of every key nor a comma discipline. The
+ * one YAML sharp edge worth knowing is that '#' starts a comment, so a hex
+ * colour has to be quoted; the parser reports that case specifically rather than
+ * silently reading an empty value.
  */
 
 #ifndef CONFIG_CONFIG_H
@@ -19,11 +23,12 @@
 #include "../core/palette.h"
 #include <QColor>
 #include <QHash>
-#include <QJsonObject>
 #include <QKeyEvent>
 #include <QStringList>
 #include <QKeySequence>
 #include <QString>
+#include <optional>
+#include <string>
 
 /* Actions that can be bound to keys. */
 enum Action {
@@ -80,7 +85,18 @@ public:
 
     void load();
 
-    /* Keybindings */
+    /*
+     * Keybindings.
+     *
+     * Two sets are read from the configuration -- `keybindings` for
+     * Linux/Windows and `keybindings_macos` for macOS -- and exactly one is
+     * active. Which one is decided after every layer has been read, because the
+     * `mac_os_bindings` flag may appear in any of them and in any order.
+     */
+    bool macOsBindings() const { return macOsBindings_; }
+    /* True on macOS unless the configuration says otherwise. */
+    static bool macOsBindingsByDefault();
+
     Action lookupAction(const QKeySequence& keySequence) const;
     bool isBound(const QKeySequence& keySequence) const;
     QKeySequence keybindingFor(Action action) const;
@@ -144,21 +160,42 @@ private:
     Config(const Config&) = delete;
     Config& operator=(const Config&) = delete;
 
+    /*
+     * Parses one YAML document into a Config. Declared here but defined in the
+     * implementation file, which keeps yaml-cpp out of every translation unit
+     * that merely wants to read a setting. A nested class has access to the
+     * enclosing class's private members, so no friendship is needed.
+     */
+    struct Parser;
+
     void applyBuiltInDefaults();
-    /* Overlay a JSON document; absent keys keep their current value. */
-    bool applyJsonFile(const QString& path);
-    void applyColors(const QJsonObject& colors);
-    void applyFont(const QJsonObject& font);
-    void applyCursor(const QJsonObject& cursor);
-    void applyWindow(const QJsonObject& window);
-    void applyKeybindings(const QJsonObject& keybindings);
+    /* Pick the active keybinding set once every layer has been read. */
+    void resolveKeybindings();
+    /* Overlay a YAML file or document; absent keys keep their current value. */
+    bool applyFile(const QString& path);
+    bool applyDocument(const std::string& text, const QString& sourceLabel);
 
     static QKeySequence parseKeySequence(const QString& text);
+
+public:
+    /* Where the user's own configuration lives. */
     static QString userConfigPath();
+    /* The pre-YAML location, reported if it is found so the file is not
+     * silently ignored. */
+    static QString legacyUserConfigPath();
+
+private:
     /* The other key on the same physical key ('1' <-> '!'), or Key_unknown. */
     static Qt::Key shiftPartner(int key);
 
+    /* The two source sets, and the resolved active one. */
+    QHash<QKeySequence, Action> bindingsDefault_;
+    QHash<QKeySequence, Action> bindingsMacOs_;
     QHash<QKeySequence, Action> keybindings_;
+
+    /* nullopt means "decide from the platform". */
+    std::optional<bool> macOsBindingsOverride_;
+    bool macOsBindings_ = false;
 
     Palette palette_;
     QStringList fontFamilies_;

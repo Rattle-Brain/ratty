@@ -10,16 +10,40 @@
 #include "check.h"
 #include "config/config.h"
 #include "ui/input_handler.h"
+#include <QDir>
 #include <QGuiApplication>
 #include <QKeyCombination>
 #include <QKeyEvent>
+#include <QTemporaryDir>
+#include <QTextStream>
 
 namespace {
 
+QTemporaryDir* sandbox = nullptr;
+
+/*
+ * Force one keybinding set, whichever platform the suite happens to run on.
+ * Without this the assertions would depend on the host: `mac_os_bindings`
+ * defaults to the platform, so the Ctrl+Shift set is inactive on macOS.
+ */
+void loadBindingSet(bool macOs) {
+    const QString configDir = sandbox->path() + QStringLiteral("/.config/ratty");
+    QDir().mkpath(configDir);
+    QFile file(configDir + QStringLiteral("/config.yaml"));
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        check::that(false, "could not write the sandbox config");
+        return;
+    }
+    QTextStream(&file) << (macOs ? QStringLiteral("mac_os_bindings: true\n")
+                                 : QStringLiteral("mac_os_bindings: false\n"));
+    file.close();
+    Config::instance().load();
+}
+
 void expectAction(Qt::KeyboardModifiers modifiers, Qt::Key key, Action expected,
                   const char* label) {
-    const QKeySequence sequence(QKeyCombination(modifiers, key));
-    const Action actual = Config::instance().lookupAction(sequence);
+    const QKeyEvent event(QEvent::KeyPress, key, modifiers);
+    const Action actual = Config::instance().lookupAction(&event);
     check::that(actual == expected,
                 QStringLiteral("%1 -> %2")
                     .arg(QString::fromLatin1(label), Config::actionToString(actual))
@@ -41,8 +65,9 @@ void expectBytes(Qt::KeyboardModifiers modifiers, Qt::Key key, const QString& te
 }
 
 void testBindingsResolve() {
-    check::section("config keybindings resolve against real key events");
+    check::section("Ctrl+Shift keybindings resolve against real key events");
 
+    loadBindingSet(/*macOs=*/false);
     const auto ctrlShift = Qt::ControlModifier | Qt::ShiftModifier;
     expectAction(ctrlShift, Qt::Key_T, ACTION_NEW_TAB, "ctrl+shift+t");
     expectAction(ctrlShift, Qt::Key_W, ACTION_CLOSE_TAB, "ctrl+shift+w");
@@ -76,6 +101,7 @@ void expectEventAction(Qt::KeyboardModifiers modifiers, Qt::Key key, Action expe
 void testLayoutTolerance() {
     check::section("keyboard-layout tolerance for shifted keys");
 
+    loadBindingSet(/*macOs=*/false);
     const auto ctrlShift = Qt::ControlModifier | Qt::ShiftModifier;
 
     expectEventAction(ctrlShift, Qt::Key_1, ACTION_GOTO_TAB_1, "Key_1");
@@ -97,8 +123,70 @@ void testLayoutTolerance() {
     expectEventAction(Qt::ControlModifier, Qt::Key_1, ACTION_NONE, "ctrl+1 still unbound");
 }
 
+void testMacOsBindings() {
+    check::section("macOS Command bindings");
+
+    loadBindingSet(/*macOs=*/true);
+    check::that(Config::instance().macOsBindings(), "the macOS set is active");
+
+    /*
+     * `cmd` is Qt::MetaModifier and `ctrl` is Qt::ControlModifier, on every
+     * platform. RaTTY disables Qt's macOS habit of swapping the two, which would
+     * otherwise make a cmd+ binding fire on physical Ctrl and -- far worse -- make
+     * Command+C send SIGINT instead of Ctrl+C.
+     */
+    const auto cmd = Qt::MetaModifier;
+    const auto cmdShift = Qt::MetaModifier | Qt::ShiftModifier;
+
+    expectAction(cmd, Qt::Key_T, ACTION_NEW_TAB, "cmd+t");
+    expectAction(cmd, Qt::Key_W, ACTION_CLOSE_TAB, "cmd+w");
+    expectAction(cmd, Qt::Key_C, ACTION_COPY, "cmd+c");
+    expectAction(cmd, Qt::Key_V, ACTION_PASTE, "cmd+v");
+    expectAction(cmd, Qt::Key_Q, ACTION_QUIT, "cmd+q");
+    expectAction(cmd, Qt::Key_D, ACTION_SPLIT_HORIZONTAL, "cmd+d");
+    expectAction(cmdShift, Qt::Key_D, ACTION_SPLIT_VERTICAL, "cmd+shift+d");
+    expectAction(cmdShift, Qt::Key_W, ACTION_CLOSE_SPLIT, "cmd+shift+w");
+    expectAction(cmd, Qt::Key_1, ACTION_GOTO_TAB_1, "cmd+1");
+    expectAction(cmd, Qt::Key_9, ACTION_GOTO_TAB_9, "cmd+9");
+    expectAction(cmd, Qt::Key_K, ACTION_CLEAR_SCROLLBACK, "cmd+k");
+
+    /* Font size, through every key event a user might actually produce. */
+    expectAction(cmd, Qt::Key_Equal, ACTION_INCREASE_FONT_SIZE, "cmd+= (unshifted)");
+    expectAction(cmdShift, Qt::Key_Plus, ACTION_INCREASE_FONT_SIZE, "cmd+shift+= typing '+'");
+    expectAction(cmd, Qt::Key_Plus, ACTION_INCREASE_FONT_SIZE, "cmd++ (numpad)");
+    expectAction(cmd, Qt::Key_Minus, ACTION_DECREASE_FONT_SIZE, "cmd+-");
+    expectAction(cmdShift, Qt::Key_Underscore, ACTION_DECREASE_FONT_SIZE,
+                 "cmd+shift+- typing '_'");
+    expectAction(cmd, Qt::Key_0, ACTION_RESET_FONT_SIZE, "cmd+0");
+
+    /* With the Command set active, Ctrl belongs entirely to the shell. */
+    expectAction(Qt::ControlModifier, Qt::Key_C, ACTION_NONE, "ctrl+c reaches the shell");
+    expectAction(Qt::ControlModifier, Qt::Key_D, ACTION_NONE, "ctrl+d reaches the shell");
+    expectAction(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_T, ACTION_NONE,
+                 "the Ctrl+Shift set is inactive");
+}
+
+void testBindingSetsAreExclusive() {
+    check::section("only one binding set is active at a time");
+
+    loadBindingSet(/*macOs=*/false);
+    check::that(!Config::instance().macOsBindings(), "the Ctrl+Shift set is active");
+    expectAction(Qt::MetaModifier, Qt::Key_T, ACTION_NONE,
+                 "cmd+t does nothing when the macOS set is off");
+    expectAction(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_T, ACTION_NEW_TAB,
+                 "ctrl+shift+t works when the macOS set is off");
+
+    loadBindingSet(/*macOs=*/true);
+    expectAction(Qt::MetaModifier, Qt::Key_T, ACTION_NEW_TAB,
+                 "cmd+t works when the macOS set is on");
+    expectAction(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_T, ACTION_NONE,
+                 "ctrl+shift+t does nothing when the macOS set is on");
+}
+
 void testShellKeysAreNotStolen() {
     check::section("shell control keys stay unbound");
+
+    loadBindingSet(/*macOs=*/false);
 
     for (const auto& [key, label] : {
              std::pair<Qt::Key, const char*>{Qt::Key_C, "ctrl+c (SIGINT)"},
@@ -153,11 +241,22 @@ void testKeyEncoding() {
 } // namespace
 
 int main(int argc, char** argv) {
+    /* Match the application: Ctrl means Ctrl and Meta means Command everywhere. */
+    QCoreApplication::setAttribute(Qt::AA_MacDontSwapCtrlAndMeta, true);
     QGuiApplication app(argc, argv);
-    Config::instance().load();
+
+    QTemporaryDir tempHome;
+    if (!tempHome.isValid()) {
+        std::printf("could not create a temporary HOME\n");
+        return 1;
+    }
+    sandbox = &tempHome;
+    qputenv("HOME", tempHome.path().toUtf8());
 
     testBindingsResolve();
     testLayoutTolerance();
+    testMacOsBindings();
+    testBindingSetsAreExclusive();
     testShellKeysAreNotStolen();
     testKeyEncoding();
     return check::report("test_input");

@@ -1,0 +1,172 @@
+# RaTTY default configuration
+#
+# This file ships inside the binary. To change anything, copy the settings you
+# care about into ~/.config/ratty/config.yaml -- that file is an *overlay*, so it
+# only needs the keys you want to change, and everything else keeps the defaults
+# below.
+#
+# One YAML gotcha worth knowing: '#' starts a comment, so hex colours must be
+# quoted.
+#     background: "#1e1e1e"     <- correct
+#     background: #1e1e1e       <- an empty value and a comment
+
+font:
+  # Families are tried in order; the first one actually installed wins. If none
+  # are, RaTTY uses whatever font the system has set as its monospaced default.
+  family:
+    - DroidSansMono Nerd Font
+    - DroidSansM Nerd Font
+    - Droid Sans Mono Nerd Font
+    - DroidSansMono NF
+    - Droid Sans Mono for Powerline
+
+  # Consulted for characters the main font does not have. Left empty, RaTTY
+  # already falls back to the system monospaced font and to any installed colour
+  # emoji font, so this is only needed to force a specific choice.
+  fallback: []
+
+  size: 13
+
+cursor:
+  # block | hollow | underline | bar
+  # An application's own request (DECSCUSR) takes precedence while it applies.
+  style: block
+  blink: true
+
+colors:
+  background: "#1e1e1e"
+  foreground: "#dcdcdc"
+  cursor: "#dcdcdc"
+  selection_background: "#6495ed80"
+
+  black:          "#000000"
+  red:            "#cd3131"
+  green:          "#0dbc79"
+  yellow:         "#e5e510"
+  blue:           "#2472c8"
+  magenta:        "#bc3fbc"
+  cyan:           "#11a8cd"
+  white:          "#e5e5e5"
+
+  bright_black:   "#666666"
+  bright_red:     "#f14c4c"
+  bright_green:   "#23d18b"
+  bright_yellow:  "#f5f543"
+  bright_blue:    "#3b8eea"
+  bright_magenta: "#d670d6"
+  bright_cyan:    "#29b8db"
+  bright_white:   "#ffffff"
+
+window:
+  width: 1280
+  height: 720
+  # Gap in logical pixels between the text and the window edge.
+  padding: 4
+  opacity: 1.0
+  fullscreen: false
+
+# Which keybinding set is active.
+#
+#   auto   follow the platform: the macOS set on macOS, otherwise the other one
+#   true   force the macOS (Command-key) set
+#   false  force the Ctrl+Shift set
+#
+# Only the active set is read, so on macOS edit `keybindings_macos` and elsewhere
+# edit `keybindings`.
+mac_os_bindings: auto
+
+# ---------------------------------------------------------------------------
+# macOS: Command-key shortcuts, following the platform's conventions.
+#
+# Note that `cmd` is the Command key and `ctrl` is the physical Control key,
+# consistently -- RaTTY turns off Qt's habit of swapping the two on macOS, so
+# that Ctrl+C still reaches the shell as an interrupt.
+# ---------------------------------------------------------------------------
+keybindings_macos:
+  cmd+t: new_tab
+  cmd+w: close_tab
+  cmd+shift+right: next_tab
+  cmd+shift+left: prev_tab
+  cmd+1: goto_tab_1
+  cmd+2: goto_tab_2
+  cmd+3: goto_tab_3
+  cmd+4: goto_tab_4
+  cmd+5: goto_tab_5
+  cmd+6: goto_tab_6
+  cmd+7: goto_tab_7
+  cmd+8: goto_tab_8
+  cmd+9: goto_tab_9
+
+  cmd+d: split_horizontal          # side by side, as in iTerm2
+  cmd+shift+d: split_vertical      # stacked
+  cmd+shift+w: close_split
+  cmd+alt+up: focus_up
+  cmd+alt+down: focus_down
+
+  cmd+q: quit
+  cmd+ctrl+f: fullscreen
+  f11: fullscreen
+
+  cmd+c: copy
+  cmd+v: paste
+
+  cmd+plus: increase_font_size
+  cmd+equal: increase_font_size        # Cmd+=, without reaching for Shift
+  cmd+shift+equal: increase_font_size  # Cmd+Shift+=, which types a literal '+'
+  cmd+minus: decrease_font_size
+  cmd+shift+minus: decrease_font_size  # Cmd+Shift+-, which types a literal '_'
+  cmd+0: reset_font_size
+
+  cmd+k: clear_scrollback
+  shift+pageup: scroll_up
+  shift+pagedown: scroll_down
+
+# ---------------------------------------------------------------------------
+# Linux and Windows: Ctrl+Shift shortcuts, so that every plain Ctrl key still
+# reaches the shell. Ctrl+C, Ctrl+D, Ctrl+W, Ctrl+R, Ctrl+Z and Ctrl+L belong to
+# the program running in the terminal, not to RaTTY.
+#
+# Modifiers: ctrl, shift, alt/option, meta/super/cmd
+# Named keys: up, down, left, right, tab, return, space, home, end, pageup,
+#             pagedown, insert, delete, backspace, escape, f1..f12
+# Punctuation is spelled out: plus, minus, underscore, equal, backslash,
+#             slash, comma, period, semicolon, grave, bracketleft, bracketright
+#
+# Set an action to `none` to remove a default binding.
+# ---------------------------------------------------------------------------
+keybindings:
+  ctrl+shift+t: new_tab
+  ctrl+shift+w: close_tab
+  ctrl+shift+right: next_tab
+  ctrl+shift+left: prev_tab
+  ctrl+shift+1: goto_tab_1
+  ctrl+shift+2: goto_tab_2
+  ctrl+shift+3: goto_tab_3
+  ctrl+shift+4: goto_tab_4
+  ctrl+shift+5: goto_tab_5
+  ctrl+shift+6: goto_tab_6
+  ctrl+shift+7: goto_tab_7
+  ctrl+shift+8: goto_tab_8
+  ctrl+shift+9: goto_tab_9
+
+  ctrl+shift+e: split_horizontal
+  ctrl+shift+backslash: split_horizontal
+  ctrl+shift+o: split_vertical
+  ctrl+shift+d: close_split
+  ctrl+shift+up: focus_up
+  ctrl+shift+down: focus_down
+
+  ctrl+shift+q: quit
+  f11: fullscreen
+
+  ctrl+shift+c: copy
+  ctrl+shift+v: paste
+
+  ctrl+shift+plus: increase_font_size
+  ctrl+shift+equal: increase_font_size   # the unshifted key, so Shift is optional
+  ctrl+shift+minus: decrease_font_size
+  ctrl+shift+0: reset_font_size
+
+  shift+pageup: scroll_up
+  shift+pagedown: scroll_down
+  ctrl+shift+k: clear_scrollback
