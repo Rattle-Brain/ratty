@@ -117,6 +117,8 @@ Polish       ████████░░░░░░░░░░░░ no scr
 ### Project
 - [x] Layered **YAML** config: built-in -> bundled resource -> user overlay, with
       per-key optional overrides and a named diagnostic for every failure mode
+- [x] A user config overrides only what it states; naming an action releases the
+      default keys for it, and editing the inactive keybinding set is reported
 - [x] Full 256-colour palette, 16 base colours overridable by name
 - [x] `"none"` unbinds a default keybinding
 - [x] Headless test suites (terminal / input / splits) with `ctest`

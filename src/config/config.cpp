@@ -159,6 +159,15 @@ std::optional<QColor> readColor(const YAML::Node& node, const char* key) {
 
 } // namespace
 
+/* One document's keybindings, kept apart until the whole document is read. */
+struct Config::BindingLayer {
+    QHash<QKeySequence, Action> bound;
+    QList<QKeySequence> unbound;      // keys explicitly set to `none`
+    QSet<Action> assignedActions;     // actions this document gives a key to
+
+    bool isEmpty() const { return bound.isEmpty() && unbound.isEmpty(); }
+};
+
 /*
  * Parser - one YAML document applied over the current settings.
  *
@@ -167,6 +176,8 @@ std::optional<QColor> readColor(const YAML::Node& node, const char* key) {
  */
 struct Config::Parser {
     Config& config;
+    BindingLayer& defaultBindings;
+    BindingLayer& macOsBindings;
 
     void apply(const YAML::Node& root) {
         if (const YAML::Node node = root["colors"]; node && node.IsMap()) colors(node);
@@ -177,10 +188,10 @@ struct Config::Parser {
             platformBindings(node);
         }
         if (const YAML::Node node = root["keybindings"]; node && node.IsMap()) {
-            keybindings(node, config.bindingsDefault_);
+            keybindings(node, defaultBindings);
         }
         if (const YAML::Node node = root["keybindings_macos"]; node && node.IsMap()) {
-            keybindings(node, config.bindingsMacOs_);
+            keybindings(node, macOsBindings);
         }
     }
 
@@ -288,7 +299,7 @@ struct Config::Parser {
         }
     }
 
-    void keybindings(const YAML::Node& node, QHash<QKeySequence, Action>& target) {
+    void keybindings(const YAML::Node& node, BindingLayer& layer) {
         for (const auto& entry : node) {
             /* Read the key as a raw scalar rather than through as<std::string>:
              * a binding written as `y` or `n` would otherwise be coerced to a
@@ -312,7 +323,7 @@ struct Config::Parser {
             /* An explicit "none" unbinds a default, which is the only way for a
              * user overlay to remove a binding it did not create. */
             if (actionName.compare(QLatin1String("none"), Qt::CaseInsensitive) == 0) {
-                target.remove(sequence);
+                layer.unbound.append(sequence);
                 continue;
             }
 
@@ -321,10 +332,32 @@ struct Config::Parser {
                 qWarning() << "Config: unknown action" << actionName << "for" << keyText;
                 continue;
             }
-            target.insert(sequence, action);
+            layer.bound.insert(sequence, action);
+            layer.assignedActions.insert(action);
         }
     }
 };
+
+void Config::mergeBindings(QHash<QKeySequence, Action>& target,
+                           const BindingLayer& layer, bool ownsAssignedActions) {
+    if (ownsAssignedActions && !layer.assignedActions.isEmpty()) {
+        /* Release the keys inherited for any action this layer re-assigns. */
+        for (auto it = target.begin(); it != target.end(); ) {
+            if (layer.assignedActions.contains(it.value())) {
+                it = target.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    for (const QKeySequence& sequence : layer.unbound) {
+        target.remove(sequence);
+    }
+    for (auto it = layer.bound.constBegin(); it != layer.bound.constEnd(); ++it) {
+        target.insert(it.key(), it.value());
+    }
+}
 
 Config::Config() {
     applyBuiltInDefaults();
@@ -356,6 +389,8 @@ void Config::applyBuiltInDefaults() {
     keybindings_.clear();
     macOsBindingsOverride_.reset();
     macOsBindings_ = macOsBindingsByDefault();
+    userTouchedDefaultBindings_ = false;
+    userTouchedMacOsBindings_ = false;
 }
 
 bool Config::macOsBindingsByDefault() {
@@ -379,6 +414,19 @@ void Config::resolveKeybindings() {
                       "section was found; falling back to the keybindings section";
         keybindings_ = bindingsDefault_;
     }
+
+    /* Editing the section that is not in use is the likeliest reason for a
+     * configuration to appear to have no effect at all. */
+    if (macOsBindings_ && userTouchedDefaultBindings_ && !userTouchedMacOsBindings_) {
+        qWarning() << "Config: your `keybindings` section was ignored because the "
+                      "macOS set is active - put those bindings under "
+                      "`keybindings_macos`, or set `mac_os_bindings: false`";
+    }
+    if (!macOsBindings_ && userTouchedMacOsBindings_ && !userTouchedDefaultBindings_) {
+        qWarning() << "Config: your `keybindings_macos` section was ignored because "
+                      "the macOS set is not active - put those bindings under "
+                      "`keybindings`, or set `mac_os_bindings: true`";
+    }
 }
 
 QString Config::userConfigPath() {
@@ -392,13 +440,13 @@ QString Config::legacyUserConfigPath() {
 void Config::load() {
     applyBuiltInDefaults();
 
-    if (!applyFile(QString::fromLatin1(kBundledDefaultsPath))) {
+    if (!applyFile(QString::fromLatin1(kBundledDefaultsPath), /*userLayer=*/false)) {
         qWarning() << "Config: bundled defaults missing from resources";
     }
 
     const QString userPath = userConfigPath();
     if (QFile::exists(userPath)) {
-        if (applyFile(userPath)) {
+        if (applyFile(userPath, /*userLayer=*/true)) {
             qInfo() << "Config: loaded user overrides from" << userPath;
         }
     } else if (QFile::exists(legacyUserConfigPath())) {
@@ -420,16 +468,17 @@ void Config::load() {
             << (macOsBindings_ ? "macOS keybindings" : "keybindings");
 }
 
-bool Config::applyFile(const QString& path) {
+bool Config::applyFile(const QString& path, bool userLayer) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         return false;
     }
     const QByteArray bytes = file.readAll();
-    return applyDocument(bytes.toStdString(), path);
+    return applyDocument(bytes.toStdString(), path, userLayer);
 }
 
-bool Config::applyDocument(const std::string& text, const QString& sourceLabel) {
+bool Config::applyDocument(const std::string& text, const QString& sourceLabel,
+                           bool userLayer) {
     if (text.empty()) return false;
 
     YAML::Node root;
@@ -449,13 +498,29 @@ bool Config::applyDocument(const std::string& text, const QString& sourceLabel) 
         return false;
     }
 
-    Parser parser{*this};
+    /*
+     * Bindings are staged per document rather than written straight through, so
+     * mergeBindings() can see the whole set of actions the document assigns
+     * before deciding what to displace.
+     */
+    BindingLayer defaultLayer;
+    BindingLayer macOsLayer;
+
+    Parser parser{*this, defaultLayer, macOsLayer};
     try {
         parser.apply(root);
     } catch (const YAML::Exception& error) {
         qWarning() << "Config:" << sourceLabel << "- error reading settings:"
                    << QString::fromStdString(error.msg);
         return false;
+    }
+
+    mergeBindings(bindingsDefault_, defaultLayer, userLayer);
+    mergeBindings(bindingsMacOs_, macOsLayer, userLayer);
+
+    if (userLayer) {
+        userTouchedDefaultBindings_ |= !defaultLayer.isEmpty();
+        userTouchedMacOsBindings_ |= !macOsLayer.isEmpty();
     }
     return true;
 }

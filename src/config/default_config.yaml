@@ -36,7 +36,8 @@ cursor:
 colors:
   background: "#1e1e1e"
   foreground: "#dcdcdc"
-  cursor: "#dcdcdc"
+  # `cursor` is deliberately not set here: left out, it follows the foreground,
+  # so changing just `foreground` in your own config keeps the cursor visible.
   selection_background: "#6495ed80"
 
   black:          "#000000"
@@ -133,6 +134,16 @@ keybindings_macos:
 #             slash, comma, period, semicolon, grave, bracketleft, bracketright
 #
 # Set an action to `none` to remove a default binding.
+#
+# Naming an action in your own config makes your config the whole story for it:
+# the default keys for that action are released. So
+#
+#     keybindings_macos:
+#       ctrl+shift+w: split_vertical
+#
+# moves split_vertical to Ctrl+Shift+W and frees the default Cmd+Shift+D, while
+# leaving every other binding alone. If you want two keys for one action, list
+# both.
 # ---------------------------------------------------------------------------
 keybindings:
   ctrl+shift+t: new_tab

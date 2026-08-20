@@ -131,7 +131,8 @@ layer's geometry and font resolution, and configuration loading. They run headle
 ## Configuration
 
 RaTTY reads `~/.config/ratty/config.yaml`. Every key is optional — the file is an
-*overlay* on the built-in defaults, so you only write what you want to change:
+*overlay* on the defaults that ship inside the binary, so you write only what you
+want to change and everything else stays as it was:
 
 ```yaml
 font:
@@ -140,7 +141,22 @@ colors:
   background: "#101418"
 ```
 
-That is a complete, valid config. The full set of keys:
+That is a complete, valid config: font size and background change, and all other
+colours, keybindings, window settings and font preferences keep their defaults.
+
+**Rebinding an action releases its default key.** Naming an action in your config
+makes your config the whole story for that action:
+
+```yaml
+keybindings_macos:
+  ctrl+shift+w: split_vertical
+```
+
+`Ctrl+Shift+W` now splits top/bottom, and the default `⌘⇧D` no longer does —
+without that, two keys would do the same thing. Every other binding is untouched.
+If you want several keys for one action, list them all.
+
+The full set of keys:
 
 ```yaml
 font:

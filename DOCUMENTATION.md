@@ -816,9 +816,20 @@ contains:
 3. `~/.config/ratty/config.yaml` — the user's overlay
 
 The layering is the important property: an overlay is not a replacement, so a
-file that mentions only `font.size` changes only that. A config without a
+file that mentions only `font.size` changes only that — every other colour,
+binding, window setting and font preference keeps its default. A config without a
 `keybindings` section must not leave the application with no keybindings, and the
 bundled defaults must be found regardless of the working directory.
+
+The one place the rule is deliberately not literal is keybindings, where naming
+an *action* releases the keys it inherited; see
+[Action ownership](#action-ownership).
+
+Two settings interact, and the shipped defaults are arranged so the interaction
+stays predictable: `colors.cursor` is deliberately **absent** from the bundled
+file, so that it follows `colors.foreground`. Had the default set it explicitly, a
+user who changed only the foreground would keep a cursor in the old colour —
+close to invisible on an inverted theme.
 
 YAML rather than JSON because a file people edit by hand wants comments, and
 needs neither quoting of every key nor comma discipline. The parsing uses
@@ -920,6 +931,37 @@ read — because `mac_os_bindings` may appear in any layer, and in any position
 within a file, and streaming the decision would make the result depend on key
 order. Each set is overlaid independently, so `none` removals and additions apply
 to whichever set they were written in.
+
+#### Action ownership
+
+Bindings are staged per document into a `BindingLayer` rather than written
+straight through, so `mergeBindings()` can see every action a document assigns
+before deciding what to displace.
+
+For the **user's** layer, any action it assigns is treated as fully described by
+that layer, and the keys inherited for it are dropped first. This is what makes
+
+```yaml
+keybindings_macos:
+  ctrl+shift+w: split_vertical
+```
+
+mean "split_vertical is now Ctrl+Shift+W" rather than "Ctrl+Shift+W *also* splits
+vertically" — otherwise the default `⌘⇧D` would keep working and two keys would
+do the same thing, which is not what a user writing that line intends.
+
+The bundled defaults are merged *without* the rule, so they can legitimately
+offer several keys for one action (`ctrl+shift+e` and `ctrl+shift+backslash` both
+split horizontally). A user wanting two keys lists both.
+
+#### Reporting a config that cannot work
+
+Two situations would otherwise leave a user convinced the file is not being read
+at all, so both are reported:
+
+- the active set is empty while the other is not — the other is used
+- the user's layer wrote only to the *inactive* set, naming the section they
+  should have edited instead
 
 If the macOS set is active but empty while the other one is not, the other is used
 and a warning is logged: a config that edits the inactive set would otherwise

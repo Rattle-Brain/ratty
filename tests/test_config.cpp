@@ -171,8 +171,20 @@ keybindings:
     check::that(actionFor(Qt::ControlModifier | Qt::AltModifier, Qt::Key_P)
                     == ACTION_PASTE,
                 "a binding with a different modifier set works");
-    check::that(actionFor(ctrlShift, Qt::Key_T) == ACTION_NEW_TAB,
-                "other defaults were untouched");
+
+    /*
+     * Naming an action makes the user's config the whole story for it, so the
+     * default keys for new_tab and paste are gone. Actions the config does not
+     * mention keep theirs.
+     */
+    check::that(actionFor(ctrlShift, Qt::Key_T) == ACTION_NONE,
+                "the default key for a reassigned action was released");
+    check::that(actionFor(ctrlShift, Qt::Key_V) == ACTION_NONE,
+                "likewise for paste");
+    check::that(actionFor(ctrlShift, Qt::Key_W) == ACTION_CLOSE_TAB,
+                "an unmentioned action kept its default key");
+    check::that(actionFor(ctrlShift, Qt::Key_C) == ACTION_COPY,
+                "and so did copy");
     check::that(actionFor(Qt::ControlModifier, Qt::Key_C) == ACTION_NONE,
                 "plain Ctrl+C is still the shell's");
 }
@@ -272,6 +284,133 @@ font:
                 "\"Monospace\" is normalised away to mean the platform default");
 }
 
+void testRebindingAnActionReleasesItsDefaultKeys() {
+    check::section("rebinding an action releases the keys it inherited");
+
+    /*
+     * The contract: the defaults apply except for what the user states. So
+     * naming an action in your own config makes your config the whole story for
+     * that action -- otherwise "set split_vertical to ctrl+shift+w" would leave
+     * the default key working too, and two keys would do the same thing.
+     */
+    loadWithUserConfig(R"(
+mac_os_bindings: true
+keybindings_macos:
+  ctrl+shift+w: split_vertical
+)");
+    const auto cmd = Qt::MetaModifier;
+    const auto cmdShift = Qt::MetaModifier | Qt::ShiftModifier;
+
+    check::that(actionFor(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_W)
+                    == ACTION_SPLIT_VERTICAL,
+                "the new key performs the action");
+    check::that(actionFor(cmdShift, Qt::Key_D) == ACTION_NONE,
+                "the default key for that action was released");
+
+    /* Every other action keeps its defaults. */
+    check::that(actionFor(cmd, Qt::Key_T) == ACTION_NEW_TAB, "cmd+t untouched");
+    check::that(actionFor(cmd, Qt::Key_D) == ACTION_SPLIT_HORIZONTAL,
+                "cmd+d untouched");
+    check::that(actionFor(cmd, Qt::Key_C) == ACTION_COPY, "cmd+c untouched");
+    check::that(actionFor(cmd, Qt::Key_0) == ACTION_RESET_FONT_SIZE,
+                "cmd+0 untouched");
+    check::equal(Config::instance().fontSize(), 13, "the font size is still default");
+    check::equal(Config::instance().windowPadding(), 4, "padding is still default");
+
+    /* Listing several keys for one action keeps all of them. */
+    loadWithUserConfig(R"(
+mac_os_bindings: true
+keybindings_macos:
+  cmd+j: split_vertical
+  cmd+k: split_vertical
+)");
+    check::that(actionFor(cmd, Qt::Key_J) == ACTION_SPLIT_VERTICAL, "first new key works");
+    check::that(actionFor(cmd, Qt::Key_K) == ACTION_SPLIT_VERTICAL, "second new key works");
+    check::that(actionFor(cmdShift, Qt::Key_D) == ACTION_NONE,
+                "the inherited key is still released");
+    /* cmd+k was clear_scrollback by default; reassigning the *key* takes it. */
+    check::that(actionFor(cmd, Qt::Key_K) != ACTION_CLEAR_SCROLLBACK,
+                "reassigning a key overrides what it used to do");
+
+    /* Actions the bundled defaults give several keys keep them all. */
+    loadWithUserConfig("mac_os_bindings: false\n");
+    check::that(actionFor(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_E)
+                    == ACTION_SPLIT_HORIZONTAL,
+                "a default action with two keys keeps the first");
+    check::that(actionFor(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_Backslash)
+                    == ACTION_SPLIT_HORIZONTAL,
+                "and the second");
+}
+
+void testEverythingElseIsPreserved() {
+    check::section("a one-line config changes exactly one thing");
+
+    /* Capture the full default state, then change a single setting and confirm
+     * nothing else moved. */
+    loadWithUserConfig(nullptr);
+    const Config& config = Config::instance();
+
+    const int defaultSize = config.fontSize();
+    const int defaultPadding = config.windowPadding();
+    const int defaultWidth = config.windowWidth();
+    const QColor defaultBackground = config.palette().defaultBackground();
+    const QColor defaultForeground = config.palette().defaultForeground();
+    const QColor defaultRed = config.palette().entry(1);
+    const QStringList defaultFamilies = config.fontFamilies();
+    const bool defaultBlink = config.cursorBlink();
+    const CursorStyle defaultCursor = config.cursorStyle();
+    const int defaultBindingCount = config.keybindingCount();
+
+    loadWithUserConfig("font:\n  size: 17\n");
+
+    check::equal(config.fontSize(), 17, "the one stated setting changed");
+    check::equal(config.windowPadding(), defaultPadding, "padding preserved");
+    check::equal(config.windowWidth(), defaultWidth, "window width preserved");
+    check::that(config.palette().defaultBackground() == defaultBackground,
+                "background preserved");
+    check::that(config.palette().defaultForeground() == defaultForeground,
+                "foreground preserved");
+    check::that(config.palette().entry(1) == defaultRed, "ANSI red preserved");
+    check::that(config.fontFamilies() == defaultFamilies, "font families preserved");
+    check::that(config.cursorBlink() == defaultBlink, "cursor blink preserved");
+    check::that(config.cursorStyle() == defaultCursor, "cursor style preserved");
+    check::equal(config.keybindingCount(), defaultBindingCount,
+                 "every keybinding preserved");
+}
+
+void testCursorFollowsForegroundAcrossLayers() {
+    check::section("the cursor colour follows the foreground across layers");
+
+    /*
+     * The bundled defaults deliberately leave `cursor` unset so that a user who
+     * changes only the foreground does not end up with a cursor in the old
+     * colour -- which on an inverted theme would be close to invisible.
+     */
+    loadWithUserConfig(R"(
+colors:
+  foreground: "#102030"
+)");
+    check::that(Config::instance().palette().cursorColor() == QColor(0x10, 0x20, 0x30),
+                "a foreground-only config moves the cursor with it");
+
+    loadWithUserConfig(R"(
+colors:
+  foreground: "#102030"
+  cursor: "#ff8800"
+)");
+    check::that(Config::instance().palette().cursorColor() == QColor(0xff, 0x88, 0x00),
+                "an explicit cursor colour still wins");
+
+    loadWithUserConfig(R"(
+colors:
+  cursor: "#00ff00"
+)");
+    check::that(Config::instance().palette().cursorColor() == QColor(0, 255, 0),
+                "a cursor-only config works");
+    check::that(Config::instance().palette().defaultForeground() == QColor(0xdc, 0xdc, 0xdc),
+                "and leaves the foreground alone");
+}
+
 void testMalformedFileKeepsDefaults() {
     check::section("a malformed file leaves the defaults intact");
 
@@ -364,6 +503,9 @@ int main(int argc, char** argv) {
     testKeybindingOverlay();
     testMacOsBindingsFlag();
     testFontFamilyForms();
+    testRebindingAnActionReleasesItsDefaultKeys();
+    testEverythingElseIsPreserved();
+    testCursorFollowsForegroundAcrossLayers();
     testMalformedFileKeepsDefaults();
     testValueClamping();
     return check::report("test_config");

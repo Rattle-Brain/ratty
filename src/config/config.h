@@ -24,6 +24,7 @@
 #include <QColor>
 #include <QHash>
 #include <QKeyEvent>
+#include <QSet>
 #include <QStringList>
 #include <QKeySequence>
 #include <QString>
@@ -97,6 +98,9 @@ public:
     /* True on macOS unless the configuration says otherwise. */
     static bool macOsBindingsByDefault();
 
+    /* How many keys are bound in the active set. */
+    int keybindingCount() const { return static_cast<int>(keybindings_.size()); }
+
     Action lookupAction(const QKeySequence& keySequence) const;
     bool isBound(const QKeySequence& keySequence) const;
     QKeySequence keybindingFor(Action action) const;
@@ -167,13 +171,35 @@ private:
      * enclosing class's private members, so no friendship is needed.
      */
     struct Parser;
+    /* One document's worth of keybindings, before it is folded in. */
+    struct BindingLayer;
 
     void applyBuiltInDefaults();
     /* Pick the active keybinding set once every layer has been read. */
     void resolveKeybindings();
-    /* Overlay a YAML file or document; absent keys keep their current value. */
-    bool applyFile(const QString& path);
-    bool applyDocument(const std::string& text, const QString& sourceLabel);
+
+    /*
+     * Overlay a YAML file or document; absent keys keep their current value.
+     *
+     * `userLayer` marks the user's own configuration, which is treated as
+     * authoritative for any action it mentions -- see mergeBindings().
+     */
+    bool applyFile(const QString& path, bool userLayer);
+    bool applyDocument(const std::string& text, const QString& sourceLabel,
+                       bool userLayer);
+
+    /*
+     * Fold one document's bindings into an accumulated set.
+     *
+     * When `ownsAssignedActions` is set, every action the layer assigns is
+     * considered *fully* described by that layer, so the keys inherited for it
+     * are dropped first. That is what makes "rebind split_vertical to
+     * ctrl+shift+w" release the default key rather than leaving two keys doing
+     * the same thing. The bundled defaults are merged without it, so they can
+     * legitimately offer several keys for one action.
+     */
+    static void mergeBindings(QHash<QKeySequence, Action>& target,
+                              const BindingLayer& layer, bool ownsAssignedActions);
 
     static QKeySequence parseKeySequence(const QString& text);
 
@@ -196,6 +222,11 @@ private:
     /* nullopt means "decide from the platform". */
     std::optional<bool> macOsBindingsOverride_;
     bool macOsBindings_ = false;
+
+    /* Which sets the user's own configuration wrote to, so that editing the
+     * inactive one can be reported rather than silently doing nothing. */
+    bool userTouchedDefaultBindings_ = false;
+    bool userTouchedMacOsBindings_ = false;
 
     Palette palette_;
     QStringList fontFamilies_;
