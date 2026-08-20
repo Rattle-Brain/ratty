@@ -9,6 +9,24 @@ cmake_install.cmake
 ratty*
 compile_commands.json
 
+# CMake / Qt generated output (the project can be configured in-source)
+*_autogen/
+CTestTestfile.cmake
+DartConfiguration.tcl
+Testing/
+install_manifest.txt
+Makefile
+
+# Test binaries and the shared test library
+tests/test_terminal
+tests/test_input
+tests/test_splits
+tests/test_render
+tests/test_config
+tests/test_tabbar
+tests/test_splits_gl
+*.a
+
 # Prerequisites
 *.d
 
