@@ -104,6 +104,7 @@ void Screen::resize(int rows, int cols, const Pen& pen) {
     cursorRow_ = clampInt(oldCursorRow - rowShift, 0, rows_ - 1);
     cursorCol_ = clampInt(cursorCol_, 0, cols_ - 1);
     pendingWrap_ = false;
+    lastPrintCol_ = -1;
     resetScrollRegion();
     touch();
 }
@@ -115,6 +116,7 @@ void Screen::reset(const Pen& pen) {
     cursorRow_ = 0;
     cursorCol_ = 0;
     pendingWrap_ = false;
+    lastPrintCol_ = -1;
     cursorVisible_ = true;
     autoWrap_ = true;
     saved_ = SavedCursor{};
@@ -128,6 +130,8 @@ void Screen::moveTo(int row, int col) {
     cursorRow_ = clampInt(row, 0, rows_ - 1);
     cursorCol_ = clampInt(col, 0, cols_ - 1);
     pendingWrap_ = false;
+    /* A grapheme cluster cannot span a cursor movement. */
+    lastPrintCol_ = -1;
 }
 
 void Screen::moveBy(int deltaRow, int deltaCol) {
@@ -156,10 +160,10 @@ void Screen::restoreCursor() {
 
 /* ------------------------------------------------------------------ text */
 
-void Screen::print(char32_t ch, const Pen& pen, int charWidth) {
+void Screen::print(char32_t ch, const Pen& pen, int charWidth, uint16_t extraFlags) {
     if (charWidth <= 0) {
-        /* Zero-width (combining) marks are not represented yet; dropping them
-         * is preferable to letting them consume a column. */
+        /* Zero-width marks are handled as cluster continuations by the caller;
+         * anything still reporting zero here must not consume a column. */
         return;
     }
 
@@ -176,18 +180,24 @@ void Screen::print(char32_t ch, const Pen& pen, int charWidth) {
         lineFeed(pen);
     }
 
+    const uint16_t flags = static_cast<uint16_t>(pen.flags | extraFlags);
+
     Cell& cell = cellRef(cursorRow_, cursorCol_);
     cell.ch = ch;
     cell.fg = pen.fg;
     cell.bg = pen.bg;
-    cell.flags = pen.flags;
+    cell.flags = flags;
+
+    lastPrintRow_ = cursorRow_;
+    lastPrintCol_ = cursorCol_;
+    lastPrintWidth_ = charWidth;
 
     if (charWidth == 2 && cursorCol_ + 1 < cols_) {
         Cell& trailer = cellRef(cursorRow_, cursorCol_ + 1);
         trailer.ch = U' ';
         trailer.fg = pen.fg;
         trailer.bg = pen.bg;
-        trailer.flags = static_cast<uint16_t>(pen.flags | CellFlagWideTrailer);
+        trailer.flags = static_cast<uint16_t>(flags | CellFlagWideTrailer);
     }
 
     const int nextCol = cursorCol_ + charWidth;
@@ -201,13 +211,78 @@ void Screen::print(char32_t ch, const Pen& pen, int charWidth) {
     touch();
 }
 
+char32_t Screen::lastPrintedChar() const {
+    if (lastPrintCol_ < 0) return 0;
+    return at(lastPrintRow_, lastPrintCol_).ch;
+}
+
+bool Screen::adjustLastCell(int charWidth, uint16_t setFlags, uint16_t clearFlags,
+                            const Pen& pen) {
+    if (lastPrintCol_ < 0 || lastPrintRow_ < 0) return false;
+    if (lastPrintRow_ >= rows_ || lastPrintCol_ >= cols_) return false;
+
+    const int row = lastPrintRow_;
+    const int col = lastPrintCol_;
+    const int oldWidth = lastPrintWidth_;
+    const int newWidth = (charWidth == 2) ? 2 : 1;
+
+    /* Widening past the right margin is not possible; keep the narrow form
+     * rather than wrapping a character that has already been placed. */
+    if (newWidth == 2 && col + 1 >= cols_) return false;
+
+    Cell& cell = cellRef(row, col);
+    cell.flags = static_cast<uint16_t>((cell.flags | setFlags) & ~clearFlags);
+
+    if (newWidth == oldWidth) {
+        touch();
+        return true;
+    }
+
+    if (newWidth == 2) {
+        /* Claim the following column as the trailing half and push the cursor
+         * one further, since the cell now covers two columns. */
+        Cell& trailer = cellRef(row, col + 1);
+        trailer.ch = U' ';
+        trailer.fg = cell.fg;
+        trailer.bg = cell.bg;
+        trailer.flags = static_cast<uint16_t>(cell.flags | CellFlagWideTrailer);
+
+        if (!pendingWrap_ && cursorRow_ == row && cursorCol_ == col + 1) {
+            if (col + 2 >= cols_) {
+                cursorCol_ = cols_ - 1;
+                pendingWrap_ = autoWrap_;
+            } else {
+                cursorCol_ = col + 2;
+            }
+        }
+    } else {
+        /* Release the trailing half and pull the cursor back onto it. */
+        if (col + 1 < cols_) {
+            Cell& trailer = cellRef(row, col + 1);
+            if (trailer.hasFlag(CellFlagWideTrailer)) {
+                trailer.erase(pen);
+            }
+        }
+        if (cursorRow_ == row && (cursorCol_ == col + 2 || pendingWrap_)) {
+            cursorCol_ = col + 1;
+            pendingWrap_ = false;
+        }
+    }
+
+    lastPrintWidth_ = newWidth;
+    touch();
+    return true;
+}
+
 void Screen::carriageReturn() {
     cursorCol_ = 0;
     pendingWrap_ = false;
+    lastPrintCol_ = -1;
 }
 
 void Screen::lineFeed(const Pen& pen) {
     pendingWrap_ = false;
+    lastPrintCol_ = -1;
     if (cursorRow_ == scrollBottom_) {
         scrollUp(1, pen);
     } else if (cursorRow_ < rows_ - 1) {
@@ -217,6 +292,7 @@ void Screen::lineFeed(const Pen& pen) {
 
 void Screen::reverseIndex(const Pen& pen) {
     pendingWrap_ = false;
+    lastPrintCol_ = -1;
     if (cursorRow_ == scrollTop_) {
         scrollDown(1, pen);
     } else if (cursorRow_ > 0) {
@@ -226,6 +302,7 @@ void Screen::reverseIndex(const Pen& pen) {
 
 void Screen::backspace() {
     pendingWrap_ = false;
+    lastPrintCol_ = -1;
     if (cursorCol_ > 0) {
         --cursorCol_;
     }
@@ -233,6 +310,7 @@ void Screen::backspace() {
 
 void Screen::tab(int count) {
     pendingWrap_ = false;
+    lastPrintCol_ = -1;
     for (int i = 0; i < std::max(1, count); ++i) {
         const int next = ((cursorCol_ / kTabWidth) + 1) * kTabWidth;
         cursorCol_ = std::min(next, cols_ - 1);
@@ -242,6 +320,7 @@ void Screen::tab(int count) {
 
 void Screen::backTab(int count) {
     pendingWrap_ = false;
+    lastPrintCol_ = -1;
     for (int i = 0; i < std::max(1, count); ++i) {
         if (cursorCol_ == 0) break;
         cursorCol_ = ((cursorCol_ - 1) / kTabWidth) * kTabWidth;
@@ -268,6 +347,7 @@ void Screen::eraseInDisplay(int mode, const Pen& pen) {
         return;
     }
     pendingWrap_ = false;
+    lastPrintCol_ = -1;
     touch();
 }
 
@@ -279,6 +359,7 @@ void Screen::eraseInLine(int mode, const Pen& pen) {
     default: return;
     }
     pendingWrap_ = false;
+    lastPrintCol_ = -1;
     touch();
 }
 
@@ -286,6 +367,7 @@ void Screen::eraseChars(int count, const Pen& pen) {
     const int n = std::max(1, count);
     clearRowRange(cursorCol_, cursorCol_ + n - 1, cursorRow_, pen);
     pendingWrap_ = false;
+    lastPrintCol_ = -1;
     touch();
 }
 
@@ -300,6 +382,7 @@ void Screen::insertChars(int count, const Pen& pen) {
     }
     clearRowRange(cursorCol_, cursorCol_ + n - 1, cursorRow_, pen);
     pendingWrap_ = false;
+    lastPrintCol_ = -1;
     touch();
 }
 
@@ -312,6 +395,7 @@ void Screen::deleteChars(int count, const Pen& pen) {
     }
     clearRowRange(cols_ - n, cols_ - 1, cursorRow_, pen);
     pendingWrap_ = false;
+    lastPrintCol_ = -1;
     touch();
 }
 
@@ -327,6 +411,7 @@ void Screen::insertLines(int count, const Pen& pen) {
     for (int r = cursorRow_; r < cursorRow_ + n; ++r) clearRow(r, pen);
 
     pendingWrap_ = false;
+    lastPrintCol_ = -1;
     touch();
 }
 
@@ -340,6 +425,7 @@ void Screen::deleteLines(int count, const Pen& pen) {
     for (int r = scrollBottom_ - n + 1; r <= scrollBottom_; ++r) clearRow(r, pen);
 
     pendingWrap_ = false;
+    lastPrintCol_ = -1;
     touch();
 }
 

@@ -165,9 +165,23 @@ FT_Face FontManager::FaceSet::faceFor(FontStyle style) const {
     return styles[FontStyleRegular];
 }
 
-bool FontManager::FaceSet::hasCodepoint(char32_t codepoint) const {
+bool FontManager::FaceSet::hasRenderableGlyph(char32_t codepoint) const {
     FT_Face face = faceFor(FontStyleRegular);
-    return face && FT_Get_Char_Index(face, codepoint) != 0;
+    if (!face) return false;
+
+    const FT_UInt glyphIndex = FT_Get_Char_Index(face, codepoint);
+    if (glyphIndex == 0) return false;
+
+    if (isColor) {
+        if (FT_Load_Glyph(face, glyphIndex, FT_LOAD_COLOR) != 0) return false;
+        if (face->glyph->format != FT_GLYPH_FORMAT_BITMAP) return true;
+        return face->glyph->bitmap.width > 0 && face->glyph->bitmap.rows > 0;
+    }
+
+    if (FT_Load_Glyph(face, glyphIndex, FT_LOAD_NO_SCALE | FT_LOAD_NO_BITMAP) != 0) {
+        return false;
+    }
+    return face->glyph->outline.n_points > 0 || face->glyph->metrics.width > 0;
 }
 
 /* ---------------------------------------------------------- lifecycle */
@@ -563,21 +577,35 @@ void FontManager::loadConfiguredFallbacks() {
      * supplies box-drawing, arrows and geometric shapes -- the characters a
      * patched icon font most often lacks.
      */
-    std::vector<std::string> families = fallbackPreferences_;
-    families.push_back(defaultMonospaceFamily());
+    /*
+     * `allowSubstitution` is only for generic aliases like "monospace", which
+     * have no exact family to match. It must stay off for real family names:
+     * fontconfig answers *something* for a name it does not know, so allowing
+     * substitution meant every emoji font that was not installed dragged in an
+     * arbitrary unrelated font as a fallback.
+     */
+    struct Candidate {
+        std::string family;
+        bool allowSubstitution;
+    };
+
+    std::vector<Candidate> candidates;
+    for (const std::string& family : fallbackPreferences_) {
+        candidates.push_back({family, false});
+    }
+    candidates.push_back({defaultMonospaceFamily(), true});
     for (const char* emoji : kEmojiFamilies) {
-        families.push_back(emoji);
+        candidates.push_back({emoji, false});
     }
 
-    for (const std::string& family : families) {
+    for (const Candidate& candidate : candidates) {
+        const std::string& family = candidate.family;
         if (family.empty()) continue;
         /* Already the primary font, so it would add nothing. */
         if (familyMatches(family, familyName_)) continue;
 
         FontFile file = resolveExactFamily(family, FontStyleRegular);
-        if (!file.isValid()) {
-            /* "monospace" and friends are aliases, not families, so an exact
-             * match is impossible; take fontconfig's answer instead. */
+        if (!file.isValid() && candidate.allowSubstitution) {
             file = queryFontconfig(family, FontStyleRegular,
                                    QStringLiteral(":spacing=100"));
         }
@@ -623,7 +651,7 @@ const FontManager::FaceSet* FontManager::adoptFallback(const FontFile& file,
     if (!loadFaceInto(*faces, file, FontStyleRegular)) return nullptr;
 
     /* The whole point of discovery is coverage; verify it rather than trust it. */
-    if (!faces->hasCodepoint(codepoint)) return nullptr;
+    if (!faces->hasRenderableGlyph(codepoint)) return nullptr;
 
     for (const auto& existing : fallbacks_) {
         if (existing->family == faces->family) return existing.get();
@@ -638,44 +666,74 @@ const FontManager::FaceSet* FontManager::adoptFallback(const FontFile& file,
     return result;
 }
 
-const FontManager::FaceSet* FontManager::resolveFaceSet(char32_t codepoint) {
-    if (const auto it = resolution_.find(codepoint); it != resolution_.end()) {
+const FontManager::FaceSet* FontManager::resolveFaceSet(char32_t codepoint,
+                                                        GlyphPresentation presentation) {
+    const uint64_t key = resolutionKey(codepoint, presentation);
+    if (const auto it = resolution_.find(key); it != resolution_.end()) {
         return it->second;
     }
 
-    const FaceSet* chosen = nullptr;
+    loadConfiguredFallbacks();
 
-    if (primary_.hasCodepoint(codepoint)) {
-        chosen = &primary_;
-    } else {
-        loadConfiguredFallbacks();
+    /*
+     * Presentation decides the search *order*, not a hard filter: if no font of
+     * the preferred kind has the glyph, one of the other kind still beats a
+     * .notdef box.
+     */
+    const bool wantColor = (presentation == GlyphPresentation::Emoji);
+    const bool wantMono = (presentation == GlyphPresentation::Text);
+    const bool presentationMatters = wantColor || wantMono;
 
+    auto kindMatches = [&](const FaceSet& faces) {
+        if (wantColor) return faces.isColor;
+        if (wantMono) return !faces.isColor;
+        return true;
+    };
+
+    auto search = [&](bool strict) -> const FaceSet* {
+        /*
+         * A colour request skips the primary font: the primary is the
+         * monospaced text font, and its flat glyph is exactly what the selector
+         * asked us not to use.
+         */
+        if (!(strict && wantColor)
+            && (!strict || kindMatches(primary_))
+            && primary_.hasRenderableGlyph(codepoint)) {
+            return &primary_;
+        }
         for (const auto& fallback : fallbacks_) {
-            if (fallback->hasCodepoint(codepoint)) {
-                chosen = fallback.get();
-                break;
-            }
+            if (strict && !kindMatches(*fallback)) continue;
+            if (fallback->hasRenderableGlyph(codepoint)) return fallback.get();
         }
 
-        /* Last resort: ask fontconfig which font covers this code point. */
-        if (!chosen) {
-            for (const FontFile& file : discoverFontsFor(codepoint)) {
-                if (const FaceSet* adopted = adoptFallback(file, codepoint)) {
-                    chosen = adopted;
-                    break;
-                }
-            }
+        /*
+         * Nothing loaded fits, so ask fontconfig. Doing this *inside* the strict
+         * pass matters: no monospaced font on a stock macOS carries U+26A0, so a
+         * text-presentation request would otherwise settle for the colour emoji
+         * -- precisely what U+FE0E asks us not to do.
+         */
+        for (const FontFile& file : discoverFontsFor(codepoint)) {
+            const FaceSet* adopted = adoptFallback(file, codepoint);
+            if (!adopted) continue;
+            if (strict && !kindMatches(*adopted)) continue;
+            return adopted;
         }
-    }
+        return nullptr;
+    };
+
+    const FaceSet* chosen = nullptr;
+    if (presentationMatters) chosen = search(/*strict=*/true);
+    if (!chosen) chosen = search(/*strict=*/false);
 
     /* Cache the miss too: discovery shells out, and a code point no font has
      * would otherwise pay that cost on every repaint. */
-    resolution_.emplace(codepoint, chosen);
+    resolution_.emplace(key, chosen);
     return chosen;
 }
 
-std::string FontManager::familyForCodepoint(char32_t codepoint, FontStyle) {
-    const FaceSet* faces = resolveFaceSet(codepoint);
+std::string FontManager::familyForCodepoint(char32_t codepoint, FontStyle,
+                                            GlyphPresentation presentation) {
+    const FaceSet* faces = resolveFaceSet(codepoint, presentation);
     return faces ? faces->family : std::string();
 }
 
@@ -786,7 +844,8 @@ bool FontManager::rasterizeFrom(const FaceSet& faces, FontStyle style,
     return true;
 }
 
-bool FontManager::rasterize(char32_t codepoint, FontStyle style, GlyphBitmap& out) {
+bool FontManager::rasterize(char32_t codepoint, FontStyle style, GlyphBitmap& out,
+                            GlyphPresentation presentation) {
     out = GlyphBitmap{};
     if (!ftLibrary_ || !primary_.styles[FontStyleRegular]) return false;
 
@@ -808,7 +867,7 @@ bool FontManager::rasterize(char32_t codepoint, FontStyle style, GlyphBitmap& ou
         }
     }
 
-    const FaceSet* faces = resolveFaceSet(codepoint);
+    const FaceSet* faces = resolveFaceSet(codepoint, presentation);
 
     if (faces) {
         FT_Face face = faces->faceFor(style);

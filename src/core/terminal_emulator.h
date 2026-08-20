@@ -85,6 +85,23 @@ public:
     void oscDispatch(int command, const std::u32string& data) override;
 
 private:
+    /*
+     * Grapheme clustering for emoji sequences. Terminals receive a cluster one
+     * code point at a time, and only the whole sequence says how wide the cell
+     * is and whether it is a colour emoji:
+     *
+     *   U+26A0 U+FE0F               warning sign -> double-width colour emoji
+     *   U+1F44D U+1F3FD             thumbs up + skin tone, still one cell
+     *   U+1F468 U+200D U+1F4BB      man + joiner + laptop, still one cell
+     *   U+1F1EA U+1F1F8             two regional indicators -> one flag
+     *   U+0031 U+FE0F U+20E3        keycap 1
+     *
+     * Returns true when `ch` continued the previous cell instead of starting a
+     * new one.
+     */
+    bool continueCluster(char32_t ch);
+    void beginCluster(char32_t ch);
+
     void applySgr(const CsiSequence& seq);
     /* Parses one SGR extended-colour spec starting at `index`; returns the
      * number of parameters consumed. */
@@ -117,6 +134,16 @@ private:
     VTParser parser_;
     Utf8Decoder decoder_;
     std::vector<char32_t> scratch_;
+
+    /*
+     * Cluster state. `awaitingJoinedBase_` is set by a zero-width joiner: the
+     * next base code point belongs to the cell already on screen rather than to
+     * a new one, which is what keeps a ZWJ sequence in two columns instead of
+     * four.
+     */
+    bool awaitingJoinedBase_ = false;
+    bool clusterIsEmoji_ = false;
+    int regionalIndicatorCount_ = 0;
 
     bool alternateActive_ = false;
     bool bracketedPaste_ = false;

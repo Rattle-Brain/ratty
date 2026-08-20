@@ -109,7 +109,7 @@ easy to violate again:
 | `core/terminal_session.h/.cpp` | Owns the pty, the socket notifier and the byte pump. Emits Qt signals. |
 | `core/pty.h/.cpp` | `forkpty` wrapper: shell lookup, environment, resize, teardown. |
 | `core/utf8.h` | Incremental UTF-8 decoder (survives chunk boundaries) and encoder. |
-| `core/char_width.h` | `charWidth()` — 0 / 1 / 2 columns per code point. |
+| `core/unicode.h` | Column widths, and the emoji properties that decide presentation. |
 | `core/cursor.h` | `CursorStyle`, shared by config and renderer. |
 | `render/font_manager.h/.cpp` | FreeType faces per style, plus the fallback chain; rasterizes at an explicit pixel size. |
 | `render/box_drawing.h/.cpp` | Geometric line and block glyphs (U+2500–U+259F). |
@@ -327,7 +327,48 @@ the twelve action callbacks the emulator used to register.
 old code folded CR into LF unconditionally, which hid missing-CR bugs and broke
 plain index movement.
 
-### 4.4.1 Colours are owned per session
+### 4.4.1 Grapheme clusters and emoji presentation
+
+A terminal receives a grapheme cluster one code point at a time, and it is the
+*whole* sequence that says how wide the cell is and whether it holds a colour
+emoji. `TerminalEmulator::continueCluster()` decides, for each incoming code
+point, whether it starts a new cell or retrofits the previous one.
+
+Two things make this necessary.
+
+**Dual-form code points.** U+26A0 is a narrow monochrome warning sign; U+26A0
+followed by U+FE0F is a double-width colour emoji; followed by U+FE0E it is
+forced back to text. The selector arrives *after* the character has already been
+placed, so `Screen::adjustLastCell()` exists to widen or narrow a cell after the
+fact, moving the cursor and the wide-trailer with it. Selectors used to be
+dropped as zero-width marks, which made the two forms indistinguishable.
+
+A selector is only honoured on an Extended_Pictographic base
+(`isExtendedPictographic`), so a stray U+FE0F after a letter cannot widen it into
+two columns.
+
+**Multi-code-point sequences.** These are all one cluster and one double-width
+cell:
+
+| Sequence | Example |
+|---|---|
+| zero-width joiner | `U+1F468 U+200D U+1F4BB` — man technologist |
+| skin-tone modifier | `U+1F44D U+1F3FD` |
+| regional indicator pair | `U+1F1EA U+1F1F8` — a flag |
+| keycap | `U+0031 U+FE0F U+20E3` |
+| tag sequence | `U+1F3F4` + six tag characters — a subdivision flag |
+
+Printing one cell per code point made a joined emoji sprawl across four or eight
+columns and left the cursor in the wrong place. A control character or any cursor
+movement ends the cluster, since one cannot span either.
+
+The cell keeps only its *base* code point; the continuations are consumed. That
+is a deliberate limit: rendering `👨‍💻` as its single combined glyph requires
+GSUB ligature substitution — text shaping — and FreeType alone cannot do it. The
+base emoji is drawn instead, in the right number of columns. See
+[§10](#10-known-gaps).
+
+### 4.4.2 Colours are owned per session
 
 `TerminalEmulator` holds two palettes: `basePalette_`, seeded from `Config` when
 the session starts, and `palette_`, the live one. `OSC 4/10/11/12` mutate the
@@ -543,6 +584,30 @@ cells — sizing them from the line height alone made them bleed into the next r
 FreeType hands back *premultiplied* BGRA. `rasterizeFrom()` un-premultiplies and
 swaps to RGBA so colour and coverage glyphs share one straight-alpha blend mode,
 and marks the result with `GlyphBitmap::isColor`.
+
+#### Presentation-aware resolution
+
+`GlyphPresentation` (`Auto` / `Text` / `Emoji`) is threaded from the cell's
+`CellFlagEmojiPresentation` through `drawGlyph()` and the atlas key down to
+`resolveFaceSet()`, because the same code point can legitimately be cached twice
+— once monochrome, once in colour.
+
+Presentation sets the search *order*, not a hard filter: if no font of the
+preferred kind has the glyph, one of the other kind still beats a `.notdef` box.
+Two details earn their keep:
+
+- A colour request **skips the primary font**. The primary is the monospaced text
+  font, and its flat glyph is exactly what the selector asked us not to use.
+- fontconfig discovery runs **inside** the strict pass. No monospaced font on a
+  stock macOS carries U+26A0, so a text-presentation request would otherwise
+  settle for the colour emoji — precisely what U+FE0E asks us not to do.
+
+`FaceSet::hasRenderableGlyph()` requires the face to actually *draw* something,
+not merely to have a cmap entry. Colour emoji fonts map regional indicators and
+keycap digits to **empty** glyphs, because the real flag or keycap is only
+reachable by shaping the whole sequence; choosing such a face would render
+nothing at all. With the check, a keycap falls through to the plain digit and a
+flag to a visible box.
 
 Rasterization uses `FT_LOAD_TARGET_LIGHT` with `FT_RENDER_MODE_LIGHT`: light
 hinting snaps stems vertically without touching horizontal metrics, which is what
@@ -960,10 +1025,10 @@ cd build && ctest --output-on-failure
 
 | Suite | Covers |
 |---|---|
-| `test_terminal` | deferred wrap, the zsh prompt artifact, OSC termination, CSI parsing, scrolling regions, the alternate buffer, SGR colours, erase semantics, UTF-8 chunk splitting, wide characters, resize, device reports |
+| `test_terminal` | deferred wrap, the zsh prompt artifact, OSC termination and colour control, CSI parsing, scrolling regions, the alternate buffer, SGR colours, erase semantics, emoji presentation selectors, grapheme clustering, UTF-8 chunk splitting, wide characters, resize, device reports |
 | `test_input` | config keybindings resolving against real `QKeyEvent`s, shell control keys staying unbound, VT input encoding |
 | `test_splits` | pane tree surgery: nothing destroyed that should survive, nothing left invisible, directional navigation |
-| `test_render` | grid padding maths, box-drawing tiling, fallback coverage of the characters a TUI draws, font preference order, and the guarantee that no resolution path yields a proportional font |
+| `test_render` | grid padding maths, box-drawing tiling, fallback coverage of the characters a TUI draws, text-vs-emoji font selection, font preference order, and the guarantee that no resolution path yields a proportional font |
 
 They run under `QT_QPA_PLATFORM=offscreen` and need no GPU. `tests/check.h` is a
 three-function harness, not a framework.
@@ -993,22 +1058,26 @@ grid→string conversion that handles wide characters and trailing blanks.
 **No mouse reporting.** Modes 1000–1006 are recognised and ignored, so
 applications that probe for mouse support correctly conclude there is none.
 
-**No combining marks.** `Cell` stores a single `char32_t`, so zero-width marks
-are dropped rather than composed. Fixing this properly means a side table of
-grapheme extensions keyed by cell.
+**Grapheme clusters keep only their base code point.** `Cell` stores a single
+`char32_t`, so combining marks and emoji continuations are consumed rather than
+retained. Widths and cursor movement are correct
+([§4.4.1](#441-grapheme-clusters-and-emoji-presentation)), but the exact sequence
+is not recoverable — which will matter once text selection exists. The fix is a
+side table of cluster extensions keyed by cell.
+
+**No text shaping, so joined emoji show their base.** Rendering `👨‍💻` as one
+combined glyph needs GSUB ligature substitution, which FreeType alone cannot do;
+the same goes for flags, keycaps and skin-tone variants. Each occupies the right
+two columns and draws its base emoji. HarfBuzz would fix this and ligatures at
+once.
 
 **No ligatures or complex shaping.** Rendering is glyph-per-cell with no
 HarfBuzz, which is the right default for a terminal grid but rules out
 programming ligatures.
 
-**Emoji presentation is not negotiated.** A code point with both a text and an
-emoji form (U+26A0 for instance) always resolves to whichever font the chain
-reaches first, and the variation selectors U+FE0E/U+FE0F that would choose
-between them are dropped along with all other zero-width marks.
-
-**`charWidth()` is a hand-maintained table.** It covers the East Asian and emoji
-blocks that matter, but it is not generated from `UnicodeData.txt` and will drift
-from newer Unicode revisions.
+**`unicode.h` tables are hand-maintained.** `Emoji_Presentation` and
+`Extended_Pictographic` are transcribed range tables, not generated from
+`emoji-data.txt`, so they will drift from newer Unicode revisions.
 
 **No gamma-correct blending.** Glyph coverage is blended in sRGB space, which
 makes light-on-dark text slightly thinner than a gamma-aware blend would. A

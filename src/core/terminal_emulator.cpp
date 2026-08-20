@@ -3,7 +3,7 @@
  */
 
 #include "terminal_emulator.h"
-#include "char_width.h"
+#include "unicode.h"
 #include <QString>
 #include <QStringList>
 #include <algorithm>
@@ -48,6 +48,9 @@ void TerminalEmulator::reset() {
     alternate_.reset(pen_);
     active_ = &primary_;
     alternateActive_ = false;
+    awaitingJoinedBase_ = false;
+    clusterIsEmoji_ = false;
+    regionalIndicatorCount_ = 0;
     bracketedPaste_ = false;
     applicationCursorKeys_ = false;
     newlineMode_ = false;
@@ -62,10 +65,123 @@ void TerminalEmulator::sendReply(const std::string& text) {
 /* ------------------------------------------------------------ VTHandler */
 
 void TerminalEmulator::print(char32_t ch) {
-    active_->print(ch, pen_, charWidth(ch));
+    if (continueCluster(ch)) return;
+    beginCluster(ch);
+}
+
+void TerminalEmulator::beginCluster(char32_t ch) {
+    const int width = charWidth(ch);
+    if (width <= 0) {
+        /* A lone combining mark with nothing to attach to. Dropping it is
+         * preferable to letting it consume a column. */
+        return;
+    }
+
+    clusterIsEmoji_ = hasEmojiPresentationByDefault(ch);
+    regionalIndicatorCount_ = isRegionalIndicator(ch) ? 1 : 0;
+    awaitingJoinedBase_ = false;
+
+    const uint16_t flags = clusterIsEmoji_
+                               ? static_cast<uint16_t>(CellFlagEmojiPresentation)
+                               : uint16_t{0};
+
+    active_->print(ch, pen_, presentationWidth(clusterIsEmoji_, width), flags);
+}
+
+bool TerminalEmulator::continueCluster(char32_t ch) {
+    /* A joiner arrived last time, so this base code point joins that cell. */
+    if (awaitingJoinedBase_) {
+        awaitingJoinedBase_ = false;
+        if (active_->hasAdjustableCell()) {
+            /* A joined sequence is always an emoji, and always double-width. */
+            clusterIsEmoji_ = true;
+            active_->adjustLastCell(2, CellFlagEmojiPresentation, 0, pen_);
+            return true;
+        }
+        return false;   // nothing to join; treat it as a fresh cluster
+    }
+
+    if (!active_->hasAdjustableCell()) {
+        /* Nothing to extend. A stray continuation code point is dropped. */
+        return isZeroWidthJoiner(ch) || isVariationSelector(ch)
+            || isTagCharacter(ch) || isEnclosingKeycap(ch)
+            || (isZeroWidth(ch) && !isRegionalIndicator(ch));
+    }
+
+    if (isEmojiPresentationSelector(ch)) {
+        /*
+         * U+FE0F. Only meaningful on a pictograph: after ordinary text it must
+         * not widen a letter into two columns.
+         */
+        if (!isExtendedPictographic(active_->lastPrintedChar())) return true;
+        clusterIsEmoji_ = true;
+        active_->adjustLastCell(2, CellFlagEmojiPresentation, 0, pen_);
+        return true;
+    }
+
+    if (isTextPresentationSelector(ch)) {
+        /* U+FE0E: force the monochrome, single-column form. */
+        clusterIsEmoji_ = false;
+        active_->adjustLastCell(charWidth(active_->lastPrintedChar()) == 2
+                                    && !hasEmojiPresentationByDefault(active_->lastPrintedChar())
+                                        ? 2 : 1,
+                                0, CellFlagEmojiPresentation, pen_);
+        return true;
+    }
+
+    if (isZeroWidthJoiner(ch)) {
+        awaitingJoinedBase_ = true;
+        return true;
+    }
+
+    if (isEmojiModifier(ch)) {
+        /* A skin-tone modifier belongs to the emoji before it. */
+        clusterIsEmoji_ = true;
+        active_->adjustLastCell(2, CellFlagEmojiPresentation, 0, pen_);
+        return true;
+    }
+
+    if (isTagCharacter(ch)) {
+        /* Tag sequences spell out a subdivision after a base flag; the tags
+         * themselves are never rendered. */
+        return true;
+    }
+
+    if (isEnclosingKeycap(ch)) {
+        /* Completes a keycap sequence, which is presented as an emoji. */
+        clusterIsEmoji_ = true;
+        active_->adjustLastCell(2, CellFlagEmojiPresentation, 0, pen_);
+        return true;
+    }
+
+    if (isRegionalIndicator(ch)) {
+        /* A second indicator completes a flag; a third starts a new pair. */
+        if (regionalIndicatorCount_ == 1) {
+            regionalIndicatorCount_ = 2;
+            clusterIsEmoji_ = true;
+            active_->adjustLastCell(2, CellFlagEmojiPresentation, 0, pen_);
+            return true;
+        }
+        return false;
+    }
+
+    if (isZeroWidth(ch)) {
+        /*
+         * A combining mark. It changes nothing about the cell's geometry, and
+         * composing it into the base glyph would need text shaping, so it is
+         * absorbed rather than given a column of its own.
+         */
+        return true;
+    }
+
+    return false;   // an ordinary character: it starts a new cluster
 }
 
 void TerminalEmulator::control(uint8_t code) {
+    /* A control character always ends the current grapheme cluster. */
+    awaitingJoinedBase_ = false;
+    regionalIndicatorCount_ = 0;
+
     switch (code) {
     case C0_BEL:
         if (bellSink_) bellSink_();

@@ -9,6 +9,7 @@
 #include "core/cursor.h"
 #include "core/palette.h"
 #include "core/terminal_emulator.h"
+#include "core/utf8.h"
 #include <string>
 
 namespace {
@@ -361,6 +362,179 @@ void testCursorStyle() {
     check::that(!term.hasRequestedCursorStyle(), "CSI 5 q (no intermediate) is not DECSCUSR");
 }
 
+/* UTF-8 encode a code point sequence, as it would arrive from a pty. */
+std::string encode(std::initializer_list<char32_t> codepoints) {
+    return utf8Encode(std::u32string(codepoints.begin(), codepoints.end()));
+}
+
+/* Columns the first cluster on row 0 occupies. */
+int clusterWidth(const Screen& screen) {
+    if (screen.at(0, 0).isBlank() && !screen.at(0, 0).hasFlag(CellFlagWideTrailer)) return 0;
+    return screen.at(0, 1).hasFlag(CellFlagWideTrailer) ? 2 : 1;
+}
+
+void testEmojiPresentationSelectors() {
+    check::section("emoji presentation selectors (U+FE0E / U+FE0F)");
+
+    /*
+     * U+26A0 is dual-form: a narrow monochrome warning sign by default, a
+     * double-width colour emoji once U+FE0F asks for it. Dropping the selector
+     * -- as the parser used to -- makes the two indistinguishable.
+     */
+    {
+        TerminalEmulator term(2, 20);
+        feed(term, encode({0x26A0}));
+        check::that(!term.screen().at(0, 0).isEmojiPresentation(),
+                    "U+26A0 alone is text presentation");
+        check::equal(clusterWidth(term.screen()), 1, "and occupies one column");
+        check::equal(term.screen().cursorCol(), 1, "cursor advanced one column");
+    }
+    {
+        TerminalEmulator term(2, 20);
+        feed(term, encode({0x26A0, 0xFE0F}));
+        check::that(term.screen().at(0, 0).isEmojiPresentation(),
+                    "U+26A0 U+FE0F is emoji presentation");
+        check::equal(clusterWidth(term.screen()), 2, "and widens to two columns");
+        check::equal(term.screen().cursorCol(), 2, "cursor advanced two columns");
+        check::equal(static_cast<unsigned>(term.screen().at(0, 0).ch), 0x26A0u,
+                     "the base code point is unchanged");
+    }
+    {
+        TerminalEmulator term(2, 20);
+        feed(term, encode({0x26A0, 0xFE0E}));
+        check::that(!term.screen().at(0, 0).isEmojiPresentation(),
+                    "U+26A0 U+FE0E forces text presentation");
+        check::equal(clusterWidth(term.screen()), 1, "and stays one column");
+    }
+
+    /* A default-emoji code point can be forced back to text and narrowed. */
+    {
+        TerminalEmulator term(2, 20);
+        feed(term, encode({0x1F600}));
+        check::that(term.screen().at(0, 0).isEmojiPresentation(),
+                    "U+1F600 is emoji by default");
+        check::equal(clusterWidth(term.screen()), 2, "and is double-width");
+    }
+    {
+        TerminalEmulator term(2, 20);
+        feed(term, encode({0x1F600, 0xFE0E}));
+        check::that(!term.screen().at(0, 0).isEmojiPresentation(),
+                    "U+1F600 U+FE0E asks for the text form");
+        check::equal(clusterWidth(term.screen()), 1, "and narrows to one column");
+        check::equal(term.screen().cursorCol(), 1, "the cursor came back with it");
+    }
+
+    /* A selector must not widen ordinary text. */
+    {
+        TerminalEmulator term(2, 20);
+        feed(term, encode({U'A', 0xFE0F, U'B'}));
+        check::that(!term.screen().at(0, 0).isEmojiPresentation(),
+                    "a selector after a letter is ignored");
+        check::equal(clusterWidth(term.screen()), 1, "the letter stays one column");
+        check::equal(static_cast<unsigned>(term.screen().at(0, 1).ch), 0x42u,
+                     "the next character follows immediately");
+    }
+
+    /* A selector with nothing before it must not crash or leak. */
+    {
+        TerminalEmulator term(2, 20);
+        feed(term, encode({0xFE0F, U'X'}));
+        check::equal(static_cast<unsigned>(term.screen().at(0, 0).ch), 0x58u,
+                     "a leading selector is dropped");
+    }
+
+    /* Widening at the right margin must not corrupt the line. */
+    {
+        TerminalEmulator term(2, 4);
+        feed(term, encode({U'a', U'b', U'c', 0x26A0, 0xFE0F}));
+        check::equal(static_cast<unsigned>(term.screen().at(0, 3).ch), 0x26A0u,
+                     "the emoji stays in the last column when it cannot widen");
+        check::that(!term.screen().at(0, 0).hasFlag(CellFlagWideTrailer),
+                    "no stray trailer was written");
+    }
+}
+
+void testEmojiClusters() {
+    check::section("emoji sequences occupy one cell");
+
+    struct Case {
+        std::u32string sequence;
+        const char* what;
+    };
+    const Case cases[] = {
+        {{0x1F468, 0x200D, 0x1F4BB},  "zero-width joiner sequence"},
+        {{0x1F44D, 0x1F3FD},          "skin tone modifier"},
+        {{0x1F1EA, 0x1F1F8},          "regional indicator pair (flag)"},
+        {{0x0031, 0xFE0F, 0x20E3},    "keycap sequence"},
+        {{0x1F3F4, 0xE0067, 0xE0062, 0xE0073, 0xE0063, 0xE0074, 0xE007F},
+                                      "tag sequence (subdivision flag)"},
+        {{0x1F469, 0x200D, 0x1F469, 0x200D, 0x1F467}, "multi-joiner family"},
+    };
+
+    for (const Case& item : cases) {
+        TerminalEmulator term(2, 20);
+        term.write(utf8Encode(item.sequence).data(), utf8Encode(item.sequence).size());
+
+        /*
+         * The whole sequence is one grapheme cluster, so it must occupy exactly
+         * two columns. Printing one cell per code point is what made a joined
+         * emoji sprawl across four or eight columns.
+         */
+        check::equal(clusterWidth(term.screen()), 2,
+                     std::string(item.what) + " occupies two columns");
+        check::equal(term.screen().cursorCol(), 2,
+                     std::string(item.what) + " advanced the cursor by two");
+        check::that(term.screen().at(0, 0).isEmojiPresentation(),
+                    std::string(item.what) + " is emoji presentation");
+        check::that(term.screen().at(0, 2).isBlank()
+                        && !term.screen().at(0, 2).hasFlag(CellFlagWideTrailer),
+                    std::string(item.what) + " left nothing beyond its two columns");
+    }
+
+    /* Three regional indicators are one flag followed by a lone indicator. */
+    {
+        TerminalEmulator term(2, 20);
+        feed(term, encode({0x1F1EA, 0x1F1F8, 0x1F1EA}));
+        check::equal(term.screen().cursorCol(), 3,
+                     "a third regional indicator starts a new cluster");
+    }
+
+    /*
+     * A cluster cannot span a control character. Line feed is used rather than
+     * carriage return so the check is unambiguous: after a CR the modifier would
+     * legitimately overwrite column 0, which says nothing about clustering.
+     */
+    {
+        TerminalEmulator term(3, 20);
+        feed(term, encode({0x1F44D}));
+        feed(term, "\n");
+        feed(term, encode({0x1F3FD}));
+        check::equal(static_cast<unsigned>(term.screen().at(0, 0).ch), 0x1F44Du,
+                     "a line feed ended the cluster, leaving the emoji untouched");
+        check::that(!term.screen().at(0, 2).hasFlag(CellFlagWideTrailer),
+                    "the emoji was not widened by the orphaned modifier");
+        check::equal(static_cast<unsigned>(term.screen().at(1, 2).ch), 0x1F3FDu,
+                     "the orphaned modifier printed on its own as a swatch");
+    }
+    {
+        TerminalEmulator term(3, 20);
+        feed(term, encode({0x26A0}));
+        feed(term, "\x1b[1;10H");
+        feed(term, encode({0xFE0F}));
+        check::that(!term.screen().at(0, 0).isEmojiPresentation(),
+                    "a cursor movement ended the cluster, so the selector was dropped");
+    }
+
+    /* Combining marks attach rather than taking a column of their own. */
+    {
+        TerminalEmulator term(2, 20);
+        feed(term, encode({U'e', 0x0301, U'x'}));
+        check::equal(static_cast<unsigned>(term.screen().at(0, 0).ch), 0x65u, "'e' printed");
+        check::equal(static_cast<unsigned>(term.screen().at(0, 1).ch), 0x78u,
+                     "the combining acute took no column");
+    }
+}
+
 void testUtf8() {
     check::section("UTF-8 decoding across chunk boundaries");
 
@@ -441,6 +615,8 @@ int main() {
     testEraseKeepsBackground();
     testOscColors();
     testCursorStyle();
+    testEmojiPresentationSelectors();
+    testEmojiClusters();
     testUtf8();
     testWideCharacters();
     testResize();

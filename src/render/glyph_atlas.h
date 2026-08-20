@@ -64,7 +64,8 @@ public:
      * evicting the atlas is handled internally, so callers never see a
      * "texture full" failure.
      */
-    const CachedGlyph* glyph(char32_t codepoint, FontStyle style, FontManager& fonts);
+    const CachedGlyph* glyph(char32_t codepoint, FontStyle style,
+                             GlyphPresentation presentation, FontManager& fonts);
 
     /* Drop every cached glyph (font or size change). */
     void clear();
@@ -78,9 +79,16 @@ public:
     uint64_t generation() const { return generation_; }
 
 private:
-    /* Codepoint + style in one integer: cheap to hash, no custom hasher. */
-    static uint64_t makeKey(char32_t codepoint, FontStyle style) {
-        return (static_cast<uint64_t>(codepoint) << 8) | static_cast<uint8_t>(style);
+    /*
+     * Code point, style and presentation in one integer: cheap to hash, no
+     * custom hasher. Presentation is part of the key because the same code point
+     * can be cached twice -- once as a text glyph, once as a colour emoji.
+     */
+    static uint64_t makeKey(char32_t codepoint, FontStyle style,
+                            GlyphPresentation presentation) {
+        return (static_cast<uint64_t>(codepoint) << 8)
+             | (static_cast<uint64_t>(presentation) << 4)
+             | static_cast<uint8_t>(style);
     }
 
     struct Shelf {

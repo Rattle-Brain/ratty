@@ -134,7 +134,15 @@ void TerminalRenderer::paintGlyphs(GLRenderer& renderer, const Screen& screen,
                  */
                 const FontStyle style = fontStyleFor(cell.hasFlag(CellFlagBold),
                                                      cell.hasFlag(CellFlagItalic));
-                renderer.drawGlyph(cell.ch, style, cellLeft, baselineY, fg);
+                /*
+                 * The emulator has already decided which form of a dual-form
+                 * code point this is; asking for Auto here would let the font
+                 * chain override a U+FE0E/U+FE0F selector.
+                 */
+                const GlyphPresentation presentation =
+                    cell.isEmojiPresentation() ? GlyphPresentation::Emoji
+                                               : GlyphPresentation::Text;
+                renderer.drawGlyph(cell.ch, style, presentation, cellLeft, baselineY, fg);
             }
 
             /* Decorations go in the background layer, submitted after the cell

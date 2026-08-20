@@ -61,7 +61,7 @@ set(RATTY_SOURCES
 # Listed so IDEs and AUTOMOC see them.
 set(RATTY_HEADERS
     src/core/cell.h
-    src/core/char_width.h
+    src/core/unicode.h
     src/core/cursor.h
     src/core/palette.h
     src/core/pty.h

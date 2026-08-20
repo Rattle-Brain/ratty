@@ -253,11 +253,12 @@ void GLRenderer::strokeOverlay(int x, int y, int width, int height, int thicknes
     appendRect(overlayVertices_, x + width - t, y + t, t, height - 2 * t, color); // right
 }
 
-void GLRenderer::drawGlyph(char32_t codepoint, FontStyle style, int penX, int baselineY,
+void GLRenderer::drawGlyph(char32_t codepoint, FontStyle style,
+                           GlyphPresentation presentation, int penX, int baselineY,
                            const QColor& color) {
     if (!initialized_ || !atlas_ || !fonts_.isValid() || color.alpha() == 0) return;
 
-    const CachedGlyph* glyph = atlas_->glyph(codepoint, style, fonts_);
+    const CachedGlyph* glyph = atlas_->glyph(codepoint, style, presentation, fonts_);
 
     if (atlas_->generation() != atlasGeneration_) {
         /*

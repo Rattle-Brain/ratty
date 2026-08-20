@@ -56,7 +56,22 @@ public:
     void restoreCursor();
 
     /* Text output */
-    void print(char32_t ch, const Pen& pen, int charWidth);
+    void print(char32_t ch, const Pen& pen, int charWidth, uint16_t extraFlags = 0);
+
+    /*
+     * Retrofit the cell most recently printed. A grapheme cluster only reveals
+     * itself one code point at a time -- a U+FE0F arriving after its base
+     * character both recolours it and widens it from one column to two -- so the
+     * cell has to be adjustable after the fact.
+     *
+     * Returns false when there is no adjustable cell (the cursor has moved since,
+     * or nothing has been printed on this line yet).
+     */
+    bool adjustLastCell(int charWidth, uint16_t setFlags, uint16_t clearFlags,
+                        const Pen& pen);
+    /* True while the most recent print is still the cell under adjustment. */
+    bool hasAdjustableCell() const { return lastPrintCol_ >= 0; }
+    char32_t lastPrintedChar() const;
     void carriageReturn();
     void lineFeed(const Pen& pen);
     void reverseIndex(const Pen& pen);
@@ -117,6 +132,15 @@ private:
 
     int scrollTop_ = 0;
     int scrollBottom_ = 0;   // inclusive
+
+    /*
+     * Where the most recently printed cell is, for adjustLastCell(). Reset by
+     * anything that moves the cursor, because a cluster cannot span a cursor
+     * movement.
+     */
+    int lastPrintRow_ = -1;
+    int lastPrintCol_ = -1;
+    int lastPrintWidth_ = 0;
 
     struct SavedCursor {
         int row = 0;

@@ -79,6 +79,21 @@ struct GlyphBitmap {
     int bytesPerPixel() const { return isColor ? 4 : 1; }
 };
 
+/*
+ * Which form of a dual-form code point is wanted.
+ *
+ * Many code points have both a monochrome text glyph and a colour emoji glyph,
+ * in different fonts. U+26A0 is a narrow warning sign until a U+FE0F selector
+ * asks for the emoji; U+FE0E asks for the text form. Without this the font
+ * chain simply returns whichever font it reaches first, so the selector has no
+ * effect at all.
+ */
+enum class GlyphPresentation : uint8_t {
+    Auto = 0,    // first font in the chain that has the glyph
+    Text = 1,    // prefer a monochrome font
+    Emoji = 2,   // prefer a colour font
+};
+
 /* Where a font face lives on disk. Collections (.ttc) need the face index. */
 struct FontFile {
     std::string path;
@@ -127,10 +142,12 @@ public:
      * Returns false only if nothing could be rasterized at all; a code point no
      * font covers still succeeds, yielding the primary font's .notdef box.
      */
-    bool rasterize(char32_t codepoint, FontStyle style, GlyphBitmap& out);
+    bool rasterize(char32_t codepoint, FontStyle style, GlyphBitmap& out,
+                   GlyphPresentation presentation = GlyphPresentation::Auto);
 
     /* Which family ended up serving `codepoint`, for diagnostics. */
-    std::string familyForCodepoint(char32_t codepoint, FontStyle style);
+    std::string familyForCodepoint(char32_t codepoint, FontStyle style,
+                                   GlyphPresentation presentation = GlyphPresentation::Auto);
 
     static FontFile resolveFontFile(const std::string& family, FontStyle style);
     static std::string defaultMonospaceFamily();
@@ -158,7 +175,14 @@ private:
         FaceSet& operator=(const FaceSet&) = delete;
 
         FT_Face faceFor(FontStyle style) const;
-        bool hasCodepoint(char32_t codepoint) const;
+        /*
+         * True only if the face draws something for `codepoint`. A cmap entry is
+         * not enough: colour emoji fonts map regional indicators and keycap
+         * digits to *empty* glyphs, because the real flag or keycap is only
+         * reachable by shaping the whole sequence. Selecting such a face would
+         * render nothing at all.
+         */
+        bool hasRenderableGlyph(char32_t codepoint) const;
     };
 
     static FontFile resolveExactFamily(const std::string& family, FontStyle style);
@@ -176,13 +200,18 @@ private:
     bool tryPrimaryRegular(const FontFile& file);
 
     /* Pick the face set that covers `codepoint`, growing the chain if needed. */
-    const FaceSet* resolveFaceSet(char32_t codepoint);
+    const FaceSet* resolveFaceSet(char32_t codepoint, GlyphPresentation presentation);
     void loadConfiguredFallbacks();
     /* Append `file` as a fallback if it really covers `codepoint`. */
     const FaceSet* adoptFallback(const FontFile& file, char32_t codepoint);
 
     bool rasterizeFrom(const FaceSet& faces, FontStyle style, FT_UInt glyphIndex,
                        GlyphBitmap& out) const;
+    /* Cache key combining a code point with the presentation asked for. */
+    static uint64_t resolutionKey(char32_t codepoint, GlyphPresentation presentation) {
+        return (static_cast<uint64_t>(codepoint) << 2)
+             | static_cast<uint64_t>(presentation);
+    }
 
     FT_Library ftLibrary_ = nullptr;
     FaceSet primary_;
@@ -192,10 +221,10 @@ private:
     bool configuredFallbacksLoaded_ = false;
 
     /*
-     * Code point to face set: nullptr means "the primary font, or nothing
-     * covers it". Caching matters because discovery shells out to fc-match.
+     * (code point, presentation) to face set; nullptr means nothing covers it.
+     * Caching matters because discovery shells out to fc-match.
      */
-    std::unordered_map<char32_t, const FaceSet*> resolution_;
+    std::unordered_map<uint64_t, const FaceSet*> resolution_;
 
     std::string familyName_;
     double pixelSize_ = 0.0;

@@ -63,6 +63,10 @@ Polish       ████████░░░░░░░░░░░░ no scr
 - [x] `OSC 0`/`2` window title; `ESC \` (ST) correctly consumed
 - [x] Incremental UTF-8 decoding across pty read boundaries
 - [x] Double-width character layout with trailer cells
+- [x] Emoji presentation selectors (`U+FE0F` / `U+FE0E`), including widening and
+      narrowing a cell that has already been placed
+- [x] Grapheme clustering for emoji sequences -- joiners, skin tones, regional
+      indicator pairs, keycaps and tag sequences all occupy one cell
 - [x] O(1) scroll via a row indirection table
 
 ### Rendering
@@ -186,6 +190,16 @@ Recorded because the causes are instructive; full write-ups in
 - [x] **Emoji were empty boxes**, since colour emoji live in a separate bitmap
       font and neither the fallback chain nor an RGBA atlas existed to hold
       them.
+- [x] **Emoji sequences sprawled across four to eight columns.** Joiners, skin
+      tones, regional indicators and tag characters were each printed as their own
+      cell, so a joined emoji occupied several and left the cursor misplaced.
+- [x] **`U+FE0F` / `U+FE0E` had no effect**, being dropped with the other
+      zero-width marks, so the text and emoji forms of a dual-form code point
+      were indistinguishable.
+- [x] **A colour emoji font's component glyphs are empty.** Regional indicators
+      and keycap digits exist in its cmap only as shaping inputs, so selecting
+      that face drew nothing at all; coverage is now checked by rendering rather
+      than by the cmap.
 - [x] **A pinned compiler path** (`/opt/homebrew/opt/llvm@20/bin/clang++`) broke
       configuration on any other machine.
 
@@ -229,10 +243,14 @@ The single most missed feature.
 ## 📋 Backlog
 
 ### Terminal emulation
-- [ ] Combining marks 🔍 — needs a grapheme-extension side table per cell
-- [ ] Emoji presentation selectors (U+FE0E / U+FE0F) — currently dropped, so a
-      code point with both a text and an emoji form always renders as whichever
-      the fallback chain reaches first
+- [ ] Combining marks composed onto their base 🔍 — absorbed correctly today, but
+      drawing `e` + U+0301 as `é` needs shaping
+- [ ] Text shaping (HarfBuzz) 🔍 — would render joined emoji, flags, keycaps and
+      skin-tone variants as their real combined glyphs, and enable ligatures
+- [ ] Generate the `Emoji_Presentation` / `Extended_Pictographic` tables from
+      `emoji-data.txt` rather than transcribing them 🔍
+- [ ] Retain the full grapheme cluster per cell, not just its base code point —
+      needed before text selection can copy an emoji sequence intact
 - [ ] DEC line-drawing charset (`ESC ( 0`) — currently accepted and ignored
 - [ ] Tab stops: `HTS`, `TBC` (tabs are hard-coded to every 8 columns)
 - [ ] Origin mode (`DECOM`), left/right margins (`DECLRMM`)
@@ -240,7 +258,6 @@ The single most missed feature.
 - [ ] Overline (SGR 53), underline styles and colours (`4:3`, `58`)
 - [ ] `OSC 8` hyperlinks; `OSC 13`–`19` (highlight/pointer colours); `OSC 133`
       prompt marks; `OSC 52` clipboard
-- [ ] Generate `charWidth()` tables from `UnicodeData.txt` instead of hand-listing 🔍
 
 ### Rendering
 - [ ] Gamma-correct glyph blending 🔍 — light-on-dark text is currently slightly thin

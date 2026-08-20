@@ -69,10 +69,13 @@ public:
     /* Layer 1: cell backgrounds. */
     void fillBackground(int x, int y, int width, int height, const QColor& color);
 
-    /* Layer 2: glyphs. `penX` is the left edge of the advance, `baselineY` the
-     * baseline, both in physical pixels. */
-    void drawGlyph(char32_t codepoint, FontStyle style, int penX, int baselineY,
-                   const QColor& color);
+    /*
+     * Layer 2: glyphs. `penX` is the left edge of the advance, `baselineY` the
+     * baseline, both in physical pixels. `presentation` selects between the text
+     * and emoji form of a dual-form code point.
+     */
+    void drawGlyph(char32_t codepoint, FontStyle style, GlyphPresentation presentation,
+                   int penX, int baselineY, const QColor& color);
 
     /* Layer 3: cursor, selection, focus indicators - drawn over the text. */
     void fillOverlay(int x, int y, int width, int height, const QColor& color);

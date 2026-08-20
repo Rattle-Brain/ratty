@@ -262,6 +262,77 @@ void testFontFallback() {
     }
 }
 
+void testPresentationSelectsTheRightFont() {
+    check::section("presentation picks the text or the colour font");
+
+    FontManager fonts;
+    if (!fonts.loadFamily(std::vector<std::string>{}, 26.0)) {
+        check::that(false, "no font loaded");
+        return;
+    }
+
+    /*
+     * A dual-form code point must come back monochrome when text presentation is
+     * asked for and colour when emoji presentation is. Resolving purely by
+     * "first font in the chain that has the glyph" made U+FE0E and U+FE0F
+     * indistinguishable, since the colour font is usually reached first.
+     */
+    struct Case { char32_t codepoint; const char* what; };
+    const Case dualForm[] = {
+        {0x26A0, "warning sign"},
+        {0x2764, "heart"},
+        {0x2611, "ballot box with check"},
+    };
+
+    for (const Case& item : dualForm) {
+        GlyphBitmap asText;
+        GlyphBitmap asEmoji;
+        const bool okText = fonts.rasterize(item.codepoint, FontStyleRegular, asText,
+                                            GlyphPresentation::Text);
+        const bool okEmoji = fonts.rasterize(item.codepoint, FontStyleRegular, asEmoji,
+                                             GlyphPresentation::Emoji);
+
+        check::that(okText && inkPixels(asText) > 0,
+                    std::string(item.what) + " renders as text");
+        check::that(okEmoji && inkPixels(asEmoji) > 0,
+                    std::string(item.what) + " renders as emoji");
+
+        /* Not every system has both forms installed; only assert the
+         * distinction when a colour font actually supplied one. */
+        if (asEmoji.isColor) {
+            check::that(!asText.isColor,
+                        std::string(item.what) + ": text presentation is monochrome");
+        }
+    }
+
+    /* A code point with only one form must still render either way. */
+    for (const char32_t codepoint : {U'A', char32_t{0x2500}}) {
+        GlyphBitmap text;
+        GlyphBitmap emoji;
+        check::that(fonts.rasterize(codepoint, FontStyleRegular, text,
+                                    GlyphPresentation::Text)
+                    && inkPixels(text) > 0,
+                    "a text-only code point renders with Text presentation");
+        check::that(fonts.rasterize(codepoint, FontStyleRegular, emoji,
+                                    GlyphPresentation::Emoji)
+                    && inkPixels(emoji) > 0,
+                    "a text-only code point still renders with Emoji presentation");
+    }
+
+    /*
+     * Colour emoji fonts map regional indicators and keycap digits to *empty*
+     * glyphs -- the real flag or keycap needs text shaping. Selecting such a
+     * face would draw nothing at all, so the chain must skip it.
+     */
+    for (const char32_t codepoint : {char32_t{0x1F1EA}, char32_t{0x0031}}) {
+        GlyphBitmap glyph;
+        check::that(fonts.rasterize(codepoint, FontStyleRegular, glyph,
+                                    GlyphPresentation::Emoji)
+                    && inkPixels(glyph) > 0,
+                    "an emoji-font component glyph falls through to something visible");
+    }
+}
+
 void testFontPreferenceOrder() {
     check::section("font preference order");
 
@@ -324,6 +395,7 @@ int main(int argc, char** argv) {
     testBoxDrawingTiles();
     testFallbackCoversTerminalCharacters();
     testFontFallback();
+    testPresentationSelectsTheRightFont();
     testFontPreferenceOrder();
     testFontMetricsScaleWithPixelSize();
     return check::report("test_render");

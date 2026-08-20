@@ -186,16 +186,17 @@ bool GlyphAtlas::grow() {
     return createTexture(size_ * 2);
 }
 
-const CachedGlyph* GlyphAtlas::glyph(char32_t codepoint, FontStyle style, FontManager& fonts) {
+const CachedGlyph* GlyphAtlas::glyph(char32_t codepoint, FontStyle style,
+                                     GlyphPresentation presentation, FontManager& fonts) {
     if (textureId_ == 0) return nullptr;
 
-    const uint64_t key = makeKey(codepoint, style);
+    const uint64_t key = makeKey(codepoint, style, presentation);
     if (const auto it = glyphs_.find(key); it != glyphs_.end()) {
         return &it->second;
     }
 
     GlyphBitmap bitmap;
-    if (!fonts.rasterize(codepoint, style, bitmap)) {
+    if (!fonts.rasterize(codepoint, style, bitmap, presentation)) {
         return nullptr;
     }
 

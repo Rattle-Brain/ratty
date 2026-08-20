@@ -59,6 +59,13 @@ enum CellFlag : uint16_t {
      * painted, but still occupies a grid column.
      */
     CellFlagWideTrailer = 1 << 8,
+    /*
+     * Render this cell as a colour emoji rather than a monochrome glyph. Set
+     * either because the code point is emoji by default, or because a U+FE0F
+     * selector asked for it; a U+FE0E selector clears it. Without this the two
+     * forms of a dual-form code point are indistinguishable.
+     */
+    CellFlagEmojiPresentation = 1 << 9,
 };
 
 /*
@@ -98,6 +105,8 @@ struct Cell {
         /* Erased cells keep no rendition other than the background. */
         flags = CellFlagNone;
     }
+
+    bool isEmojiPresentation() const { return hasFlag(CellFlagEmojiPresentation); }
 
     /* True when the cell would paint nothing but its background. */
     bool isBlank() const { return ch == U' ' || ch == 0; }

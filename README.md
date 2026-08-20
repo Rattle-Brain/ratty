@@ -38,6 +38,10 @@ scrollback and selection do not exist yet.
 - **Font fallback chain** — code points the main font lacks are served from the
   system monospaced font, and colour emoji from whatever emoji font is installed
 - **Colour emoji**, rendered from the emoji font's own bitmaps
+- **Emoji presentation selectors** — `U+FE0F` / `U+FE0E` choose between the
+  colour emoji and the monochrome text form of a dual-form character
+- **Emoji sequences occupy one cell** — joined sequences, skin tones, flags,
+  keycaps and tag sequences take two columns, not one per code point
 - **Box-drawing characters drawn geometrically**, so TUI borders tile with no
   seams regardless of which font is in use
 - Bold, faint, italic, underline, strikethrough, inverse and invisible —
@@ -55,7 +59,8 @@ scrollback and selection do not exist yet.
 - Scrollback buffer
 - Text selection and copy
 - Mouse reporting for applications
-- Combining marks, ligatures, emoji presentation selectors
+- Text shaping, so a joined emoji shows its base rather than the combined glyph
+- Combining marks composed onto their base, ligatures
 - Sixel or kitty graphics
 
 See [todo-ratty.md](todo-ratty.md) for the roadmap and
