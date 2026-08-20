@@ -69,13 +69,10 @@ void testBundledDefaults() {
     check::that(config.cursorBlink(), "the cursor blinks by default");
 
     /* A config file without a keybindings section must not leave the
-     * application with none at all. Which set is active follows the platform,
-     * so check whichever one that is. */
-    const Qt::KeyboardModifiers newTabModifiers =
-        config.macOsBindings() ? Qt::KeyboardModifiers(Qt::MetaModifier)
-                               : (Qt::ControlModifier | Qt::ShiftModifier);
-    check::that(actionFor(newTabModifiers, Qt::Key_T) == ACTION_NEW_TAB,
-                "default keybindings are present for the active set");
+     * application with none at all. Both platform sets put new_tab on Meta. */
+    check::that(actionFor(Qt::MetaModifier, Qt::Key_T) == ACTION_NEW_TAB,
+                "default keybindings are present");
+    check::that(config.keybindingCount() > 20, "and the whole default set loaded");
 }
 
 void testOverlayChangesOnlyWhatItMentions() {
@@ -97,10 +94,7 @@ window:
                 "an unmentioned colour kept its default");
     check::equal(config.windowWidth(), Config::DEFAULT_WINDOW_WIDTH,
                  "an unmentioned window size kept its default");
-    const Qt::KeyboardModifiers newTabModifiers =
-        config.macOsBindings() ? Qt::KeyboardModifiers(Qt::MetaModifier)
-                               : (Qt::ControlModifier | Qt::ShiftModifier);
-    check::that(actionFor(newTabModifiers, Qt::Key_T) == ACTION_NEW_TAB,
+    check::that(actionFor(Qt::MetaModifier, Qt::Key_T) == ACTION_NEW_TAB,
                 "unmentioned keybindings survived");
 }
 
@@ -159,17 +153,16 @@ void testKeybindingOverlay() {
     check::section("keybinding overlay");
 
     loadWithUserConfig(R"(
-mac_os_bindings: false
 keybindings:
-  ctrl+shift+k: none
-  ctrl+shift+g: new_tab
+  cmd+k: none
+  cmd+g: new_tab
   ctrl+alt+p: paste
 )");
-    const auto ctrlShift = Qt::ControlModifier | Qt::ShiftModifier;
+    const auto meta = Qt::MetaModifier;
 
-    check::that(actionFor(ctrlShift, Qt::Key_K) == ACTION_NONE,
+    check::that(actionFor(meta, Qt::Key_K) == ACTION_NONE,
                 "`none` removed a default binding");
-    check::that(actionFor(ctrlShift, Qt::Key_G) == ACTION_NEW_TAB,
+    check::that(actionFor(meta, Qt::Key_G) == ACTION_NEW_TAB,
                 "a new binding was added");
     check::that(actionFor(Qt::ControlModifier | Qt::AltModifier, Qt::Key_P)
                     == ACTION_PASTE,
@@ -180,33 +173,31 @@ keybindings:
      * default keys for new_tab and paste are gone. Actions the config does not
      * mention keep theirs.
      */
-    check::that(actionFor(ctrlShift, Qt::Key_T) == ACTION_NONE,
+    check::that(actionFor(meta, Qt::Key_T) == ACTION_NONE,
                 "the default key for a reassigned action was released");
-    check::that(actionFor(ctrlShift, Qt::Key_V) == ACTION_NONE,
-                "likewise for paste");
-    check::that(actionFor(ctrlShift, Qt::Key_W) == ACTION_CLOSE_TAB,
+    check::that(actionFor(meta, Qt::Key_V) == ACTION_NONE, "likewise for paste");
+    check::that(actionFor(meta, Qt::Key_W) == ACTION_CLOSE_TAB,
                 "an unmentioned action kept its default key");
-    check::that(actionFor(ctrlShift, Qt::Key_C) == ACTION_COPY,
-                "and so did copy");
+    check::that(actionFor(meta, Qt::Key_C) == ACTION_COPY, "and so did copy");
+    check::that(actionFor(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_W)
+                    == ACTION_SPLIT_VERTICAL,
+                "and so did the split bindings");
     check::that(actionFor(Qt::ControlModifier, Qt::Key_C) == ACTION_NONE,
                 "plain Ctrl+C is still the shell's");
 }
 
 void testMacOsBindingsFlag() {
-    check::section("mac_os_bindings selects the keybinding set");
+    check::section("mac_os_bindings selects the default keybinding file");
 
     loadWithUserConfig("mac_os_bindings: true\n");
-    check::that(Config::instance().macOsBindings(), "true forces the macOS set");
-    check::that(Config::instance().lookupAction(
-                    QKeySequence(QKeyCombination(Qt::MetaModifier, Qt::Key_T)))
-                    == ACTION_NEW_TAB,
-                "and cmd+t is bound");
+    check::that(Config::instance().macOsBindings(), "true forces the macOS file");
+    const int macOsCount = Config::instance().keybindingCount();
+    check::that(macOsCount > 20, "and it loaded a full set");
 
     loadWithUserConfig("mac_os_bindings: false\n");
-    check::that(!Config::instance().macOsBindings(), "false forces the other set");
-    check::that(actionFor(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_T)
-                    == ACTION_NEW_TAB,
-                "and ctrl+shift+t is bound");
+    check::that(!Config::instance().macOsBindings(), "false forces the Linux file");
+    check::equal(Config::instance().keybindingCount(), macOsCount,
+                 "which binds the same number of keys");
 
     /* "auto", and an absent key, both follow the platform. */
     loadWithUserConfig("mac_os_bindings: auto\n");
@@ -222,35 +213,22 @@ void testMacOsBindingsFlag() {
                 "an unusable value keeps the platform default");
 
     /*
-     * Each set is overlaid independently, so editing the active one works and
-     * editing the inactive one has no effect on it.
+     * The defaults are loaded *after* the user's file, because which file to
+     * load depends on a setting the user may change. They must still merge
+     * underneath the user's own bindings.
      */
     loadWithUserConfig(R"(
 mac_os_bindings: true
-keybindings_macos:
+keybindings:
   cmd+t: none
   cmd+shift+t: new_tab
-keybindings:
-  ctrl+shift+t: none
 )");
-    check::that(Config::instance().lookupAction(
-                    QKeySequence(QKeyCombination(Qt::MetaModifier, Qt::Key_T)))
-                    == ACTION_NONE,
-                "the active macOS set honoured `none`");
-    check::that(Config::instance().lookupAction(QKeySequence(QKeyCombination(
-                    Qt::MetaModifier | Qt::ShiftModifier, Qt::Key_T)))
-                    == ACTION_NEW_TAB,
-                "and honoured the replacement binding");
-
-    /* Switching sets brings the other set's edits into play instead. */
-    loadWithUserConfig(R"(
-mac_os_bindings: false
-keybindings:
-  ctrl+shift+t: none
-)");
-    check::that(actionFor(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_T)
-                    == ACTION_NONE,
-                "the Ctrl+Shift set honoured its own `none`");
+    check::that(actionFor(Qt::MetaModifier, Qt::Key_T) == ACTION_NONE,
+                "the user's `none` beat the defaults loaded after it");
+    check::that(actionFor(Qt::MetaModifier | Qt::ShiftModifier, Qt::Key_T) == ACTION_NEW_TAB,
+                "and so did the replacement binding");
+    check::that(actionFor(Qt::MetaModifier, Qt::Key_W) == ACTION_CLOSE_TAB,
+                "while the rest of the defaults still applied");
 }
 
 void testFontFamilyForms() {
@@ -293,55 +271,58 @@ void testRebindingAnActionReleasesItsDefaultKeys() {
     /*
      * The contract: the defaults apply except for what the user states. So
      * naming an action in your own config makes your config the whole story for
-     * that action -- otherwise "set split_vertical to ctrl+shift+w" would leave
+     * that action -- otherwise "set split_vertical to ctrl+shift+g" would leave
      * the default key working too, and two keys would do the same thing.
      */
     loadWithUserConfig(R"(
-mac_os_bindings: true
-keybindings_macos:
-  ctrl+shift+w: split_vertical
+keybindings:
+  ctrl+shift+g: split_vertical
 )");
-    const auto cmd = Qt::MetaModifier;
-    const auto cmdShift = Qt::MetaModifier | Qt::ShiftModifier;
+    const auto meta = Qt::MetaModifier;
+    const auto ctrlShift = Qt::ControlModifier | Qt::ShiftModifier;
 
-    check::that(actionFor(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_W)
-                    == ACTION_SPLIT_VERTICAL,
+    check::that(actionFor(ctrlShift, Qt::Key_G) == ACTION_SPLIT_VERTICAL,
                 "the new key performs the action");
-    check::that(actionFor(cmdShift, Qt::Key_D) == ACTION_NONE,
+    check::that(actionFor(ctrlShift, Qt::Key_W) == ACTION_NONE,
                 "the default key for that action was released");
 
     /* Every other action keeps its defaults. */
-    check::that(actionFor(cmd, Qt::Key_T) == ACTION_NEW_TAB, "cmd+t untouched");
-    check::that(actionFor(cmd, Qt::Key_D) == ACTION_SPLIT_HORIZONTAL,
-                "cmd+d untouched");
-    check::that(actionFor(cmd, Qt::Key_C) == ACTION_COPY, "cmd+c untouched");
-    check::that(actionFor(cmd, Qt::Key_0) == ACTION_RESET_FONT_SIZE,
-                "cmd+0 untouched");
+    check::that(actionFor(meta, Qt::Key_T) == ACTION_NEW_TAB, "cmd+t untouched");
+    check::that(actionFor(ctrlShift, Qt::Key_V) == ACTION_SPLIT_HORIZONTAL,
+                "ctrl+shift+v untouched");
+    check::that(actionFor(ctrlShift, Qt::Key_C) == ACTION_CLOSE_SPLIT,
+                "ctrl+shift+c untouched");
+    check::that(actionFor(meta, Qt::Key_C) == ACTION_COPY, "cmd+c untouched");
     check::equal(Config::instance().fontSize(), 13, "the font size is still default");
     check::equal(Config::instance().windowPadding(), 4, "padding is still default");
 
     /* Listing several keys for one action keeps all of them. */
     loadWithUserConfig(R"(
-mac_os_bindings: true
-keybindings_macos:
-  cmd+j: split_vertical
-  cmd+k: split_vertical
+keybindings:
+  ctrl+shift+g: split_vertical
+  cmd+g: split_vertical
 )");
-    check::that(actionFor(cmd, Qt::Key_J) == ACTION_SPLIT_VERTICAL, "first new key works");
-    check::that(actionFor(cmd, Qt::Key_K) == ACTION_SPLIT_VERTICAL, "second new key works");
-    check::that(actionFor(cmdShift, Qt::Key_D) == ACTION_NONE,
+    check::that(actionFor(ctrlShift, Qt::Key_G) == ACTION_SPLIT_VERTICAL, "first new key works");
+    check::that(actionFor(meta, Qt::Key_G) == ACTION_SPLIT_VERTICAL, "second new key works");
+    check::that(actionFor(ctrlShift, Qt::Key_W) == ACTION_NONE,
                 "the inherited key is still released");
-    /* cmd+k was clear_scrollback by default; reassigning the *key* takes it. */
-    check::that(actionFor(cmd, Qt::Key_K) != ACTION_CLEAR_SCROLLBACK,
-                "reassigning a key overrides what it used to do");
 
-    /* Actions the bundled defaults give several keys keep them all. */
-    loadWithUserConfig("mac_os_bindings: false\n");
-    check::that(actionFor(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_E)
-                    == ACTION_SPLIT_HORIZONTAL,
+    /* Reassigning a key takes it from whatever it used to do. */
+    loadWithUserConfig(R"(
+keybindings:
+  cmd+k: new_tab
+)");
+    check::that(actionFor(meta, Qt::Key_K) == ACTION_NEW_TAB,
+                "the key now performs the new action");
+    check::that(actionFor(meta, Qt::Key_T) == ACTION_NONE,
+                "and new_tab's default key was released");
+
+    /* Actions the defaults give several keys keep them all. */
+    loadWithUserConfig(nullptr);
+    check::that(actionFor(Qt::NoModifier, Qt::Key_F11) == ACTION_FULLSCREEN,
                 "a default action with two keys keeps the first");
-    check::that(actionFor(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_Backslash)
-                    == ACTION_SPLIT_HORIZONTAL,
+    check::that(actionFor(Qt::MetaModifier | Qt::ControlModifier, Qt::Key_F)
+                    == ACTION_FULLSCREEN,
                 "and the second");
 }
 
@@ -585,10 +566,7 @@ font:
 )");
     check::equal(Config::instance().fontSize(), Config::DEFAULT_FONT_SIZE,
                  "a YAML syntax error discards the whole overlay");
-    const Qt::KeyboardModifiers newTabModifiers =
-        Config::instance().macOsBindings() ? Qt::KeyboardModifiers(Qt::MetaModifier)
-                                           : (Qt::ControlModifier | Qt::ShiftModifier);
-    check::that(actionFor(newTabModifiers, Qt::Key_T) == ACTION_NEW_TAB,
+    check::that(actionFor(Qt::MetaModifier, Qt::Key_T) == ACTION_NEW_TAB,
                 "and keybindings still work");
 
     loadWithUserConfig("- a\n- list\n");

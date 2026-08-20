@@ -11,6 +11,7 @@
 #include <QKeyCombination>
 #include <QKeyEvent>
 #include <QTabBar>
+#include <algorithm>
 #include <QTabWidget>
 
 MainWindow::MainWindow(QWidget* parent)
@@ -113,25 +114,49 @@ void MainWindow::onPaneTitleChanged(const QString& title) {
     }
 }
 
-void MainWindow::installTabRoot(int index, SplitContainer* root) {
-    if (index < 0 || index >= tabCount() || !root) return;
-    if (tabWidget_->widget(index) == root) return;
-
+QString MainWindow::tabLabel(int index) const {
+    if (!tabWidget_ || index < 0 || index >= tabWidget_->count()) {
+        return QStringLiteral("Terminal");
+    }
     const QString label = tabWidget_->tabText(index);
-    const bool wasCurrent = (tabWidget_->currentIndex() == index);
+    return label.isEmpty() ? QStringLiteral("Terminal") : label;
+}
+
+void MainWindow::installTabRoot(int index, SplitContainer* root, const QString& label) {
+    if (!tabWidget_ || !root) return;
+
+    /* Already the page: splitting a nested pane leaves the root untouched. */
+    if (const int existing = tabWidget_->indexOf(root); existing >= 0) {
+        tabWidget_->setCurrentIndex(existing);
+        updateTabBarVisibility();
+        return;
+    }
 
     /*
-     * removeTab() only detaches; the old root has already been scheduled for
-     * deletion by the tree surgery that produced `root`, so there is nothing to
-     * delete here.
+     * The tab may well be gone by now, and that is not an error.
+     *
+     * When the pane being split *is* the tab's page, the tree surgery reparents
+     * it under a new container -- which takes it out of the tab widget's stacked
+     * layout, and QTabWidget answers a page leaving by removing its tab. So the
+     * count can legitimately have dropped to zero between the split and this
+     * call. Guarding on `index >= tabCount()` and returning, as this used to,
+     * left the tab widget with no page at all: a blank window, with the shell
+     * still running behind it.
      */
-    tabWidget_->removeTab(index);
-    tabWidget_->insertTab(index, root, label);
-    connectRoot(root);
-
-    if (wasCurrent) {
-        tabWidget_->setCurrentIndex(index);
+    if (index >= 0 && index < tabWidget_->count()) {
+        auto* occupant = qobject_cast<SplitContainer*>(tabWidget_->widget(index));
+        /* A node that now has a parent has been absorbed into the new tree, so
+         * its tab slot is stale. Anything else belongs to another tab. */
+        if (occupant && occupant->parentNode() != nullptr) {
+            tabWidget_->removeTab(index);
+        }
     }
+
+    const int at = std::clamp(index, 0, tabWidget_->count());
+    tabWidget_->insertTab(at, root, label);
+    connectRoot(root);
+    tabWidget_->setCurrentIndex(at);
+    updateTabBarVisibility();
 }
 
 void MainWindow::closeTab(int index) {
@@ -189,10 +214,11 @@ void MainWindow::onPaneSessionEnded(SplitContainer* pane) {
 
     const int index = indexOfRootContaining(pane);
     if (index < 0) return;
+    const QString label = tabLabel(index);
 
     /* A pane with no parent is the whole tab. */
     if (SplitContainer* newRoot = pane->closePane()) {
-        installTabRoot(index, newRoot);
+        installTabRoot(index, newRoot, label);
     } else {
         closeTab(index);
     }
@@ -289,10 +315,13 @@ void MainWindow::splitFocusedPane(bool horizontal) {
     SplitContainer* pane = focusedPane();
     if (!pane) return;
 
+    /* Read the label first: the surgery below can remove the tab. */
     const int index = tabWidget_->currentIndex();
+    const QString label = tabLabel(index);
+
     SplitContainer* newRoot = horizontal ? pane->splitHorizontal() : pane->splitVertical();
     if (newRoot) {
-        installTabRoot(index, newRoot);
+        installTabRoot(index, newRoot, label);
     }
 }
 
@@ -301,8 +330,10 @@ void MainWindow::closeFocusedPane() {
     if (!pane) return;
 
     const int index = tabWidget_->currentIndex();
+    const QString label = tabLabel(index);
+
     if (SplitContainer* newRoot = pane->closePane()) {
-        installTabRoot(index, newRoot);
+        installTabRoot(index, newRoot, label);
     } else {
         closeTab(index);
     }

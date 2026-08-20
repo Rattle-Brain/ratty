@@ -16,6 +16,7 @@
 #include <QKeyEvent>
 #include <QTemporaryDir>
 #include <QTextStream>
+#include <vector>
 
 namespace {
 
@@ -65,25 +66,50 @@ void expectBytes(Qt::KeyboardModifiers modifiers, Qt::Key key, const QString& te
 }
 
 void testBindingsResolve() {
-    check::section("Ctrl+Shift keybindings resolve against real key events");
+    check::section("default keybindings resolve against real key events");
 
     loadBindingSet(/*macOs=*/false);
+
+    /*
+     * `cmd` and `super` are both Qt::MetaModifier, so these are the bindings
+     * whichever platform file is loaded.
+     */
+    const auto meta = Qt::MetaModifier;
     const auto ctrlShift = Qt::ControlModifier | Qt::ShiftModifier;
-    expectAction(ctrlShift, Qt::Key_T, ACTION_NEW_TAB, "ctrl+shift+t");
-    expectAction(ctrlShift, Qt::Key_W, ACTION_CLOSE_TAB, "ctrl+shift+w");
-    expectAction(ctrlShift, Qt::Key_C, ACTION_COPY, "ctrl+shift+c");
-    expectAction(ctrlShift, Qt::Key_V, ACTION_PASTE, "ctrl+shift+v");
-    expectAction(ctrlShift, Qt::Key_Q, ACTION_QUIT, "ctrl+shift+q");
-    expectAction(ctrlShift, Qt::Key_D, ACTION_CLOSE_SPLIT, "ctrl+shift+d");
-    expectAction(ctrlShift, Qt::Key_Up, ACTION_FOCUS_UP, "ctrl+shift+up");
-    expectAction(ctrlShift, Qt::Key_Right, ACTION_NEXT_TAB, "ctrl+shift+right");
-    expectAction(ctrlShift, Qt::Key_E, ACTION_SPLIT_HORIZONTAL, "ctrl+shift+e");
-    expectAction(ctrlShift, Qt::Key_Backslash, ACTION_SPLIT_HORIZONTAL, "ctrl+shift+backslash");
-    expectAction(ctrlShift, Qt::Key_O, ACTION_SPLIT_VERTICAL, "ctrl+shift+o");
-    expectAction(ctrlShift, Qt::Key_Plus, ACTION_INCREASE_FONT_SIZE, "ctrl+shift+plus");
-    expectAction(ctrlShift, Qt::Key_Minus, ACTION_DECREASE_FONT_SIZE, "ctrl+shift+minus");
+
+    /* Tabs live on the Meta key. */
+    expectAction(meta, Qt::Key_T, ACTION_NEW_TAB, "cmd/super+t");
+    expectAction(meta, Qt::Key_W, ACTION_CLOSE_TAB, "cmd/super+w");
+    expectAction(meta, Qt::Key_H, ACTION_PREV_TAB, "cmd/super+h (tab left)");
+    expectAction(meta, Qt::Key_L, ACTION_NEXT_TAB, "cmd/super+l (tab right)");
+    expectAction(meta, Qt::Key_1, ACTION_GOTO_TAB_1, "cmd/super+1");
+    expectAction(meta, Qt::Key_9, ACTION_GOTO_TAB_9, "cmd/super+9");
+
+    /* Splits live on Ctrl+Shift. */
+    expectAction(ctrlShift, Qt::Key_W, ACTION_SPLIT_VERTICAL, "ctrl+shift+w (split vertical)");
+    expectAction(ctrlShift, Qt::Key_V, ACTION_SPLIT_HORIZONTAL, "ctrl+shift+v (split horizontal)");
+    expectAction(ctrlShift, Qt::Key_C, ACTION_CLOSE_SPLIT, "ctrl+shift+c (close split)");
+
+    /* Pane navigation is the vim direction keys. */
+    expectAction(ctrlShift, Qt::Key_H, ACTION_FOCUS_LEFT, "ctrl+shift+h");
+    expectAction(ctrlShift, Qt::Key_J, ACTION_FOCUS_DOWN, "ctrl+shift+j");
+    expectAction(ctrlShift, Qt::Key_K, ACTION_FOCUS_UP, "ctrl+shift+k");
+    expectAction(ctrlShift, Qt::Key_L, ACTION_FOCUS_RIGHT, "ctrl+shift+l");
+
+    /* Clipboard, window and scrollback. */
+    expectAction(meta, Qt::Key_C, ACTION_COPY, "cmd/super+c");
+    expectAction(meta, Qt::Key_V, ACTION_PASTE, "cmd/super+v");
+    expectAction(meta, Qt::Key_Q, ACTION_QUIT, "cmd/super+q");
+    expectAction(meta, Qt::Key_K, ACTION_CLEAR_SCROLLBACK, "cmd/super+k");
     expectAction(Qt::NoModifier, Qt::Key_F11, ACTION_FULLSCREEN, "f11");
     expectAction(Qt::ShiftModifier, Qt::Key_PageUp, ACTION_SCROLL_UP, "shift+pageup");
+
+    /* Font size, through every key event a user might produce. */
+    expectAction(meta, Qt::Key_Equal, ACTION_INCREASE_FONT_SIZE, "cmd/super+=");
+    expectAction(meta | Qt::ShiftModifier, Qt::Key_Plus, ACTION_INCREASE_FONT_SIZE,
+                 "cmd/super+shift+= typing '+'");
+    expectAction(meta, Qt::Key_Minus, ACTION_DECREASE_FONT_SIZE, "cmd/super+-");
+    expectAction(meta, Qt::Key_0, ACTION_RESET_FONT_SIZE, "cmd/super+0");
 }
 
 /* The same binding must fire whether the layout reports the digit or the
@@ -102,85 +128,107 @@ void testLayoutTolerance() {
     check::section("keyboard-layout tolerance for shifted keys");
 
     loadBindingSet(/*macOs=*/false);
-    const auto ctrlShift = Qt::ControlModifier | Qt::ShiftModifier;
+    const auto meta = Qt::MetaModifier;
+    const auto metaShift = Qt::MetaModifier | Qt::ShiftModifier;
 
-    expectEventAction(ctrlShift, Qt::Key_1, ACTION_GOTO_TAB_1, "Key_1");
-    expectEventAction(ctrlShift, Qt::Key_Exclam, ACTION_GOTO_TAB_1, "Key_Exclam (Shift+1)");
-    expectEventAction(ctrlShift, Qt::Key_0, ACTION_RESET_FONT_SIZE, "Key_0");
-    expectEventAction(ctrlShift, Qt::Key_ParenRight, ACTION_RESET_FONT_SIZE,
+    /* Qt reports either the digit or the shifted symbol for the same physical
+     * key, depending on platform and layout; both must reach the binding. */
+    expectEventAction(meta, Qt::Key_1, ACTION_GOTO_TAB_1, "Key_1");
+    expectEventAction(metaShift, Qt::Key_Exclam, ACTION_GOTO_TAB_1, "Key_Exclam (Shift+1)");
+    expectEventAction(meta, Qt::Key_0, ACTION_RESET_FONT_SIZE, "Key_0");
+    expectEventAction(metaShift, Qt::Key_ParenRight, ACTION_RESET_FONT_SIZE,
                       "Key_ParenRight (Shift+0)");
-    expectEventAction(ctrlShift, Qt::Key_Backslash, ACTION_SPLIT_HORIZONTAL, "Key_Backslash");
-    expectEventAction(ctrlShift, Qt::Key_Bar, ACTION_SPLIT_HORIZONTAL, "Key_Bar (Shift+\\)");
-    expectEventAction(ctrlShift, Qt::Key_Minus, ACTION_DECREASE_FONT_SIZE, "Key_Minus");
-    expectEventAction(ctrlShift, Qt::Key_Underscore, ACTION_DECREASE_FONT_SIZE,
-                      "Key_Underscore (Shift+-) reaches the same action");
-    expectEventAction(ctrlShift, Qt::Key_Plus, ACTION_INCREASE_FONT_SIZE, "Key_Plus");
-    expectEventAction(ctrlShift, Qt::Key_Equal, ACTION_INCREASE_FONT_SIZE,
-                      "Key_Equal (Shift+= on US)");
-
-    /* The retry must not fire without Shift, or Ctrl+C would become a shortcut. */
-    expectEventAction(Qt::ControlModifier, Qt::Key_C, ACTION_NONE, "ctrl+c still unbound");
-    expectEventAction(Qt::ControlModifier, Qt::Key_1, ACTION_NONE, "ctrl+1 still unbound");
-}
-
-void testMacOsBindings() {
-    check::section("macOS Command bindings");
-
-    loadBindingSet(/*macOs=*/true);
-    check::that(Config::instance().macOsBindings(), "the macOS set is active");
+    expectEventAction(meta, Qt::Key_Minus, ACTION_DECREASE_FONT_SIZE, "Key_Minus");
+    expectEventAction(metaShift, Qt::Key_Underscore, ACTION_DECREASE_FONT_SIZE,
+                      "Key_Underscore (Shift+-)");
+    expectEventAction(meta, Qt::Key_Plus, ACTION_INCREASE_FONT_SIZE, "Key_Plus");
+    expectEventAction(metaShift, Qt::Key_Equal, ACTION_INCREASE_FONT_SIZE,
+                      "Key_Equal with Shift");
 
     /*
-     * `cmd` is Qt::MetaModifier and `ctrl` is Qt::ControlModifier, on every
-     * platform. RaTTY disables Qt's macOS habit of swapping the two, which would
-     * otherwise make a cmd+ binding fire on physical Ctrl and -- far worse -- make
-     * Command+C send SIGINT instead of Ctrl+C.
+     * On layouts where the digits are the shifted symbols, typing cmd+1 has to
+     * hold Shift down, so the lookup falls back to ignoring it.
      */
-    const auto cmd = Qt::MetaModifier;
-    const auto cmdShift = Qt::MetaModifier | Qt::ShiftModifier;
+    expectEventAction(metaShift, Qt::Key_1, ACTION_GOTO_TAB_1,
+                      "Key_1 with Shift (AZERTY and friends)");
+    expectEventAction(metaShift, Qt::Key_0, ACTION_RESET_FONT_SIZE, "Key_0 with Shift");
 
-    expectAction(cmd, Qt::Key_T, ACTION_NEW_TAB, "cmd+t");
-    expectAction(cmd, Qt::Key_W, ACTION_CLOSE_TAB, "cmd+w");
-    expectAction(cmd, Qt::Key_C, ACTION_COPY, "cmd+c");
-    expectAction(cmd, Qt::Key_V, ACTION_PASTE, "cmd+v");
-    expectAction(cmd, Qt::Key_Q, ACTION_QUIT, "cmd+q");
-    expectAction(cmd, Qt::Key_D, ACTION_SPLIT_HORIZONTAL, "cmd+d");
-    expectAction(cmdShift, Qt::Key_D, ACTION_SPLIT_VERTICAL, "cmd+shift+d");
-    expectAction(cmdShift, Qt::Key_W, ACTION_CLOSE_SPLIT, "cmd+shift+w");
-    expectAction(cmd, Qt::Key_1, ACTION_GOTO_TAB_1, "cmd+1");
-    expectAction(cmd, Qt::Key_9, ACTION_GOTO_TAB_9, "cmd+9");
-    expectAction(cmd, Qt::Key_K, ACTION_CLEAR_SCROLLBACK, "cmd+k");
-
-    /* Font size, through every key event a user might actually produce. */
-    expectAction(cmd, Qt::Key_Equal, ACTION_INCREASE_FONT_SIZE, "cmd+= (unshifted)");
-    expectAction(cmdShift, Qt::Key_Plus, ACTION_INCREASE_FONT_SIZE, "cmd+shift+= typing '+'");
-    expectAction(cmd, Qt::Key_Plus, ACTION_INCREASE_FONT_SIZE, "cmd++ (numpad)");
-    expectAction(cmd, Qt::Key_Minus, ACTION_DECREASE_FONT_SIZE, "cmd+-");
-    expectAction(cmdShift, Qt::Key_Underscore, ACTION_DECREASE_FONT_SIZE,
-                 "cmd+shift+- typing '_'");
-    expectAction(cmd, Qt::Key_0, ACTION_RESET_FONT_SIZE, "cmd+0");
-
-    /* With the Command set active, Ctrl belongs entirely to the shell. */
-    expectAction(Qt::ControlModifier, Qt::Key_C, ACTION_NONE, "ctrl+c reaches the shell");
-    expectAction(Qt::ControlModifier, Qt::Key_D, ACTION_NONE, "ctrl+d reaches the shell");
-    expectAction(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_T, ACTION_NONE,
-                 "the Ctrl+Shift set is inactive");
+    /*
+     * That fallback must never reach a letter, or Ctrl+Shift+C would decay into
+     * Ctrl+C and steal the shell's interrupt.
+     */
+    expectEventAction(Qt::ControlModifier, Qt::Key_C, ACTION_NONE, "ctrl+c still unbound");
+    expectEventAction(Qt::ControlModifier, Qt::Key_1, ACTION_NONE, "ctrl+1 still unbound");
+    expectEventAction(Qt::ControlModifier, Qt::Key_W, ACTION_NONE, "ctrl+w still unbound");
+    expectEventAction(Qt::ControlModifier, Qt::Key_V, ACTION_NONE, "ctrl+v still unbound");
+    expectEventAction(Qt::MetaModifier | Qt::ShiftModifier, Qt::Key_C, ACTION_NONE,
+                      "meta+shift+c does not decay to meta+c (copy)");
 }
 
-void testBindingSetsAreExclusive() {
-    check::section("only one binding set is active at a time");
+void testPlatformSetsAreEquivalent() {
+    check::section("the macOS and Linux default sets are equivalent");
 
-    loadBindingSet(/*macOs=*/false);
-    check::that(!Config::instance().macOsBindings(), "the Ctrl+Shift set is active");
-    expectAction(Qt::MetaModifier, Qt::Key_T, ACTION_NONE,
-                 "cmd+t does nothing when the macOS set is off");
-    expectAction(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_T, ACTION_NEW_TAB,
-                 "ctrl+shift+t works when the macOS set is off");
+    /*
+     * The two files differ only in whether the Meta modifier is spelled `cmd` or
+     * `super`, which is what a reader of each platform expects to see. Qt maps
+     * both to Qt::MetaModifier, so the resolved bindings must be identical --
+     * asserting it here is what stops the two files drifting apart.
+     */
+    struct Probe { Qt::KeyboardModifiers modifiers; Qt::Key key; const char* label; };
+    const auto meta = Qt::MetaModifier;
+    const auto ctrlShift = Qt::ControlModifier | Qt::ShiftModifier;
+    const Probe probes[] = {
+        {meta, Qt::Key_T, "meta+t"},   {meta, Qt::Key_W, "meta+w"},
+        {meta, Qt::Key_Q, "meta+q"},   {meta, Qt::Key_H, "meta+h"},
+        {meta, Qt::Key_L, "meta+l"},   {meta, Qt::Key_C, "meta+c"},
+        {meta, Qt::Key_V, "meta+v"},   {meta, Qt::Key_K, "meta+k"},
+        {meta, Qt::Key_0, "meta+0"},   {meta, Qt::Key_5, "meta+5"},
+        {ctrlShift, Qt::Key_W, "ctrl+shift+w"},
+        {ctrlShift, Qt::Key_V, "ctrl+shift+v"},
+        {ctrlShift, Qt::Key_C, "ctrl+shift+c"},
+        {ctrlShift, Qt::Key_H, "ctrl+shift+h"},
+        {ctrlShift, Qt::Key_J, "ctrl+shift+j"},
+        {ctrlShift, Qt::Key_K, "ctrl+shift+k"},
+        {ctrlShift, Qt::Key_L, "ctrl+shift+l"},
+        {Qt::NoModifier, Qt::Key_F11, "f11"},
+        {Qt::ControlModifier, Qt::Key_C, "ctrl+c"},
+        {Qt::ControlModifier, Qt::Key_D, "ctrl+d"},
+    };
 
     loadBindingSet(/*macOs=*/true);
-    expectAction(Qt::MetaModifier, Qt::Key_T, ACTION_NEW_TAB,
-                 "cmd+t works when the macOS set is on");
-    expectAction(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_T, ACTION_NONE,
-                 "ctrl+shift+t does nothing when the macOS set is on");
+    const int macOsCount = Config::instance().keybindingCount();
+    std::vector<Action> macOsActions;
+    for (const Probe& probe : probes) {
+        const QKeyEvent event(QEvent::KeyPress, probe.key, probe.modifiers);
+        macOsActions.push_back(Config::instance().lookupAction(&event));
+    }
+
+    loadBindingSet(/*macOs=*/false);
+    check::equal(Config::instance().keybindingCount(), macOsCount,
+                 "both sets bind the same number of keys");
+
+    size_t index = 0;
+    for (const Probe& probe : probes) {
+        const QKeyEvent event(QEvent::KeyPress, probe.key, probe.modifiers);
+        const Action linuxAction = Config::instance().lookupAction(&event);
+        check::that(linuxAction == macOsActions[index],
+                    std::string(probe.label) + " means the same in both sets ("
+                        + Config::actionToString(linuxAction).toStdString() + ")");
+        ++index;
+    }
+}
+
+void testForcingTheMacOsSet() {
+    check::section("the macOS set can be forced on any platform");
+
+    /* Point 3 of the request: a Mac keyboard on a Linux machine. */
+    loadBindingSet(/*macOs=*/true);
+    check::that(Config::instance().macOsBindings(), "the macOS set is active when forced");
+    check::that(Config::instance().keybindingCount() > 0, "and it has bindings");
+
+    loadBindingSet(/*macOs=*/false);
+    check::that(!Config::instance().macOsBindings(), "and can be forced off again");
+    check::that(Config::instance().keybindingCount() > 0, "with bindings either way");
 }
 
 void testShellKeysAreNotStolen() {
@@ -255,8 +303,8 @@ int main(int argc, char** argv) {
 
     testBindingsResolve();
     testLayoutTolerance();
-    testMacOsBindings();
-    testBindingSetsAreExclusive();
+    testPlatformSetsAreEquivalent();
+    testForcingTheMacOsSet();
     testShellKeysAreNotStolen();
     testKeyEncoding();
     return check::report("test_input");

@@ -159,14 +159,16 @@ std::optional<QColor> readColor(const YAML::Node& node, const char* key) {
 
 } // namespace
 
-/* One document's keybindings, kept apart until the whole document is read. */
-struct Config::BindingLayer {
-    QHash<QKeySequence, Action> bound;
-    QList<QKeySequence> unbound;      // keys explicitly set to `none`
-    QSet<Action> assignedActions;     // actions this document gives a key to
-
-    bool isEmpty() const { return bound.isEmpty() && unbound.isEmpty(); }
-};
+void Config::BindingLayer::absorb(const BindingLayer& later) {
+    for (const QKeySequence& sequence : later.unbound) {
+        bound.remove(sequence);
+        unbound.append(sequence);
+    }
+    for (auto it = later.bound.constBegin(); it != later.bound.constEnd(); ++it) {
+        bound.insert(it.key(), it.value());
+    }
+    assignedActions.unite(later.assignedActions);
+}
 
 /*
  * Parser - one YAML document applied over the current settings.
@@ -176,8 +178,7 @@ struct Config::BindingLayer {
  */
 struct Config::Parser {
     Config& config;
-    BindingLayer& defaultBindings;
-    BindingLayer& macOsBindings;
+    BindingLayer& bindings;
     PaletteOverrides& colorOverrides;
     ChromeColors& chromeOverrides;
 
@@ -194,10 +195,7 @@ struct Config::Parser {
             platformBindings(node);
         }
         if (const YAML::Node node = root["keybindings"]; node && node.IsMap()) {
-            keybindings(node, defaultBindings);
-        }
-        if (const YAML::Node node = root["keybindings_macos"]; node && node.IsMap()) {
-            keybindings(node, macOsBindings);
+            keybindings(node, bindings);
         }
     }
 
@@ -440,13 +438,11 @@ void Config::applyBuiltInDefaults() {
     windowOpacity_ = 1.0f;
     startFullscreen_ = false;
 
-    bindingsDefault_.clear();
-    bindingsMacOs_.clear();
+    builtInBindings_ = BindingLayer{};
+    userBindings_ = BindingLayer{};
     keybindings_.clear();
     macOsBindingsOverride_.reset();
     macOsBindings_ = macOsBindingsByDefault();
-    userTouchedDefaultBindings_ = false;
-    userTouchedMacOsBindings_ = false;
 }
 
 bool Config::macOsBindingsByDefault() {
@@ -457,32 +453,34 @@ bool Config::macOsBindingsByDefault() {
 #endif
 }
 
-void Config::resolveKeybindings() {
+void Config::resolvePlatformBindings() {
     macOsBindings_ = macOsBindingsOverride_.value_or(macOsBindingsByDefault());
-    keybindings_ = macOsBindings_ ? bindingsMacOs_ : bindingsDefault_;
+}
 
+void Config::loadKeybindings() {
     /*
-     * A configuration that edits the inactive set would otherwise appear to do
-     * nothing at all, which is a confusing way to spend an afternoon.
+     * The two files describe the same bindings; they differ only in whether the
+     * Meta modifier is spelled `cmd` or `super`, which is what a reader of each
+     * platform expects to see. Qt maps both to Qt::MetaModifier, so the resolved
+     * key combinations are identical -- an invariant the test suite asserts, so
+     * the two cannot drift apart.
      */
-    if (macOsBindings_ && bindingsMacOs_.isEmpty() && !bindingsDefault_.isEmpty()) {
-        qWarning() << "Config: macOS bindings are active but no keybindings_macos "
-                      "section was found; falling back to the keybindings section";
-        keybindings_ = bindingsDefault_;
+    const QString path = macOsBindings_ ? QStringLiteral(":/keybindings/macos.yaml")
+                                        : QStringLiteral(":/keybindings/linux.yaml");
+    if (!applyFile(path, Layer::Keybindings)) {
+        qWarning() << "Config: default keybindings missing from resources:" << path;
     }
+}
 
-    /* Editing the section that is not in use is the likeliest reason for a
-     * configuration to appear to have no effect at all. */
-    if (macOsBindings_ && userTouchedDefaultBindings_ && !userTouchedMacOsBindings_) {
-        qWarning() << "Config: your `keybindings` section was ignored because the "
-                      "macOS set is active - put those bindings under "
-                      "`keybindings_macos`, or set `mac_os_bindings: false`";
-    }
-    if (!macOsBindings_ && userTouchedMacOsBindings_ && !userTouchedDefaultBindings_) {
-        qWarning() << "Config: your `keybindings_macos` section was ignored because "
-                      "the macOS set is not active - put those bindings under "
-                      "`keybindings`, or set `mac_os_bindings: true`";
-    }
+void Config::resolveKeybindings() {
+    keybindings_.clear();
+    /*
+     * The defaults may offer several keys for one action. The user's layer is
+     * merged with action ownership, so naming an action there replaces every key
+     * the defaults gave it.
+     */
+    mergeBindings(keybindings_, builtInBindings_, /*ownsAssignedActions=*/false);
+    mergeBindings(keybindings_, userBindings_, /*ownsAssignedActions=*/true);
 }
 
 QString Config::userConfigPath() {
@@ -513,8 +511,15 @@ void Config::load() {
                    << userPath;
     }
 
-    /* The theme is only known now, so it is loaded last and merged first. */
+    /*
+     * The theme and the keybinding platform are themselves settings, so both are
+     * only known once every layer has been read. Each is loaded now and merged
+     * *underneath* what the user wrote.
+     */
+    resolvePlatformBindings();
+    loadKeybindings();
     applyTheme();
+
     resolvePalette();
     resolveChrome();
     resolveKeybindings();
@@ -526,7 +531,7 @@ void Config::load() {
             << "at" << fontSize_ << "pt,"
             << "padding" << windowPadding_ << "px,"
             << keybindings_.size()
-            << (macOsBindings_ ? "macOS keybindings" : "keybindings");
+            << (macOsBindings_ ? "keybindings (macOS set)" : "keybindings (Linux set)");
 }
 
 bool Config::applyFile(const QString& path, Layer layer) {
@@ -564,22 +569,28 @@ bool Config::applyDocument(const std::string& text, const QString& sourceLabel,
      * mergeBindings() can see the whole set of actions the document assigns
      * before deciding what to displace.
      */
-    BindingLayer defaultLayer;
-    BindingLayer macOsLayer;
-
-    /* Colours and chrome are staged into the bucket for this layer. */
+    /* Each kind of setting is staged into the bucket for this layer. */
     PaletteOverrides* colorTarget = &builtInColors_;
     ChromeColors* chromeTarget = &builtInChrome_;
+    BindingLayer* bindingTarget = &builtInBindings_;
     switch (layer) {
-    case Layer::Theme: colorTarget = &themeColors_; chromeTarget = &themeChrome_; break;
-    case Layer::User:  colorTarget = &userColors_;  chromeTarget = &userChrome_;  break;
-    case Layer::BuiltIn: break;
+    case Layer::Theme:
+        colorTarget = &themeColors_; chromeTarget = &themeChrome_;
+        break;
+    case Layer::User:
+        colorTarget = &userColors_; chromeTarget = &userChrome_;
+        bindingTarget = &userBindings_;
+        break;
+    case Layer::BuiltIn:
+    case Layer::Keybindings:
+        break;
     }
 
     PaletteOverrides documentColors;
     ChromeColors documentChrome;
+    BindingLayer documentBindings;
 
-    Parser parser{*this, defaultLayer, macOsLayer, documentColors, documentChrome};
+    Parser parser{*this, documentBindings, documentColors, documentChrome};
     try {
         parser.apply(root);
     } catch (const YAML::Exception& error) {
@@ -590,15 +601,7 @@ bool Config::applyDocument(const std::string& text, const QString& sourceLabel,
 
     colorTarget->absorb(documentColors);
     mergeChrome(*chromeTarget, documentChrome);
-
-    const bool userLayer = (layer == Layer::User);
-    mergeBindings(bindingsDefault_, defaultLayer, userLayer);
-    mergeBindings(bindingsMacOs_, macOsLayer, userLayer);
-
-    if (userLayer) {
-        userTouchedDefaultBindings_ |= !defaultLayer.isEmpty();
-        userTouchedMacOsBindings_ |= !macOsLayer.isEmpty();
-    }
+    bindingTarget->absorb(documentBindings);
     return true;
 }
 
@@ -765,24 +768,44 @@ Action Config::lookupAction(const QKeyEvent* event) const {
     if (!event) return ACTION_NONE;
 
     const Qt::KeyboardModifiers modifiers = event->modifiers();
+    const Qt::Key key = static_cast<Qt::Key>(event->key());
 
-    if (const Action action = lookupAction(
-            QKeySequence(QKeyCombination(modifiers, static_cast<Qt::Key>(event->key()))));
+    if (const Action action = lookupAction(QKeySequence(QKeyCombination(modifiers, key)));
         action != ACTION_NONE) {
         return action;
     }
 
     /*
      * Only worth retrying when Shift is held: without it there is no ambiguity
-     * about which of the two symbols on the key was meant, and rewriting
-     * unshifted keys risks turning Ctrl+C into a shortcut.
+     * about which of the two symbols on a key was meant.
      */
     if (!(modifiers & Qt::ShiftModifier)) return ACTION_NONE;
 
-    const Qt::Key partner = shiftPartner(event->key());
+    const Qt::Key partner = shiftPartner(key);
     if (partner == Qt::Key_unknown) return ACTION_NONE;
 
-    return lookupAction(QKeySequence(QKeyCombination(modifiers, partner)));
+    if (const Action action = lookupAction(QKeySequence(QKeyCombination(modifiers, partner)));
+        action != ACTION_NONE) {
+        return action;
+    }
+
+    /*
+     * Finally, try without Shift.
+     *
+     * A binding like `cmd+1` carries no Shift, yet on layouts where the digits
+     * are the *shifted* symbols -- AZERTY, among others -- typing it necessarily
+     * holds Shift down. Ignoring Shift is what lets that reach the binding.
+     *
+     * shiftPartner() only knows digits and punctuation, never letters, and this
+     * runs only for keys it recognises. So `ctrl+shift+c` can never decay into
+     * `ctrl+c` and steal an interrupt from the shell.
+     */
+    const Qt::KeyboardModifiers withoutShift = modifiers & ~Qt::KeyboardModifiers(Qt::ShiftModifier);
+    if (const Action action = lookupAction(QKeySequence(QKeyCombination(withoutShift, partner)));
+        action != ACTION_NONE) {
+        return action;
+    }
+    return lookupAction(QKeySequence(QKeyCombination(withoutShift, key)));
 }
 
 bool Config::isBound(const QKeyEvent* event) const {

@@ -263,6 +263,19 @@ test_splits/fast:
 .PHONY : test_splits/fast
 
 #=============================================================================
+# Target rules for targets named test_splits_gl
+
+# Build rule for target.
+test_splits_gl: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_splits_gl
+.PHONY : test_splits_gl
+
+# fast build rule for target.
+test_splits_gl/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_splits_gl.dir/build.make tests/CMakeFiles/test_splits_gl.dir/build
+.PHONY : test_splits_gl/fast
+
+#=============================================================================
 # Target rules for targets named test_render
 
 # Build rule for target.
@@ -406,6 +419,32 @@ test_splits_autogen/fast:
 .PHONY : test_splits_autogen/fast
 
 #=============================================================================
+# Target rules for targets named test_splits_gl_autogen_timestamp_deps
+
+# Build rule for target.
+test_splits_gl_autogen_timestamp_deps: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_splits_gl_autogen_timestamp_deps
+.PHONY : test_splits_gl_autogen_timestamp_deps
+
+# fast build rule for target.
+test_splits_gl_autogen_timestamp_deps/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_splits_gl_autogen_timestamp_deps.dir/build.make tests/CMakeFiles/test_splits_gl_autogen_timestamp_deps.dir/build
+.PHONY : test_splits_gl_autogen_timestamp_deps/fast
+
+#=============================================================================
+# Target rules for targets named test_splits_gl_autogen
+
+# Build rule for target.
+test_splits_gl_autogen: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_splits_gl_autogen
+.PHONY : test_splits_gl_autogen
+
+# fast build rule for target.
+test_splits_gl_autogen/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_splits_gl_autogen.dir/build.make tests/CMakeFiles/test_splits_gl_autogen.dir/build
+.PHONY : test_splits_gl_autogen/fast
+
+#=============================================================================
 # Target rules for targets named test_render_autogen_timestamp_deps
 
 # Build rule for target.
@@ -506,6 +545,30 @@ ratty_autogen/3YJK5W5UP7/qrc_config.s: ratty_autogen/3YJK5W5UP7/qrc_config.cpp.s
 ratty_autogen/3YJK5W5UP7/qrc_config.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/ratty_autogen/3YJK5W5UP7/qrc_config.cpp.s
 .PHONY : ratty_autogen/3YJK5W5UP7/qrc_config.cpp.s
+
+ratty_autogen/3YJK5W5UP7/qrc_keybindings.o: ratty_autogen/3YJK5W5UP7/qrc_keybindings.cpp.o
+.PHONY : ratty_autogen/3YJK5W5UP7/qrc_keybindings.o
+
+# target to build an object file
+ratty_autogen/3YJK5W5UP7/qrc_keybindings.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/ratty_autogen/3YJK5W5UP7/qrc_keybindings.cpp.o
+.PHONY : ratty_autogen/3YJK5W5UP7/qrc_keybindings.cpp.o
+
+ratty_autogen/3YJK5W5UP7/qrc_keybindings.i: ratty_autogen/3YJK5W5UP7/qrc_keybindings.cpp.i
+.PHONY : ratty_autogen/3YJK5W5UP7/qrc_keybindings.i
+
+# target to preprocess a source file
+ratty_autogen/3YJK5W5UP7/qrc_keybindings.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/ratty_autogen/3YJK5W5UP7/qrc_keybindings.cpp.i
+.PHONY : ratty_autogen/3YJK5W5UP7/qrc_keybindings.cpp.i
+
+ratty_autogen/3YJK5W5UP7/qrc_keybindings.s: ratty_autogen/3YJK5W5UP7/qrc_keybindings.cpp.s
+.PHONY : ratty_autogen/3YJK5W5UP7/qrc_keybindings.s
+
+# target to generate assembly for a file
+ratty_autogen/3YJK5W5UP7/qrc_keybindings.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/ratty_autogen/3YJK5W5UP7/qrc_keybindings.cpp.s
+.PHONY : ratty_autogen/3YJK5W5UP7/qrc_keybindings.cpp.s
 
 ratty_autogen/3YJK5W5UP7/qrc_shaders.o: ratty_autogen/3YJK5W5UP7/qrc_shaders.cpp.o
 .PHONY : ratty_autogen/3YJK5W5UP7/qrc_shaders.o
@@ -1084,6 +1147,8 @@ help:
 	@echo "... test_render_autogen_timestamp_deps"
 	@echo "... test_splits_autogen"
 	@echo "... test_splits_autogen_timestamp_deps"
+	@echo "... test_splits_gl_autogen"
+	@echo "... test_splits_gl_autogen_timestamp_deps"
 	@echo "... test_tabbar_autogen"
 	@echo "... test_tabbar_autogen_timestamp_deps"
 	@echo "... test_terminal_autogen"
@@ -1094,11 +1159,15 @@ help:
 	@echo "... test_input"
 	@echo "... test_render"
 	@echo "... test_splits"
+	@echo "... test_splits_gl"
 	@echo "... test_tabbar"
 	@echo "... test_terminal"
 	@echo "... ratty_autogen/3YJK5W5UP7/qrc_config.o"
 	@echo "... ratty_autogen/3YJK5W5UP7/qrc_config.i"
 	@echo "... ratty_autogen/3YJK5W5UP7/qrc_config.s"
+	@echo "... ratty_autogen/3YJK5W5UP7/qrc_keybindings.o"
+	@echo "... ratty_autogen/3YJK5W5UP7/qrc_keybindings.i"
+	@echo "... ratty_autogen/3YJK5W5UP7/qrc_keybindings.s"
 	@echo "... ratty_autogen/3YJK5W5UP7/qrc_shaders.o"
 	@echo "... ratty_autogen/3YJK5W5UP7/qrc_shaders.i"
 	@echo "... ratty_autogen/3YJK5W5UP7/qrc_shaders.s"

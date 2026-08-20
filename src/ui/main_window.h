@@ -42,11 +42,20 @@ private slots:
 
 private:
     void setupUi();
+    /* Label of the tab at `index`, or a default. Read *before* tree surgery,
+     * because the surgery can make the tab disappear. */
+    QString tabLabel(int index) const;
     /* Re-read the tab bar's style, position and visibility from the config. */
     void applyTabBarConfiguration();
     void updateTabBarVisibility();
-    /* Puts `root` at `index`, taking over the tab's previous widget. */
-    void installTabRoot(int index, SplitContainer* root);
+    /*
+     * Make `root` the page of the tab at `index`.
+     *
+     * Deliberately tolerant of the tab having already vanished: promoting a new
+     * root reparents the old page out of the tab widget's stack, and QTabWidget
+     * responds by removing the tab. See the implementation.
+     */
+    void installTabRoot(int index, SplitContainer* root, const QString& label);
     void connectRoot(SplitContainer* root);
     int indexOfRootContaining(const SplitContainer* node) const;
 

@@ -27,6 +27,12 @@ endfunction()
 ratty_add_test(test_terminal)
 ratty_add_test(test_input)
 ratty_add_test(test_splits)
+
+# Needs a real GL context, so it runs on the platform plugin rather than
+# offscreen and skips itself when no context is available.
+add_executable(test_splits_gl test_splits_gl.cpp check.h ${RATTY_RESOURCES_ABS})
+target_link_libraries(test_splits_gl PRIVATE ratty_lib)
+add_test(NAME test_splits_gl COMMAND test_splits_gl)
 ratty_add_test(test_render)
 ratty_add_test(test_config)
 ratty_add_test(test_tabbar)

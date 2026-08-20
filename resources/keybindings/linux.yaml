@@ -1,0 +1,71 @@
+# RaTTY default keybindings - Linux
+#
+# Loaded automatically on Linux and anywhere that is not macOS. Set 'mac_os_bindings: true' in your own config to use the macOS set instead - useful with a Mac keyboard on a Linux machine.
+#
+# Modifiers
+#   super    the Linux super key   (Qt's Meta modifier)
+#   ctrl   the physical Control key   (never remapped, so Ctrl+C still
+#          reaches the shell as an interrupt)
+#   shift
+#   alt    the Linux Alt key
+#
+# Named keys: up, down, left, right, tab, return, space, home, end, pageup,
+#             pagedown, insert, delete, backspace, escape, f1..f12
+# Punctuation is spelled out: plus, minus, underscore, equal, backslash,
+#             slash, comma, period, semicolon, grave, bracketleft, bracketright
+#
+# To change any of this, put a `keybindings:` section in
+# ~/.config/ratty/config.yaml. Naming an action there replaces every key listed
+# for it here; set an action to `none` to remove it entirely.
+
+keybindings:
+  # --- tabs ---------------------------------------------------------------
+  super+t: new_tab
+  super+w: close_tab
+  super+h: prev_tab            # move to the tab on the left
+  super+l: next_tab            # move to the tab on the right
+  super+1: goto_tab_1
+  super+2: goto_tab_2
+  super+3: goto_tab_3
+  super+4: goto_tab_4
+  super+5: goto_tab_5
+  super+6: goto_tab_6
+  super+7: goto_tab_7
+  super+8: goto_tab_8
+  super+9: goto_tab_9
+
+  # --- splits -------------------------------------------------------------
+  # split_vertical   divides top / bottom  (the new pane appears below)
+  # split_horizontal divides left / right  (the new pane appears beside)
+  ctrl+shift+w: split_vertical
+  ctrl+shift+v: split_horizontal
+  ctrl+shift+c: close_split
+
+  ctrl+shift+h: focus_left
+  ctrl+shift+j: focus_down
+  ctrl+shift+k: focus_up
+  ctrl+shift+l: focus_right
+
+  # --- clipboard ----------------------------------------------------------
+  super+c: copy
+  super+v: paste
+
+  # --- font size ----------------------------------------------------------
+  # "Plus" arrives as more than one key event depending on whether Shift is
+  # held and on the keyboard layout, so each spelling is bound.
+  super+plus: increase_font_size
+  super+equal: increase_font_size
+  super+shift+equal: increase_font_size
+  super+minus: decrease_font_size
+  super+shift+minus: decrease_font_size
+  super+0: reset_font_size
+
+  # --- window -------------------------------------------------------------
+  super+q: quit
+  super+ctrl+f: fullscreen
+  f11: fullscreen
+
+  # --- scrollback ---------------------------------------------------------
+  super+k: clear_scrollback
+  shift+pageup: scroll_up
+  shift+pagedown: scroll_down

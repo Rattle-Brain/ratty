@@ -32,6 +32,9 @@ public:
     ~TerminalSession() override;
 
     bool isValid() const;
+    /* The shell's process id, or -1. Identity across a reparent is what proves
+     * the session was preserved rather than respawned. */
+    pid_t shellPid() const { return pty_ ? pty_->childPid() : -1; }
 
     const Screen& screen() const { return emulator_.screen(); }
     const Palette& palette() const { return emulator_.palette(); }

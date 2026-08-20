@@ -97,6 +97,7 @@ set(RATTY_RESOURCES
     resources/shaders.qrc
     resources/config.qrc
     resources/themes.qrc
+    resources/keybindings.qrc
 )
 
 # Everything except main.cpp, so the test suites can link the same code the

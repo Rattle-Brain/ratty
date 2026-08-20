@@ -45,6 +45,9 @@ public:
 
     QString title() const { return title_; }
 
+    /* The shell's process id, or -1 if none is running. */
+    pid_t shellPid() const { return session_ ? session_->shellPid() : -1; }
+
 signals:
     void sessionEnded();
     void titleChanged(const QString& title);
@@ -63,6 +66,8 @@ protected:
 private slots:
     void onScreenChanged();
     void onBlinkTick();
+    /* Release GL-owned objects while their context is still current. */
+    void releaseGLResources();
 
 private:
     /* Physical-pixel size of the framebuffer Qt gave us. */

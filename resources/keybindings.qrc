@@ -1,0 +1,7 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/keybindings">
+        <file alias="macos.yaml">keybindings/macos.yaml</file>
+        <file alias="linux.yaml">keybindings/linux.yaml</file>
+    </qresource>
+</RCC>

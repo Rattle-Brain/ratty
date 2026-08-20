@@ -740,11 +740,29 @@ paint. Process management, byte decoding and VT interpretation all live in
 
 Details worth knowing before editing it:
 
+- **`initializeGL()` runs more than once, and must not rebuild the session.**
+  Reparenting a `QOpenGLWidget` — which is exactly what splitting or closing a
+  pane does — destroys its GL context and creates a new one, so Qt calls
+  `initializeGL()` again. Measured:
+
+  ```
+  [pane] initializeGL #1  ctx=0xca6cc9450
+  --- reparented into a QSplitter ---
+  [pane] initializeGL #2  ctx=0xca6cca7d0
+  ```
+
+  The renderer *must* be rebuilt, because every GL object it owns belonged to the
+  dead context. The `TerminalSession` must *not* be: it owns the pty and the
+  shell, which have nothing to do with any context. Rebuilding it killed the
+  running shell and replaced it with an empty one on every split, which is what
+  made the pane look blank.
+- **GL resources are released from `QOpenGLContext::aboutToBeDestroyed`**, the
+  only moment the outgoing context is still current. Deleting them later would
+  issue GL calls against a context that no longer exists.
 - `resizeGL()` must **not** call `makeCurrent()`/`doneCurrent()`. Qt invokes it
   with the context already current, and releasing it leaves Qt's own resize
   handling without one. `reloadFont()`, which is called from outside a paint,
   does need the pair.
-- The destructor makes the context current before releasing GL-owned objects.
 - The cursor blink timer only runs when the pane has focus *and* blinking is
   enabled. It used to repaint the entire grid twice a second unconditionally.
   Incoming output resets the blink phase so the cursor stays solid while text
@@ -849,6 +867,32 @@ a single-terminal window looks like a terminal.
 Note that both `paneSessionEnded` and `paneTitleChanged` connect to *member
 functions*: `Qt::UniqueConnection` is silently rejected for lambdas, and
 `installTabRoot()` may reconnect the same root more than once.
+
+#### Promoting a new root can remove the tab
+
+This is the second half of the split bug, and the half that only appears inside a
+`QTabWidget`.
+
+When the pane being split *is* the tab's page, the tree surgery reparents it
+under a new container — which takes it out of the tab widget's stacked layout.
+`QTabWidget` watches for a page leaving and responds by **removing its tab**, so
+the count legitimately drops to zero between the split and the moment the new
+root is installed:
+
+```
+before:  tabCount=1   count()=1
+--- Ctrl+Shift+W ---
+after:   tabCount=0   count()=0   currentIndex=-1   <- no page at all
+```
+
+`installTabRoot()` used to open with `if (index >= tabCount()) return;`, so it
+returned without inserting anything and left the tab widget empty: a blank
+window, with the shell still running behind it. It is now tolerant of the tab
+having vanished, and only removes an occupant that has demonstrably been absorbed
+into the new tree (`parentNode() != nullptr`) rather than assuming one is there.
+
+Callers read the tab's label *before* the surgery, because afterwards there may be
+no tab to read it from.
 
 ### 6.5 `InputHandler`
 
@@ -975,87 +1019,37 @@ Key sequences accept `ctrl`/`control`, `shift`, `alt`/`option`,
 `backslash`, `bracketleft`, …) — the last because `ctrl+shift++` cannot be split
 on `+` unambiguously.
 
-### Two keybinding sets
+### Two default keybinding files
 
-The configuration carries `keybindings` and `keybindings_macos`, and exactly one
-is active. `mac_os_bindings` accepts `true`, `false`, or `auto` (the default),
-which follows the platform.
+The defaults live in `:/keybindings/macos.yaml` and `:/keybindings/linux.yaml`,
+and `mac_os_bindings` (`auto` | `true` | `false`) chooses between them. `auto`
+follows the platform; forcing it covers a Mac keyboard on a Linux machine.
 
-Resolution is deliberately **two-phase**. The parser fills both sets as it reads
-each layer, and `resolveKeybindings()` picks one only after every layer has been
-read — because `mac_os_bindings` may appear in any layer, and in any position
-within a file, and streaming the decision would make the result depend on key
-order. Each set is overlaid independently, so `none` removals and additions apply
-to whichever set they were written in.
+The two files describe the *same* bindings and differ only in whether the Meta
+modifier is spelled `cmd` or `super` — Qt maps both to `Qt::MetaModifier`, so the
+resolved key combinations are identical. The split exists for readability: a
+Linux user should not have to mentally translate `cmd`. Because that makes the
+files duplicates, `tests/test_input.cpp` asserts they resolve identically, so the
+two cannot drift apart.
 
-#### Action ownership
-
-Bindings are staged per document into a `BindingLayer` rather than written
-straight through, so `mergeBindings()` can see every action a document assigns
-before deciding what to displace.
-
-For the **user's** layer, any action it assigns is treated as fully described by
-that layer, and the keys inherited for it are dropped first. This is what makes
-
-```yaml
-keybindings_macos:
-  ctrl+shift+w: split_vertical
-```
-
-mean "split_vertical is now Ctrl+Shift+W" rather than "Ctrl+Shift+W *also* splits
-vertically" — otherwise the default `⌘⇧D` would keep working and two keys would
-do the same thing, which is not what a user writing that line intends.
-
-The bundled defaults are merged *without* the rule, so they can legitimately
-offer several keys for one action (`ctrl+shift+e` and `ctrl+shift+backslash` both
-split horizontally). A user wanting two keys lists both.
-
-#### Themes, and why colours are staged
-
-A theme is a configuration fragment holding a `colors:` section, shipped under
-`:/themes`. That means themes need no parser of their own and a user can read one
-to learn the format; the catalogue is enumerated from the resource system rather
-than a second hard-coded list, so adding a theme is a file plus a line in
-`themes.qrc`.
-
-The interesting part is ordering. `theme:` is itself a setting, so which theme is
-active is not known until every layer has been read — and by then the user's own
-`colors:` entries have already been seen. Applying colours as they are parsed
-would make the outcome depend on whether `theme:` happened to appear above or
-below `colors:` in the file.
-
-So colours are **staged**, not applied. Each layer's colours go into a
-`PaletteOverrides` for that layer, and `resolvePalette()` merges them in a fixed
-order once everything has been read:
+Loading them is the awkward part. *Which* file to load depends on
+`mac_os_bindings`, which the user's own configuration may set — so the defaults
+can only be read **after** the user's file, and must still merge **underneath**
+it. Bindings are therefore staged rather than applied as they are parsed:
 
 ```
-Palette()  ->  built-in layer  ->  theme  ->  user
+load()
+  built-in defaults
+  bundled default_config.yaml   -> may set mac_os_bindings
+  user config.yaml              -> may set mac_os_bindings; stages userBindings_
+  resolvePlatformBindings()     -> decide which file
+  loadKeybindings()             -> stages builtInBindings_
+  resolveKeybindings()          -> builtIn (no ownership), then user (ownership)
 ```
 
-`theme: nord` plus `colors: {red: ...}` therefore gives Nord with one colour
-changed, whichever comes first in the file. Chrome is staged the same way by
-`resolveChrome()`.
-
-`PaletteOverrides::mergeInto()` also carries the cursor rule: a stated foreground
-moves the cursor with it unless the cursor is stated too. Without that, switching
-to a light theme would leave the cursor in the dark theme's colour.
-
-An unknown theme name is reported with the list of available ones and then
-discarded, leaving the built-in palette — which is complete, so the terminal is
-still usable.
-
-#### Reporting a config that cannot work
-
-Two situations would otherwise leave a user convinced the file is not being read
-at all, so both are reported:
-
-- the active set is empty while the other is not — the other is used
-- the user's layer wrote only to the *inactive* set, naming the section they
-  should have edited instead
-
-If the macOS set is active but empty while the other one is not, the other is used
-and a warning is logged: a config that edits the inactive set would otherwise
-appear to do nothing at all.
+There is a single `keybindings:` section for user overrides. An earlier design had
+one section per platform, which is unnecessary once the two sets are known to be
+equivalent — and it meant a user could silently edit the inactive one.
 
 ### `cmd` and `ctrl` mean the same thing everywhere
 
@@ -1093,9 +1087,17 @@ would then depend on the user's keyboard. The default bindings put font sizing o
 
 Font sizing needs care for the same reason, since "plus" is not one key event.
 `⌘=`, `⌘⇧=` (which types `+`) and a numeric-keypad `⌘+` are three different
-combinations, so the macOS set binds `cmd+equal`, `cmd+shift+equal` and
-`cmd+plus`, with `cmd+minus` and `cmd+shift+minus` mirroring it. All six are
-covered by `tests/test_input.cpp`.
+combinations, so both files bind `equal`, `shift+equal` and `plus`, with `minus`
+and `shift+minus` mirroring it.
+
+There is a third fallback, which exists for a case the test suite caught: after
+trying the literal combination and then the key's shift partner, the lookup
+retries **without Shift**. A binding such as `cmd+1` carries no Shift, yet on
+layouts where the digits are the *shifted* symbols — AZERTY among others — typing
+it necessarily holds Shift down. `shiftPartner()` only knows digits and
+punctuation, never letters, and the fallback runs only for keys it recognises, so
+`ctrl+shift+c` can never decay into `ctrl+c` and steal an interrupt from the
+shell. Both halves of that are asserted.
 
 `Config::save()` no longer exists. It was a no-op that logged "not yet
 implemented" while `closeEvent` dutifully wrote the window size into it;
@@ -1247,12 +1249,23 @@ cd build && ctest --output-on-failure
 | `test_terminal` | deferred wrap, the zsh prompt artifact, OSC termination and colour control, CSI parsing, scrolling regions, the alternate buffer, SGR colours, erase semantics, emoji presentation selectors, grapheme clustering, UTF-8 chunk splitting, wide characters, resize, device reports |
 | `test_input` | both keybinding sets resolving against real `QKeyEvent`s, set exclusivity, layout tolerance, shell control keys staying unbound, VT input encoding |
 | `test_splits` | pane tree surgery: nothing destroyed that should survive, nothing left invisible, directional navigation |
+| `test_splits_gl` | splits and closes against a **real GL context**, both directly on `SplitContainer` and through `MainWindow` with real key events: the shell survives reparenting, the tab keeps its page, and every pane still draws. Skips itself when no context is available |
 | `test_config` | the real load path against a sandboxed HOME: overlay semantics, colours, keybinding add/remove, `mac_os_bindings` resolution, every shipped theme's completeness and chrome coherence, theme-versus-override precedence in both file orders, the unquoted-colour trap, malformed files, clamping |
 | `test_tabbar` | style and position parsing, chrome derivation on dark *and light* palettes, bar thinness, tab metrics, and that every style paints something |
 | `test_render` | grid padding maths, box-drawing tiling, fallback coverage of the characters a TUI draws, text-vs-emoji font selection, font preference order, and the guarantee that no resolution path yields a proportional font |
 
-They run under `QT_QPA_PLATFORM=offscreen` and need no GPU. `tests/check.h` is a
-three-function harness, not a framework.
+All but one run under `QT_QPA_PLATFORM=offscreen` and need no GPU.
+`tests/check.h` is a three-function harness, not a framework.
+
+`test_splits_gl` is the exception, and the reason it exists is worth stating
+twice over. The offscreen platform cannot create an OpenGL context, so
+`test_splits` could never have caught a bug in what happens to a pane's context
+when it is reparented. And testing `SplitContainer` in isolation could not catch
+what a `QTabWidget` does when its page is reparented away. Two separate bugs hid
+in exactly those two blind spots, so the suite now drives the **whole** path:
+`MainWindow`, real key events, a real context, and a pixel check that the panes
+are not blank. It skips itself, rather than failing, when no context can be
+created, so a headless CI run stays green.
 
 One CMake subtlety, since it caused a confusing failure: a `.qrc` compiled into a
 **static** library registers itself from a global initializer that the linker

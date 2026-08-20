@@ -183,8 +183,22 @@ private:
      * enclosing class's private members, so no friendship is needed.
      */
     struct Parser;
-    /* One document's worth of keybindings, before it is folded in. */
-    struct BindingLayer;
+
+    /*
+     * One layer's worth of keybindings, held apart until every layer has been
+     * read. Staging is necessary because the *default* bindings come from a
+     * separate file whose identity depends on `mac_os_bindings`, which the user's
+     * own configuration may set -- so the defaults are loaded after the user's
+     * file and must still merge underneath it.
+     */
+    struct BindingLayer {
+        QHash<QKeySequence, Action> bound;
+        QList<QKeySequence> unbound;      // keys explicitly set to `none`
+        QSet<Action> assignedActions;     // actions this layer gives a key to
+
+        bool isEmpty() const { return bound.isEmpty() && unbound.isEmpty(); }
+        void absorb(const BindingLayer& later);
+    };
 
     /*
      * Which configuration layer a document belongs to. Colours are merged in
@@ -192,10 +206,14 @@ private:
      * lets `theme:` be a setting rather than something that has to appear before
      * the colours it affects.
      */
-    enum class Layer { BuiltIn, Theme, User };
+    enum class Layer { BuiltIn, Theme, Keybindings, User };
 
     void applyBuiltInDefaults();
-    /* Pick the active keybinding set once every layer has been read. */
+    /* Decide which platform's defaults apply; must run before loadKeybindings(). */
+    void resolvePlatformBindings();
+    /* Read the macOS or Linux default keybinding file. */
+    void loadKeybindings();
+    /* Fold the default and user layers into the active set. */
     void resolveKeybindings();
     /* Build the palette from built-in, theme and user colours, in that order. */
     void resolvePalette();
@@ -242,19 +260,14 @@ private:
     /* The other key on the same physical key ('1' <-> '!'), or Key_unknown. */
     static Qt::Key shiftPartner(int key);
 
-    /* The two source sets, and the resolved active one. */
-    QHash<QKeySequence, Action> bindingsDefault_;
-    QHash<QKeySequence, Action> bindingsMacOs_;
+    /* The default layer, the user's layer, and the resolved active set. */
+    BindingLayer builtInBindings_;
+    BindingLayer userBindings_;
     QHash<QKeySequence, Action> keybindings_;
 
     /* nullopt means "decide from the platform". */
     std::optional<bool> macOsBindingsOverride_;
     bool macOsBindings_ = false;
-
-    /* Which sets the user's own configuration wrote to, so that editing the
-     * inactive one can be reported rather than silently doing nothing. */
-    bool userTouchedDefaultBindings_ = false;
-    bool userTouchedMacOsBindings_ = false;
 
     Palette palette_;
     /* Colours staged per layer; see Layer and resolvePalette(). */

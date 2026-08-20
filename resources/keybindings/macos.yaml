@@ -1,0 +1,71 @@
+# RaTTY default keybindings - macOS
+#
+# Loaded automatically on macOS. Set 'mac_os_bindings: false' in your own config to use the Linux set instead.
+#
+# Modifiers
+#   cmd    the macOS cmd key   (Qt's Meta modifier)
+#   ctrl   the physical Control key   (never remapped, so Ctrl+C still
+#          reaches the shell as an interrupt)
+#   shift
+#   option the macOS Option key
+#
+# Named keys: up, down, left, right, tab, return, space, home, end, pageup,
+#             pagedown, insert, delete, backspace, escape, f1..f12
+# Punctuation is spelled out: plus, minus, underscore, equal, backslash,
+#             slash, comma, period, semicolon, grave, bracketleft, bracketright
+#
+# To change any of this, put a `keybindings:` section in
+# ~/.config/ratty/config.yaml. Naming an action there replaces every key listed
+# for it here; set an action to `none` to remove it entirely.
+
+keybindings:
+  # --- tabs ---------------------------------------------------------------
+  cmd+t: new_tab
+  cmd+w: close_tab
+  cmd+h: prev_tab            # move to the tab on the left
+  cmd+l: next_tab            # move to the tab on the right
+  cmd+1: goto_tab_1
+  cmd+2: goto_tab_2
+  cmd+3: goto_tab_3
+  cmd+4: goto_tab_4
+  cmd+5: goto_tab_5
+  cmd+6: goto_tab_6
+  cmd+7: goto_tab_7
+  cmd+8: goto_tab_8
+  cmd+9: goto_tab_9
+
+  # --- splits -------------------------------------------------------------
+  # split_vertical   divides top / bottom  (the new pane appears below)
+  # split_horizontal divides left / right  (the new pane appears beside)
+  ctrl+shift+w: split_vertical
+  ctrl+shift+v: split_horizontal
+  ctrl+shift+c: close_split
+
+  ctrl+shift+h: focus_left
+  ctrl+shift+j: focus_down
+  ctrl+shift+k: focus_up
+  ctrl+shift+l: focus_right
+
+  # --- clipboard ----------------------------------------------------------
+  cmd+c: copy
+  cmd+v: paste
+
+  # --- font size ----------------------------------------------------------
+  # "Plus" arrives as more than one key event depending on whether Shift is
+  # held and on the keyboard layout, so each spelling is bound.
+  cmd+plus: increase_font_size
+  cmd+equal: increase_font_size
+  cmd+shift+equal: increase_font_size
+  cmd+minus: decrease_font_size
+  cmd+shift+minus: decrease_font_size
+  cmd+0: reset_font_size
+
+  # --- window -------------------------------------------------------------
+  cmd+q: quit
+  cmd+ctrl+f: fullscreen
+  f11: fullscreen
+
+  # --- scrollback ---------------------------------------------------------
+  cmd+k: clear_scrollback
+  shift+pageup: scroll_up
+  shift+pagedown: scroll_down

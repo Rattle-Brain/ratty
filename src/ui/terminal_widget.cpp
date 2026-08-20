@@ -37,10 +37,9 @@ TerminalWidget::TerminalWidget(QWidget* parent)
 }
 
 TerminalWidget::~TerminalWidget() {
-    /* Release GL-owned objects while the context is still current. */
-    makeCurrent();
-    renderer_.reset();
-    doneCurrent();
+    /* A no-op if the context was already destroyed and took the renderer with
+     * it, which is the usual case. */
+    releaseGLResources();
 }
 
 double TerminalWidget::scaleFactor() const {
@@ -65,7 +64,8 @@ int TerminalWidget::paddingPixels() const {
 void TerminalWidget::initializeGL() {
     initializeOpenGLFunctions();
 
-    if (QOpenGLContext* context = QOpenGLContext::currentContext()) {
+    QOpenGLContext* context = QOpenGLContext::currentContext();
+    if (context) {
         const QSurfaceFormat format = context->format();
         if (format.majorVersion() < 3
             || (format.majorVersion() == 3 && format.minorVersion() < 3)) {
@@ -73,8 +73,18 @@ void TerminalWidget::initializeGL() {
                         << format.majorVersion() << "." << format.minorVersion();
             return;
         }
+
+        /*
+         * Reparenting a QOpenGLWidget -- which is exactly what splitting a pane
+         * does -- destroys its context and creates a new one, so this runs more
+         * than once. Everything the previous renderer owned belongs to the dead
+         * context, and must be released while that context is still current.
+         */
+        connect(context, &QOpenGLContext::aboutToBeDestroyed,
+                this, &TerminalWidget::releaseGLResources, Qt::UniqueConnection);
     }
 
+    /* GL resources cannot outlive their context, so the renderer is rebuilt. */
     renderer_ = std::make_unique<GLRenderer>();
     if (!renderer_->initialize()) {
         qCritical() << "TerminalWidget: renderer initialization failed";
@@ -90,6 +100,21 @@ void TerminalWidget::initializeGL() {
     layout_ = TerminalRenderer::computeLayout(renderer_->fontMetrics(),
                                              framebufferWidth(), framebufferHeight(),
                                              paddingPixels());
+
+    /*
+     * The session must NOT be rebuilt. It owns the pty and the shell, neither of
+     * which has anything to do with the GL context: recreating it here killed the
+     * running shell and replaced it with an empty one every time a pane was
+     * split, which looked exactly like the terminal going blank.
+     */
+    if (session_) {
+        if (layout_.isValid()) {
+            session_->resize(layout_.rows, layout_.cols);
+        }
+        restartBlink();
+        update();
+        return;
+    }
 
     const int rows = layout_.isValid() ? layout_.rows : DefaultRows;
     const int cols = layout_.isValid() ? layout_.cols : DefaultCols;
@@ -114,6 +139,20 @@ void TerminalWidget::initializeGL() {
     }
 
     restartBlink();
+}
+
+void TerminalWidget::releaseGLResources() {
+    /*
+     * Called from QOpenGLContext::aboutToBeDestroyed, where the outgoing context
+     * is still current -- the only moment at which these objects can be deleted
+     * correctly. Deleting them later would issue GL calls against a context that
+     * no longer exists.
+     */
+    if (!renderer_) return;
+
+    makeCurrent();
+    renderer_.reset();
+    doneCurrent();
 }
 
 bool TerminalWidget::applyFontScale() {

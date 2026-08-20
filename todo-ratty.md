@@ -113,10 +113,13 @@ Polish       ████████░░░░░░░░░░░░ no scr
 - [x] xterm modifier encoding (`CSI 1;mod A`) and `DECCKM` SS3 forms
 - [x] Bracketed paste, `LF`→`CR` translation on paste
 - [x] Live font resizing across every pane in every tab
-- [x] Platform keybinding sets: `keybindings_macos` (Command) and `keybindings`
-      (Ctrl+Shift), selected by `mac_os_bindings: auto | true | false`
-- [x] Font-size shortcuts on both sets, covering every key event "plus" and
-      "minus" can arrive as
+- [x] Two default keybinding files, `keybindings/macos.yaml` (`cmd`) and
+      `keybindings/linux.yaml` (`super`), auto-selected by platform and
+      overridable with `mac_os_bindings: auto | true | false`; a test asserts the
+      two resolve identically so they cannot drift
+- [x] Font-size shortcuts covering every key event "plus" and "minus" can arrive
+      as, plus a Shift-insensitive fallback for layouts where the digits are the
+      shifted symbols
 - [x] Cursor styles (block / hollow / underline / bar); blink only when focused
 - [x] Window title from `OSC`, per-tab
 
@@ -178,6 +181,21 @@ Recorded because the causes are instructive; full write-ups in
 - [x] **A reattached pane could stay invisible.** `QSplitter::insertWidget()`
       will not re-show a widget carrying `WA_WState_ExplicitShowHide`, which
       every former tab page does.
+- [x] **Splitting a pane blanked the terminal.** Reparenting a `QOpenGLWidget`
+      destroys its GL context and calls `initializeGL()` again, and that function
+      created the `TerminalSession` -- so every split silently killed the running
+      shell and started an empty one in its place. The session is now created
+      once; only the renderer is rebuilt, and its resources are released from
+      `QOpenGLContext::aboutToBeDestroyed` while the outgoing context is still
+      current. Covered by `test_splits_gl`, which needs a real GL context -- the
+      reason the offscreen suite could never have caught it.
+- [x] **...and splitting still blanked the window inside a tab.** Promoting a new
+      root reparents the old page out of the tab widget's stacked layout, and
+      `QTabWidget` answers a page leaving by removing its tab -- so the count
+      dropped to zero and `installTabRoot()`'s `index >= tabCount()` guard
+      returned without inserting anything, leaving the tab widget with no page.
+      Testing `SplitContainer` on its own could not see this; the suite now
+      drives `MainWindow` with real key events.
 - [x] **`hasChildExited()` consumed the exit status.** It called `waitpid` from a
       `const` method on every poll, so cleanup could no longer reap.
 - [x] **`TERM` was never set**, so a shell launched outside a terminal fell back
@@ -310,8 +328,12 @@ The single most missed feature.
 - [ ] Fuzz `VTParser` against random byte streams
 - [ ] A benchmark for throughput (`cat` of a large file) and frame time
 - [ ] `clang-format` configuration matching the existing style
-- [ ] Test the render layer — needs an offscreen GL context, so currently
-      uncovered
+- [ ] Re-resolving the font on every split costs a few `fc-match` subprocess
+      calls, because the rebuilt renderer starts with an empty font cache. Worth
+      a shared resolution cache if it becomes noticeable.
+- [ ] Widen `test_splits_gl` to cover tab drag-reorder, which also reparents
+- [ ] Test the render layer's drawing output, not just its geometry — would need
+      pixel comparison against a reference
 
 ---
 
