@@ -121,6 +121,7 @@ easy to violate again:
 | `ui/main_window.h/.cpp` | Tabs, shortcut dispatch, window title. |
 | `ui/tab_bar.h/.cpp` | The self-drawn tab bar, and the `QTabWidget` that hosts it. |
 | `config/chrome.h/.cpp` | Chrome colours, derived from the palette when unset. |
+| `config/theme.h/.cpp` | The theme catalogue, and the staged `PaletteOverrides`. |
 | `ui/input_handler.h/.cpp` | Qt key events → VT input bytes. |
 | `config/config.h/.cpp` | Layered YAML settings and keybindings. |
 
@@ -822,6 +823,9 @@ terminal palette. Keeping them out of `Palette` matters: `Palette` is the
 terminal's own colours, and an application's `OSC 4` request must not be able to
 repaint the window chrome.
 
+This is what lets a theme state only terminal colours and still get a coherent
+tab bar: all ten shipped themes define no chrome at all.
+
 The derivation is deliberately luminance-aware. `shift()` lightens a dark colour
 and darkens a light one, because always going one way leaves a white bar on a
 white terminal. The offset is large enough (45) that a filled active tab reads as
@@ -829,6 +833,12 @@ a distinct surface — at a smaller value the `blocks` style was
 indistinguishable from `minimal`. The accent defaults to palette slot 12, the
 bright blue, which every theme defines and which therefore tracks the theme
 without being stated.
+
+A label drawn on the accent picks whichever of the theme's two candidate colours
+has more measured contrast against it, rather than switching on a fixed luminance
+threshold. A mid-tone accent — Gruvbox Light's blue, for instance — sits close
+enough to the middle that a threshold picks badly for some themes and well for
+others.
 
 ### 6.4 `MainWindow`
 
@@ -999,6 +1009,40 @@ do the same thing, which is not what a user writing that line intends.
 The bundled defaults are merged *without* the rule, so they can legitimately
 offer several keys for one action (`ctrl+shift+e` and `ctrl+shift+backslash` both
 split horizontally). A user wanting two keys lists both.
+
+#### Themes, and why colours are staged
+
+A theme is a configuration fragment holding a `colors:` section, shipped under
+`:/themes`. That means themes need no parser of their own and a user can read one
+to learn the format; the catalogue is enumerated from the resource system rather
+than a second hard-coded list, so adding a theme is a file plus a line in
+`themes.qrc`.
+
+The interesting part is ordering. `theme:` is itself a setting, so which theme is
+active is not known until every layer has been read — and by then the user's own
+`colors:` entries have already been seen. Applying colours as they are parsed
+would make the outcome depend on whether `theme:` happened to appear above or
+below `colors:` in the file.
+
+So colours are **staged**, not applied. Each layer's colours go into a
+`PaletteOverrides` for that layer, and `resolvePalette()` merges them in a fixed
+order once everything has been read:
+
+```
+Palette()  ->  built-in layer  ->  theme  ->  user
+```
+
+`theme: nord` plus `colors: {red: ...}` therefore gives Nord with one colour
+changed, whichever comes first in the file. Chrome is staged the same way by
+`resolveChrome()`.
+
+`PaletteOverrides::mergeInto()` also carries the cursor rule: a stated foreground
+moves the cursor with it unless the cursor is stated too. Without that, switching
+to a light theme would leave the cursor in the dark theme's colour.
+
+An unknown theme name is reported with the list of available ones and then
+discarded, leaving the built-in palette — which is complete, so the terminal is
+still usable.
 
 #### Reporting a config that cannot work
 
@@ -1203,7 +1247,7 @@ cd build && ctest --output-on-failure
 | `test_terminal` | deferred wrap, the zsh prompt artifact, OSC termination and colour control, CSI parsing, scrolling regions, the alternate buffer, SGR colours, erase semantics, emoji presentation selectors, grapheme clustering, UTF-8 chunk splitting, wide characters, resize, device reports |
 | `test_input` | both keybinding sets resolving against real `QKeyEvent`s, set exclusivity, layout tolerance, shell control keys staying unbound, VT input encoding |
 | `test_splits` | pane tree surgery: nothing destroyed that should survive, nothing left invisible, directional navigation |
-| `test_config` | the real load path against a sandboxed HOME: overlay semantics, colours, keybinding add/remove, `mac_os_bindings` resolution, the unquoted-colour trap, malformed files, clamping |
+| `test_config` | the real load path against a sandboxed HOME: overlay semantics, colours, keybinding add/remove, `mac_os_bindings` resolution, every shipped theme's completeness and chrome coherence, theme-versus-override precedence in both file orders, the unquoted-colour trap, malformed files, clamping |
 | `test_tabbar` | style and position parsing, chrome derivation on dark *and light* palettes, bar thinness, tab metrics, and that every style paints something |
 | `test_render` | grid padding maths, box-drawing tiling, fallback coverage of the characters a TUI draws, text-vs-emoji font selection, font preference order, and the guarantee that no resolution path yields a proportional font |
 

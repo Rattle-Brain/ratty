@@ -12,12 +12,15 @@
  */
 
 #include "check.h"
+#include "config/chrome.h"
 #include "config/config.h"
+#include "config/theme.h"
 #include <QDir>
 #include <QGuiApplication>
 #include <QKeyCombination>
 #include <QTemporaryDir>
 #include <QTextStream>
+#include <cstdlib>
 #include <string>
 
 namespace {
@@ -411,6 +414,167 @@ colors:
                 "and leaves the foreground alone");
 }
 
+void testThemeCatalogue() {
+    check::section("built-in themes");
+
+    const QStringList available = Config::availableThemes();
+    check::that(available.size() >= 8,
+                "several themes ship with RaTTY (" + std::to_string(available.size()) + ")");
+    check::that(available.contains(QStringLiteral("ratty-dark")),
+                "the default theme is in the catalogue");
+    check::that(themes::exists(QStringLiteral("nord")), "a known theme exists");
+    check::that(!themes::exists(QStringLiteral("no-such-theme")),
+                "an unknown theme does not");
+
+    /*
+     * Every theme must define the whole palette. A half-written theme would
+     * inherit stray colours from whatever was loaded before it, which is the
+     * kind of bug that only shows up on one shade of one character.
+     */
+    for (const QString& id : available) {
+        loadWithUserConfig(("theme: " + id.toStdString() + "\n").c_str());
+        const Config& config = Config::instance();
+        const Palette& palette = config.palette();
+
+        check::equal(config.themeName().toStdString(), id.toStdString(),
+                     id.toStdString() + " loaded");
+        check::that(palette.defaultBackground() != palette.defaultForeground(),
+                    id.toStdString() + ": background differs from foreground");
+
+        /*
+         * Detect a forgotten or misspelled key. Each theme is applied over a
+         * fresh built-in palette, so a slot the theme fails to set keeps the
+         * built-in value -- and every shipped theme except ratty-dark itself
+         * repaints essentially all of them.
+         *
+         * Deliberately *not* a check that all sixteen differ from each other:
+         * Nord, Catppuccin, Tokyo Night and One Dark all define their bright
+         * variants as the same hue as the normal ones, which is how those
+         * palettes are published.
+         */
+        if (id != QLatin1String("ratty-dark")) {
+            const Palette builtIn;
+            int inherited = 0;
+            for (int slot = 0; slot < 16; ++slot) {
+                if (palette.entry(slot) == builtIn.entry(slot)) ++inherited;
+            }
+            check::that(inherited <= 2,
+                        id.toStdString() + ": defines its own ANSI palette ("
+                            + std::to_string(inherited) + " slots inherited)");
+            check::that(palette.defaultBackground() != builtIn.defaultBackground()
+                            || palette.defaultForeground() != builtIn.defaultForeground(),
+                        id.toStdString() + ": defines its own background/foreground");
+        }
+
+        /* Text has to be readable on the background. */
+        const int contrast = std::abs(palette.defaultForeground().lightness()
+                                      - palette.defaultBackground().lightness());
+        check::that(contrast > 60, id.toStdString() + ": foreground contrasts with background");
+    }
+}
+
+void testThemeChromeStaysCoherent() {
+    check::section("the tab bar follows the theme");
+
+    /*
+     * Chrome is derived, not stated, so switching theme has to move the bar with
+     * it -- including for light themes, where a bar that only ever lightens
+     * would vanish.
+     */
+    for (const QString& id : Config::availableThemes()) {
+        loadWithUserConfig(("theme: " + id.toStdString() + "\n").c_str());
+        const Config& config = Config::instance();
+        const ChromeColors::Resolved chrome = config.chromeColors().resolve(config.palette());
+
+        const int barLightness = chrome.tabBarBackground.lightness();
+        const int terminalLightness = config.palette().defaultBackground().lightness();
+        check::that(std::abs(barLightness - terminalLightness) >= 8,
+                    id.toStdString() + ": the bar is distinguishable from the terminal");
+
+        const int labelContrast = std::abs(chrome.inactiveTabForeground.lightness()
+                                           - barLightness);
+        check::that(labelContrast > 20,
+                    id.toStdString() + ": inactive labels are readable on the bar");
+
+        check::that(chrome.accent == config.palette().entry(12),
+                    id.toStdString() + ": the accent came from the theme");
+    }
+}
+
+void testThemeAndOverridePrecedence() {
+    check::section("colours override the theme, whatever the file order");
+
+    /* `colors` written *before* `theme`: the theme must still be the base. */
+    loadWithUserConfig(R"(
+colors:
+  red: "#ff0000"
+theme: nord
+)");
+    const Palette* palette = &Config::instance().palette();
+    check::that(palette->entry(1) == QColor(255, 0, 0), "the override won");
+    check::that(palette->entry(2) == QColor(0xa3, 0xbe, 0x8c), "Nord's green survived");
+    check::that(palette->defaultBackground() == QColor(0x2e, 0x34, 0x40),
+                "Nord's background survived");
+
+    /* And the other way round, for the same result. */
+    loadWithUserConfig(R"(
+theme: nord
+colors:
+  red: "#ff0000"
+)");
+    palette = &Config::instance().palette();
+    check::that(palette->entry(1) == QColor(255, 0, 0), "the override won again");
+    check::that(palette->defaultBackground() == QColor(0x2e, 0x34, 0x40),
+                "and the theme is still the base");
+
+    /* Overriding the background only, keeping the theme's accents. */
+    loadWithUserConfig(R"(
+theme: gruvbox-dark
+colors:
+  background: "#000000"
+)");
+    palette = &Config::instance().palette();
+    check::that(palette->defaultBackground() == QColor(0, 0, 0), "background overridden");
+    check::that(palette->entry(3) == QColor(0xd7, 0x99, 0x21),
+                "Gruvbox's yellow is untouched");
+    check::that(palette->defaultForeground() == QColor(0xeb, 0xdb, 0xb2),
+                "and so is its foreground");
+
+    /* A theme sets the cursor from its foreground, so an inverted theme does not
+     * leave an invisible cursor behind. */
+    loadWithUserConfig("theme: solarized-light\n");
+    palette = &Config::instance().palette();
+    check::that(palette->cursorColor() == palette->defaultForeground(),
+                "the cursor followed the theme's foreground");
+
+    loadWithUserConfig(R"(
+theme: solarized-light
+colors:
+  cursor: "#ff00ff"
+)");
+    check::that(Config::instance().palette().cursorColor() == QColor(255, 0, 255),
+                "an explicit cursor still wins over the theme");
+}
+
+void testUnknownThemeIsSafe() {
+    check::section("an unknown theme falls back rather than failing");
+
+    loadWithUserConfig("theme: definitely-not-a-theme\n");
+    const Config& config = Config::instance();
+
+    check::that(config.themeName().isEmpty(), "the bad name was discarded");
+    /* The built-in palette is still complete and usable. */
+    check::that(config.palette().defaultBackground().isValid(), "the background is valid");
+    check::that(config.palette().defaultForeground().isValid(), "the foreground is valid");
+    check::that(config.palette().defaultBackground() != config.palette().defaultForeground(),
+                "and they differ");
+
+    /* Other settings in the same file still apply. */
+    loadWithUserConfig("theme: nope\nfont:\n  size: 19\n");
+    check::equal(Config::instance().fontSize(), 19,
+                 "the rest of the file was still read");
+}
+
 void testMalformedFileKeepsDefaults() {
     check::section("a malformed file leaves the defaults intact");
 
@@ -506,6 +670,10 @@ int main(int argc, char** argv) {
     testRebindingAnActionReleasesItsDefaultKeys();
     testEverythingElseIsPreserved();
     testCursorFollowsForegroundAcrossLayers();
+    testThemeCatalogue();
+    testThemeChromeStaysCoherent();
+    testThemeAndOverridePrecedence();
+    testUnknownThemeIsSafe();
     testMalformedFileKeepsDefaults();
     testValueClamping();
     return check::report("test_config");

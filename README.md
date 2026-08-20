@@ -52,6 +52,7 @@ scrollback and selection do not exist yet.
 - Tabs and recursive split panes with directional focus movement
 - YAML configuration with a layered override model, custom palette, keybindings
 - A thin, self-drawn tab bar in five styles, at the top or bottom of the window
+- Ten built-in colour themes, with per-colour overrides on top of any of them
 - Bracketed paste, window-title reporting, cursor-position reports
 - Live font resizing
 
@@ -136,14 +137,13 @@ RaTTY reads `~/.config/ratty/config.yaml`. Every key is optional — the file is
 want to change and everything else stays as it was:
 
 ```yaml
+theme: nord
 font:
   size: 15
-colors:
-  background: "#101418"
 ```
 
-That is a complete, valid config: font size and background change, and all other
-colours, keybindings, window settings and font preferences keep their defaults.
+That is a complete, valid config: the theme and font size change, and all
+keybindings, window settings and font preferences keep their defaults.
 
 **Rebinding an action releases its default key.** Naming an action in your config
 makes your config the whole story for that action:
@@ -160,6 +160,9 @@ If you want several keys for one action, list them all.
 The full set of keys:
 
 ```yaml
+# One of the built-in themes; see the table below.
+theme: ratty-dark
+
 font:
   # Tried in order; the first installed family wins. If none are installed,
   # RaTTY uses the font the system has set as its monospaced default.
@@ -175,10 +178,12 @@ cursor:
   style: block        # block | hollow | underline | bar
   blink: true
 
+# Anything here overrides the theme, so you can take a scheme and change one
+# thing. Order does not matter: the theme is always applied first.
 colors:
   background: "#1e1e1e"
   foreground: "#dcdcdc"
-  cursor: "#dcdcdc"
+  cursor: "#dcdcdc"          # left unset, follows the foreground
   selection_background: "#6495ed80"
 
   black:          "#000000"
@@ -271,6 +276,34 @@ box-drawing and block characters are drawn geometrically from the cell (which
 also makes them tile perfectly), and anything else missing is taken from the
 fallback chain.
 
+### Themes
+
+```yaml
+theme: gruvbox-dark
+```
+
+| Dark | Light |
+|---|---|
+| `ratty-dark` (default), `nord`, `dracula` | `gruvbox-light` |
+| `gruvbox-dark`, `solarized-dark` | `solarized-light` |
+| `tokyo-night`, `catppuccin-mocha`, `one-dark` | |
+
+A theme sets the terminal's background, foreground, selection colour and the
+sixteen ANSI colours. The tab bar's colours are *derived* from it, so switching
+theme moves the whole window, not just the text.
+
+Anything under `colors:` overrides the theme, in either order:
+
+```yaml
+theme: nord
+colors:
+  red: "#ff0000"      # Nord, but with a louder red
+```
+
+Themes live in [`resources/themes/`](resources/themes/) as small YAML files —
+adding one is a file and a line in `themes.qrc`, and reading one shows the
+format.
+
 ### Tab bar
 
 The tab bar is drawn by RaTTY rather than by the platform, so it stays thin —
@@ -307,8 +340,13 @@ tab_bar:
 
 Terminal applications draw most of the screen by *erasing* it and relying on the
 terminal's own default background — that is a normal optimisation, not a bug. So
-if your editor's theme has a background of, say, `#1f1f26`, set the same value in
-RaTTY:
+if your editor uses one of the schemes above, name it and the two will match:
+
+```yaml
+theme: tokyo-night
+```
+
+Or set the background directly if your editor's scheme is not among them:
 
 ```yaml
 colors:

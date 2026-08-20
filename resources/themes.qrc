@@ -1,0 +1,15 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/themes">
+        <file alias="ratty-dark.yaml">themes/ratty-dark.yaml</file>
+        <file alias="nord.yaml">themes/nord.yaml</file>
+        <file alias="dracula.yaml">themes/dracula.yaml</file>
+        <file alias="gruvbox-dark.yaml">themes/gruvbox-dark.yaml</file>
+        <file alias="gruvbox-light.yaml">themes/gruvbox-light.yaml</file>
+        <file alias="solarized-dark.yaml">themes/solarized-dark.yaml</file>
+        <file alias="solarized-light.yaml">themes/solarized-light.yaml</file>
+        <file alias="tokyo-night.yaml">themes/tokyo-night.yaml</file>
+        <file alias="catppuccin-mocha.yaml">themes/catppuccin-mocha.yaml</file>
+        <file alias="one-dark.yaml">themes/one-dark.yaml</file>
+    </qresource>
+</RCC>

@@ -33,30 +33,37 @@ cursor:
   style: block
   blink: true
 
-colors:
-  background: "#1e1e1e"
-  foreground: "#dcdcdc"
-  # `cursor` is deliberately not set here: left out, it follows the foreground,
-  # so changing just `foreground` in your own config keeps the cursor visible.
-  selection_background: "#6495ed80"
+# The colour scheme. One of the themes that ship with RaTTY:
+#
+#   ratty-dark          catppuccin-mocha    nord
+#   dracula             one-dark            tokyo-night
+#   gruvbox-dark        gruvbox-light
+#   solarized-dark      solarized-light
+#
+theme: ratty-dark
 
-  black:          "#000000"
-  red:            "#cd3131"
-  green:          "#0dbc79"
-  yellow:         "#e5e510"
-  blue:           "#2472c8"
-  magenta:        "#bc3fbc"
-  cyan:           "#11a8cd"
-  white:          "#e5e5e5"
-
-  bright_black:   "#666666"
-  bright_red:     "#f14c4c"
-  bright_green:   "#23d18b"
-  bright_yellow:  "#f5f543"
-  bright_blue:    "#3b8eea"
-  bright_magenta: "#d670d6"
-  bright_cyan:    "#29b8db"
-  bright_white:   "#ffffff"
+# Anything under `colors:` overrides the theme, so you can take a scheme and
+# change one thing. Order does not matter: the theme is always applied first.
+#
+#   theme: nord
+#   colors:
+#     red: "#ff0000"
+#
+# `cursor` left unset follows the foreground, so a theme that inverts the
+# terminal does not leave the cursor invisible.
+colors: {}
+#   background:           "#1e1e1e"
+#   foreground:           "#dcdcdc"
+#   cursor:               "#dcdcdc"
+#   selection_background: "#6495ed80"
+#   black:   "#000000"    bright_black:   "#666666"
+#   red:     "#cd3131"    bright_red:     "#f14c4c"
+#   green:   "#0dbc79"    bright_green:   "#23d18b"
+#   yellow:  "#e5e510"    bright_yellow:  "#f5f543"
+#   blue:    "#2472c8"    bright_blue:    "#3b8eea"
+#   magenta: "#bc3fbc"    bright_magenta: "#d670d6"
+#   cyan:    "#11a8cd"    bright_cyan:    "#29b8db"
+#   white:   "#e5e5e5"    bright_white:   "#ffffff"
 
 tab_bar:
   # minimal   text only, with a short accent along the edge facing the terminal

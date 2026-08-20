@@ -178,8 +178,13 @@ struct Config::Parser {
     Config& config;
     BindingLayer& defaultBindings;
     BindingLayer& macOsBindings;
+    PaletteOverrides& colorOverrides;
+    ChromeColors& chromeOverrides;
 
     void apply(const YAML::Node& root) {
+        if (const auto theme = readString(root, "theme")) {
+            config.themeName_ = *theme;
+        }
         if (const YAML::Node node = root["colors"]; node && node.IsMap()) colors(node);
         if (const YAML::Node node = root["font"]; node && node.IsMap()) font(node);
         if (const YAML::Node node = root["cursor"]; node && node.IsMap()) cursor(node);
@@ -214,27 +219,18 @@ struct Config::Parser {
     }
 
     void colors(const YAML::Node& node) {
-        Palette& palette = config.palette_;
-
-        if (const auto color = readColor(node, "background")) {
-            palette.setDefaultBackground(*color);
-        }
-        if (const auto color = readColor(node, "foreground")) {
-            palette.setDefaultForeground(*color);
-            /* The cursor follows the foreground unless given explicitly, which
-             * is what a foreground-only config implies. */
-            palette.setCursorColor(*color);
-        }
-        if (const auto color = readColor(node, "cursor")) {
-            palette.setCursorColor(*color);
-        }
+        /* Staged, not applied: the theme is not known until every layer has been
+         * read. See Config::resolvePalette(). */
+        if (const auto color = readColor(node, "background")) colorOverrides.background = *color;
+        if (const auto color = readColor(node, "foreground")) colorOverrides.foreground = *color;
+        if (const auto color = readColor(node, "cursor")) colorOverrides.cursor = *color;
         if (const auto color = readColor(node, "selection_background")) {
-            palette.setSelectionBackground(*color);
+            colorOverrides.selectionBackground = *color;
         }
 
-        for (int i = 0; i < 16; ++i) {
+        for (int i = 0; i < PaletteOverrides::AnsiCount; ++i) {
             if (const auto color = readColor(node, kAnsiColorKeys[i])) {
-                palette.setEntry(i, *color);
+                colorOverrides.ansi[static_cast<size_t>(i)] = *color;
             }
         }
     }
@@ -303,7 +299,7 @@ struct Config::Parser {
         /* Chrome colours are optional; anything left out is derived from the
          * terminal palette by ChromeColors::resolve(). */
         if (const YAML::Node colorsNode = node["colors"]; colorsNode && colorsNode.IsMap()) {
-            ChromeColors& chrome = config.chromeColors_;
+            ChromeColors& chrome = chromeOverrides;
             if (const auto color = readColor(colorsNode, "background")) chrome.tabBarBackground = *color;
             if (const auto color = readColor(colorsNode, "border")) chrome.tabBarBorder = *color;
             if (const auto color = readColor(colorsNode, "active_background")) chrome.activeTabBackground = *color;
@@ -421,6 +417,10 @@ void Config::applyBuiltInDefaults() {
     /* Palette's own constructor already carries the standard ANSI colours and
      * a sensible dark default, so there is nothing to duplicate here. */
     palette_ = Palette();
+    builtInColors_ = PaletteOverrides{};
+    themeColors_ = PaletteOverrides{};
+    userColors_ = PaletteOverrides{};
+    themeName_.clear();
     /* Empty == "ask the platform for its monospaced default". */
     fontFamilies_.clear();
     fontFallbacks_.clear();
@@ -432,6 +432,9 @@ void Config::applyBuiltInDefaults() {
     tabBarPosition_ = TabBarPosition::Bottom;
     tabBarVisibility_ = TabBarVisibility::MultipleTabs;
     chromeColors_ = ChromeColors{};
+    builtInChrome_ = ChromeColors{};
+    themeChrome_ = ChromeColors{};
+    userChrome_ = ChromeColors{};
     windowWidth_ = DEFAULT_WINDOW_WIDTH;
     windowHeight_ = DEFAULT_WINDOW_HEIGHT;
     windowOpacity_ = 1.0f;
@@ -493,13 +496,13 @@ QString Config::legacyUserConfigPath() {
 void Config::load() {
     applyBuiltInDefaults();
 
-    if (!applyFile(QString::fromLatin1(kBundledDefaultsPath), /*userLayer=*/false)) {
+    if (!applyFile(QString::fromLatin1(kBundledDefaultsPath), Layer::BuiltIn)) {
         qWarning() << "Config: bundled defaults missing from resources";
     }
 
     const QString userPath = userConfigPath();
     if (QFile::exists(userPath)) {
-        if (applyFile(userPath, /*userLayer=*/true)) {
+        if (applyFile(userPath, Layer::User)) {
             qInfo() << "Config: loaded user overrides from" << userPath;
         }
     } else if (QFile::exists(legacyUserConfigPath())) {
@@ -510,9 +513,14 @@ void Config::load() {
                    << userPath;
     }
 
+    /* The theme is only known now, so it is loaded last and merged first. */
+    applyTheme();
+    resolvePalette();
+    resolveChrome();
     resolveKeybindings();
 
-    qInfo() << "Config: font preference"
+    qInfo() << "Config: theme" << (themeName_.isEmpty() ? QStringLiteral("<none>") : themeName_)
+            << "| font preference"
             << (fontFamilies_.isEmpty() ? QStringLiteral("<system monospace>")
                                         : fontFamilies_.join(QStringLiteral(" > ")))
             << "at" << fontSize_ << "pt,"
@@ -521,17 +529,17 @@ void Config::load() {
             << (macOsBindings_ ? "macOS keybindings" : "keybindings");
 }
 
-bool Config::applyFile(const QString& path, bool userLayer) {
+bool Config::applyFile(const QString& path, Layer layer) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         return false;
     }
     const QByteArray bytes = file.readAll();
-    return applyDocument(bytes.toStdString(), path, userLayer);
+    return applyDocument(bytes.toStdString(), path, layer);
 }
 
 bool Config::applyDocument(const std::string& text, const QString& sourceLabel,
-                           bool userLayer) {
+                           Layer layer) {
     if (text.empty()) return false;
 
     YAML::Node root;
@@ -559,7 +567,19 @@ bool Config::applyDocument(const std::string& text, const QString& sourceLabel,
     BindingLayer defaultLayer;
     BindingLayer macOsLayer;
 
-    Parser parser{*this, defaultLayer, macOsLayer};
+    /* Colours and chrome are staged into the bucket for this layer. */
+    PaletteOverrides* colorTarget = &builtInColors_;
+    ChromeColors* chromeTarget = &builtInChrome_;
+    switch (layer) {
+    case Layer::Theme: colorTarget = &themeColors_; chromeTarget = &themeChrome_; break;
+    case Layer::User:  colorTarget = &userColors_;  chromeTarget = &userChrome_;  break;
+    case Layer::BuiltIn: break;
+    }
+
+    PaletteOverrides documentColors;
+    ChromeColors documentChrome;
+
+    Parser parser{*this, defaultLayer, macOsLayer, documentColors, documentChrome};
     try {
         parser.apply(root);
     } catch (const YAML::Exception& error) {
@@ -568,6 +588,10 @@ bool Config::applyDocument(const std::string& text, const QString& sourceLabel,
         return false;
     }
 
+    colorTarget->absorb(documentColors);
+    mergeChrome(*chromeTarget, documentChrome);
+
+    const bool userLayer = (layer == Layer::User);
     mergeBindings(bindingsDefault_, defaultLayer, userLayer);
     mergeBindings(bindingsMacOs_, macOsLayer, userLayer);
 
@@ -576,6 +600,52 @@ bool Config::applyDocument(const std::string& text, const QString& sourceLabel,
         userTouchedMacOsBindings_ |= !macOsLayer.isEmpty();
     }
     return true;
+}
+
+void Config::mergeChrome(ChromeColors& target, const ChromeColors& later) {
+    if (later.tabBarBackground) target.tabBarBackground = later.tabBarBackground;
+    if (later.tabBarBorder) target.tabBarBorder = later.tabBarBorder;
+    if (later.activeTabBackground) target.activeTabBackground = later.activeTabBackground;
+    if (later.activeTabForeground) target.activeTabForeground = later.activeTabForeground;
+    if (later.inactiveTabForeground) target.inactiveTabForeground = later.inactiveTabForeground;
+    if (later.accent) target.accent = later.accent;
+}
+
+void Config::applyTheme() {
+    if (themeName_.isEmpty()) return;
+
+    if (!themes::exists(themeName_)) {
+        qWarning() << "Config: unknown theme" << themeName_ << "- available themes are"
+                   << themes::available().join(QStringLiteral(", "));
+        themeName_.clear();
+        return;
+    }
+
+    if (!applyFile(themes::resourcePath(themeName_), Layer::Theme)) {
+        qWarning() << "Config: could not read theme" << themeName_;
+        themeName_.clear();
+    }
+}
+
+void Config::resolvePalette() {
+    /*
+     * Fixed order, independent of the order the files were read: the built-in
+     * palette, then whatever the bundled configuration states, then the theme,
+     * then the user's own colours. So `theme: nord` plus `colors: {red: ...}`
+     * gives Nord with one colour changed, whichever appears first in the file.
+     */
+    Palette palette;
+    builtInColors_.mergeInto(palette);
+    themeColors_.mergeInto(palette);
+    userColors_.mergeInto(palette);
+    palette_ = palette;
+}
+
+void Config::resolveChrome() {
+    ChromeColors chrome = builtInChrome_;
+    mergeChrome(chrome, themeChrome_);
+    mergeChrome(chrome, userChrome_);
+    chromeColors_ = chrome;
 }
 
 QKeySequence Config::parseKeySequence(const QString& text) {

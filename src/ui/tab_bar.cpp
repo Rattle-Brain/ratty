@@ -27,6 +27,25 @@ constexpr double kChevronSlant = 0.5;
 constexpr int kMinTabWidth = 60;
 constexpr int kMaxTabWidth = 240;
 
+double relativeLuminance(const QColor& color) {
+    return 0.2126 * color.redF() + 0.7152 * color.greenF() + 0.0722 * color.blueF();
+}
+
+/*
+ * Whichever candidate stands out more against `background`.
+ *
+ * A fixed luminance threshold is not enough: a mid-tone accent such as Gruvbox
+ * Light's blue sits close enough to the middle that either choice is defensible,
+ * and picking by measured contrast keeps the label legible on all of the themes
+ * rather than most of them.
+ */
+QColor mostReadableOn(const QColor& background, const QColor& first, const QColor& second) {
+    const double base = relativeLuminance(background);
+    return std::abs(relativeLuminance(first) - base)
+               >= std::abs(relativeLuminance(second) - base)
+           ? first : second;
+}
+
 } // namespace
 
 TabBar::TabBar(QWidget* parent)
@@ -221,16 +240,13 @@ void TabBar::paintPills(QPainter& painter, int index, const QRect& rect, bool cu
     }
 
     /*
-     * The label sits on the accent when current, so it needs the contrasting
-     * colour rather than the usual foreground.
+     * The label sits on the accent when current, so it takes whichever of the
+     * theme's two candidate colours reads better against it.
      */
-    QColor color = colors.inactiveTabForeground;
-    if (current) {
-        const double accentLuminance = 0.2126 * colors.accent.redF()
-                                     + 0.7152 * colors.accent.greenF()
-                                     + 0.0722 * colors.accent.blueF();
-        color = accentLuminance > 0.55 ? colors.tabBarBackground : colors.activeTabForeground;
-    }
+    const QColor color = current
+        ? mostReadableOn(colors.accent, colors.activeTabForeground, colors.tabBarBackground)
+        : colors.inactiveTabForeground;
+
     paintLabel(painter, index, rect, color);
     paintCloseButton(painter, index, rect, color);
 }
@@ -268,13 +284,9 @@ void TabBar::paintPowerline(QPainter& painter, int index, const QRect& rect, boo
         painter.drawLine(x + slant / 2, rect.center().y(), x, rect.bottom() - 4);
     }
 
-    QColor color = colors.inactiveTabForeground;
-    if (current) {
-        const double accentLuminance = 0.2126 * colors.accent.redF()
-                                     + 0.7152 * colors.accent.greenF()
-                                     + 0.0722 * colors.accent.blueF();
-        color = accentLuminance > 0.55 ? colors.tabBarBackground : colors.activeTabForeground;
-    }
+    const QColor color = current
+        ? mostReadableOn(colors.accent, colors.activeTabForeground, colors.tabBarBackground)
+        : colors.inactiveTabForeground;
 
     /* Keep the label clear of the chevron. */
     paintLabel(painter, index, rect.adjusted(0, 0, -slant, 0), color);

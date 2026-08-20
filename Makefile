@@ -531,6 +531,30 @@ ratty_autogen/3YJK5W5UP7/qrc_shaders.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/ratty_autogen/3YJK5W5UP7/qrc_shaders.cpp.s
 .PHONY : ratty_autogen/3YJK5W5UP7/qrc_shaders.cpp.s
 
+ratty_autogen/3YJK5W5UP7/qrc_themes.o: ratty_autogen/3YJK5W5UP7/qrc_themes.cpp.o
+.PHONY : ratty_autogen/3YJK5W5UP7/qrc_themes.o
+
+# target to build an object file
+ratty_autogen/3YJK5W5UP7/qrc_themes.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/ratty_autogen/3YJK5W5UP7/qrc_themes.cpp.o
+.PHONY : ratty_autogen/3YJK5W5UP7/qrc_themes.cpp.o
+
+ratty_autogen/3YJK5W5UP7/qrc_themes.i: ratty_autogen/3YJK5W5UP7/qrc_themes.cpp.i
+.PHONY : ratty_autogen/3YJK5W5UP7/qrc_themes.i
+
+# target to preprocess a source file
+ratty_autogen/3YJK5W5UP7/qrc_themes.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/ratty_autogen/3YJK5W5UP7/qrc_themes.cpp.i
+.PHONY : ratty_autogen/3YJK5W5UP7/qrc_themes.cpp.i
+
+ratty_autogen/3YJK5W5UP7/qrc_themes.s: ratty_autogen/3YJK5W5UP7/qrc_themes.cpp.s
+.PHONY : ratty_autogen/3YJK5W5UP7/qrc_themes.s
+
+# target to generate assembly for a file
+ratty_autogen/3YJK5W5UP7/qrc_themes.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/ratty_autogen/3YJK5W5UP7/qrc_themes.cpp.s
+.PHONY : ratty_autogen/3YJK5W5UP7/qrc_themes.cpp.s
+
 ratty_autogen/mocs_compilation.o: ratty_autogen/mocs_compilation.cpp.o
 .PHONY : ratty_autogen/mocs_compilation.o
 
@@ -602,6 +626,30 @@ src/config/config.s: src/config/config.cpp.s
 src/config/config.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/src/config/config.cpp.s
 .PHONY : src/config/config.cpp.s
+
+src/config/theme.o: src/config/theme.cpp.o
+.PHONY : src/config/theme.o
+
+# target to build an object file
+src/config/theme.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/src/config/theme.cpp.o
+.PHONY : src/config/theme.cpp.o
+
+src/config/theme.i: src/config/theme.cpp.i
+.PHONY : src/config/theme.i
+
+# target to preprocess a source file
+src/config/theme.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/src/config/theme.cpp.i
+.PHONY : src/config/theme.cpp.i
+
+src/config/theme.s: src/config/theme.cpp.s
+.PHONY : src/config/theme.s
+
+# target to generate assembly for a file
+src/config/theme.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ratty.dir/build.make CMakeFiles/ratty.dir/src/config/theme.cpp.s
+.PHONY : src/config/theme.cpp.s
 
 src/core/palette.o: src/core/palette.cpp.o
 .PHONY : src/core/palette.o
@@ -1054,6 +1102,9 @@ help:
 	@echo "... ratty_autogen/3YJK5W5UP7/qrc_shaders.o"
 	@echo "... ratty_autogen/3YJK5W5UP7/qrc_shaders.i"
 	@echo "... ratty_autogen/3YJK5W5UP7/qrc_shaders.s"
+	@echo "... ratty_autogen/3YJK5W5UP7/qrc_themes.o"
+	@echo "... ratty_autogen/3YJK5W5UP7/qrc_themes.i"
+	@echo "... ratty_autogen/3YJK5W5UP7/qrc_themes.s"
 	@echo "... ratty_autogen/mocs_compilation.o"
 	@echo "... ratty_autogen/mocs_compilation.i"
 	@echo "... ratty_autogen/mocs_compilation.s"
@@ -1063,6 +1114,9 @@ help:
 	@echo "... src/config/config.o"
 	@echo "... src/config/config.i"
 	@echo "... src/config/config.s"
+	@echo "... src/config/theme.o"
+	@echo "... src/config/theme.i"
+	@echo "... src/config/theme.s"
 	@echo "... src/core/palette.o"
 	@echo "... src/core/palette.i"
 	@echo "... src/core/palette.s"

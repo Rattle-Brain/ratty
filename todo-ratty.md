@@ -126,6 +126,11 @@ Polish       ████████░░░░░░░░░░░░ no scr
 - [x] A user config overrides only what it states; naming an action releases the
       default keys for it, and editing the inactive keybinding set is reported
 - [x] Full 256-colour palette, 16 base colours overridable by name
+- [x] Ten built-in colour themes as YAML resources (`ratty-dark`, `nord`,
+      `dracula`, `gruvbox-dark`/`-light`, `solarized-dark`/`-light`,
+      `tokyo-night`, `catppuccin-mocha`, `one-dark`), selected by `theme:`
+- [x] Colours staged per layer and merged built-in -> theme -> user, so a theme
+      plus a per-colour override works in either file order
 - [x] `"none"` unbinds a default keybinding
 - [x] Headless test suites (terminal / input / splits) with `ctest`
 - [x] Warning-clean under `-Wall -Wextra -Wpedantic`

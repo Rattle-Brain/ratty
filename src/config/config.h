@@ -20,6 +20,7 @@
 #define CONFIG_CONFIG_H
 
 #include "chrome.h"
+#include "theme.h"
 #include "../core/cursor.h"
 #include "../core/palette.h"
 #include <QColor>
@@ -86,6 +87,10 @@ public:
     static Config& instance();
 
     void load();
+
+    /* The active theme's identifier, and every theme that ships with RaTTY. */
+    QString themeName() const { return themeName_; }
+    static QStringList availableThemes() { return themes::available(); }
 
     /*
      * Keybindings.
@@ -181,9 +186,23 @@ private:
     /* One document's worth of keybindings, before it is folded in. */
     struct BindingLayer;
 
+    /*
+     * Which configuration layer a document belongs to. Colours are merged in
+     * this order regardless of the order the files were read in, which is what
+     * lets `theme:` be a setting rather than something that has to appear before
+     * the colours it affects.
+     */
+    enum class Layer { BuiltIn, Theme, User };
+
     void applyBuiltInDefaults();
     /* Pick the active keybinding set once every layer has been read. */
     void resolveKeybindings();
+    /* Build the palette from built-in, theme and user colours, in that order. */
+    void resolvePalette();
+    /* Merge chrome colours the same way. */
+    void resolveChrome();
+    /* Load the named theme, reporting an unknown name. */
+    void applyTheme();
 
     /*
      * Overlay a YAML file or document; absent keys keep their current value.
@@ -191,9 +210,9 @@ private:
      * `userLayer` marks the user's own configuration, which is treated as
      * authoritative for any action it mentions -- see mergeBindings().
      */
-    bool applyFile(const QString& path, bool userLayer);
+    bool applyFile(const QString& path, Layer layer);
     bool applyDocument(const std::string& text, const QString& sourceLabel,
-                       bool userLayer);
+                       Layer layer);
 
     /*
      * Fold one document's bindings into an accumulated set.
@@ -207,6 +226,8 @@ private:
      */
     static void mergeBindings(QHash<QKeySequence, Action>& target,
                               const BindingLayer& layer, bool ownsAssignedActions);
+    /* Take everything set in `later`; unset fields leave `target` alone. */
+    static void mergeChrome(ChromeColors& target, const ChromeColors& later);
 
     static QKeySequence parseKeySequence(const QString& text);
 
@@ -236,6 +257,13 @@ private:
     bool userTouchedMacOsBindings_ = false;
 
     Palette palette_;
+    /* Colours staged per layer; see Layer and resolvePalette(). */
+    PaletteOverrides builtInColors_;
+    PaletteOverrides themeColors_;
+    PaletteOverrides userColors_;
+
+    QString themeName_;
+
     QStringList fontFamilies_;
     QStringList fontFallbacks_;
     int fontSize_ = DEFAULT_FONT_SIZE;
@@ -248,6 +276,10 @@ private:
     TabBarPosition tabBarPosition_ = TabBarPosition::Bottom;
     TabBarVisibility tabBarVisibility_ = TabBarVisibility::MultipleTabs;
     ChromeColors chromeColors_;
+    /* Chrome staged the same way as the palette. */
+    ChromeColors builtInChrome_;
+    ChromeColors themeChrome_;
+    ChromeColors userChrome_;
 
     int windowWidth_ = DEFAULT_WINDOW_WIDTH;
     int windowHeight_ = DEFAULT_WINDOW_HEIGHT;

@@ -59,6 +59,7 @@ set(RATTY_SOURCES
     src/ui/terminal_widget.cpp
 
     src/config/chrome.cpp
+    src/config/theme.cpp
     src/config/config.cpp
 )
 
@@ -88,12 +89,14 @@ set(RATTY_HEADERS
     src/ui/terminal_widget.h
 
     src/config/chrome.h
+    src/config/theme.h
     src/config/config.h
 )
 
 set(RATTY_RESOURCES
     resources/shaders.qrc
     resources/config.qrc
+    resources/themes.qrc
 )
 
 # Everything except main.cpp, so the test suites can link the same code the
