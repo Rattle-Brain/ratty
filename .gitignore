@@ -1,70 +1,65 @@
-# Build
-.qt
-.cache
-build
+# Build output. The project is normally configured out of source
+# (`cmake -S . -B build`), but in-source configuration leaves its droppings
+# here too, so both are covered.
+build/
+cmake-build-*/
 CMakeCache.txt
 CMakeFiles/
-cmake-build-*/
 cmake_install.cmake
-ratty*
 compile_commands.json
+install_manifest.txt
+Makefile
+.qt/
+.cache/
 
-# CMake / Qt generated output (the project can be configured in-source)
+# Qt's generated moc/rcc/uic output.
 *_autogen/
+
+# CTest.
 CTestTestfile.cmake
 DartConfiguration.tcl
 Testing/
-install_manifest.txt
-Makefile
 
-# Test binaries and the shared test library
-tests/test_terminal
-tests/test_input
-tests/test_splits
-tests/test_render
-tests/test_config
-tests/test_tabbar
-tests/test_splits_gl
-*.a
+# Built binaries.
+#
+# Anchored to the repository root and spelled out. This used to be `ratty*`,
+# which matches any path *component* starting with "ratty" -- and so silently
+# excluded `resources/themes/ratty-dark.yaml`, the default theme, from version
+# control. A fresh clone could not build, because themes.qrc references a file
+# that was never committed.
+/ratty
+/tests/test_config
+/tests/test_input
+/tests/test_mouse
+/tests/test_render
+/tests/test_scroll_gl
+/tests/test_splits
+/tests/test_splits_gl
+/tests/test_tabbar
+/tests/test_terminal
 
-# Prerequisites
-*.d
-
-# Compiled Object files
-*.slo
-*.lo
+# Compiled object and library files.
 *.o
 *.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Linker files
-*.ilk
-
-# Debugger Files
-*.pdb
-
-# Compiled Dynamic libraries
+*.a
+*.la
+*.lai
+*.lib
 *.so
 *.dylib
 *.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
+*.d
 *.out
+
+# Precompiled headers, debug info, linker leftovers.
+*.gch
+*.pch
+*.pdb
+*.ilk
+*.dwo
+
+# macOS bundles.
 *.app
 
-# debug information files
-*.dwo
+# CodeGraph index (local tooling, not project state).
+.codegraph/
