@@ -35,7 +35,14 @@ public:
         bool error = false;
     };
 
-    PTY(int rows, int cols);
+    /*
+     * `workingDirectory` is where the shell starts. Empty inherits RaTTY's own
+     * directory, which is what happened before this existed and is almost never
+     * what anyone wants: for a terminal launched from a desktop entry it is `/`.
+     * A directory that cannot be entered is not fatal -- the shell starts in the
+     * inherited one rather than not at all.
+     */
+    PTY(int rows, int cols, const std::string& workingDirectory = std::string());
     ~PTY();
 
     PTY(const PTY&) = delete;
@@ -56,6 +63,17 @@ public:
 
     bool isValid() const { return master_fd_ >= 0 && child_pid_ > 0; }
 
+    /*
+     * The directory the shell is in *now*, or empty if it cannot be determined.
+     *
+     * Read from the operating system rather than tracked from the byte stream:
+     * OSC 7 would require the shell to be configured to report itself, which
+     * bash is not by default, whereas /proc (Linux) and proc_pidinfo (macOS)
+     * answer for any shell. This is what lets a new split open where the pane it
+     * came from is.
+     */
+    std::string workingDirectory() const;
+
     /* Reaps the child if it has exited. Once true, stays true: the previous
      * implementation called waitpid() from a const method on every poll, so the
      * first call consumed the exit status and later cleanup could not reap. */
@@ -66,7 +84,8 @@ public:
 private:
     void cleanup();
     /* Runs in the forked child; never returns. */
-    [[noreturn]] void execChild(const std::string& shell);
+    [[noreturn]] void execChild(const std::string& shell,
+                                const std::string& workingDirectory);
 
     int master_fd_ = -1;
     pid_t child_pid_ = -1;

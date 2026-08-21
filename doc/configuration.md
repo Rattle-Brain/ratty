@@ -84,6 +84,10 @@ scrollback:
 mouse:
   alternate_scroll: true
 
+directories:
+  new_tab: home       # home | cwd | a path
+  new_split: cwd
+
 window:
   width: 1280
   height: 720
@@ -118,6 +122,26 @@ keybindings:
   `Shift+PageUp`/`PageDown` have nothing to move.
 - `scrollback.multiplier` is how many rows one wheel notch moves. Fractional
   notches from a trackpad accumulate, so a slow drag still scrolls smoothly.
+- `directories.new_tab` and `directories.new_split` decide where a newly opened
+  pane's shell starts. Each takes one of:
+
+  | Value | Meaning |
+  | --- | --- |
+  | `home` | the home directory |
+  | `cwd` | the directory the pane it was opened from is in (`inherit` is a synonym) |
+  | a path | e.g. `~/work` or `/srv/project`; `~` is expanded |
+
+  They are separate settings because a tab and a split are asked for in
+  different frames of mind. A tab is a fresh piece of work, so it defaults to
+  `home`; a split is nearly always a second view of the job already in hand, so
+  it defaults to `cwd`. Set `new_split: home` for the old behaviour.
+
+  `cwd` is read from the operating system rather than from the byte stream —
+  `/proc/<pid>/cwd` on Linux, `proc_pidinfo()` on macOS — so it works with any
+  shell, including a `bash` that has not been set up to report itself through
+  OSC 7. When it cannot be determined, or a configured path no longer exists,
+  the pane falls back to `home` rather than to whatever directory RaTTY itself
+  was launched from, which for a desktop launcher is usually `/`.
 - `mouse.alternate_scroll` translates a wheel notch into cursor keys when a
   full-screen application is up and has not asked for the mouse, which is what
   makes the wheel scroll `less` and `man`. An application can turn it off for

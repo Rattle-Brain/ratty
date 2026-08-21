@@ -348,6 +348,10 @@ void testKeyEncoding() {
     expectBytes(Qt::ControlModifier, Qt::Key_Backspace, QString(), false, "\x08",
                 "Ctrl+Backspace -> BS");
     expectBytes(Qt::NoModifier, Qt::Key_Escape, QString(), false, "\x1b", "Escape");
+    /* Tab is the shell's completion key, so it has to arrive as a plain HT. The
+     * encoding was always right; what went wrong was upstream of here -- see
+     * TerminalWidget::focusNextPrevChild(). */
+    expectBytes(Qt::NoModifier, Qt::Key_Tab, QStringLiteral("\t"), false, "\t", "Tab -> HT");
     expectBytes(Qt::NoModifier, Qt::Key_Backtab, QString(), false, "\x1b[Z", "Shift+Tab -> CBT");
 
     expectBytes(Qt::ControlModifier, Qt::Key_C, QStringLiteral("\x03"), false, "\x03", "Ctrl+C");

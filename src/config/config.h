@@ -34,6 +34,41 @@
 #include <string>
 
 /* Actions that can be bound to keys. */
+/*
+ * Where the shell of a newly opened pane starts.
+ *
+ * A new tab and a new split are configured separately because they are asked
+ * for in different frames of mind: a tab is a fresh piece of work, so it starts
+ * at $HOME, while a split is nearly always a second view of the job already in
+ * hand and wants the directory that job is in.
+ */
+struct StartDirectory {
+    enum class Kind {
+        Home,     // $HOME
+        Cwd,      // the directory of the pane the new one was opened from
+        Custom,   // a path from the configuration
+    };
+
+    Kind kind = Kind::Home;
+    QString path;   // meaningful only for Kind::Custom
+
+    /*
+     * The absolute directory to start the shell in, always something usable.
+     *
+     * `inherited` is where the pane being opened *from* currently is; it is
+     * consulted only for Kind::Cwd, and may be empty when that pane cannot say
+     * (its shell has exited, or the platform lookup failed). A configured path
+     * that no longer exists, and an unavailable inherited directory, both fall
+     * back to $HOME rather than to whatever directory RaTTY itself happens to
+     * have been launched from -- which is arbitrary and, for a terminal started
+     * from a desktop launcher, usually `/`.
+     */
+    QString resolve(const QString& inherited) const;
+
+    /* Parse "home", "cwd" or a path. `~` is expanded. */
+    static StartDirectory fromString(const QString& text);
+};
+
 enum Action {
     ACTION_NONE = 0,
 
@@ -181,6 +216,13 @@ public:
      */
     bool alternateScroll() const { return alternateScroll_; }
 
+    /*
+     * Where a new pane's shell starts. Tabs and splits are separate settings;
+     * see StartDirectory.
+     */
+    const StartDirectory& newTabDirectory() const { return newTabDirectory_; }
+    const StartDirectory& newSplitDirectory() const { return newSplitDirectory_; }
+
     /* Window */
     int windowWidth() const { return windowWidth_; }
     int windowHeight() const { return windowHeight_; }
@@ -317,6 +359,14 @@ private:
     ChromeColors builtInChrome_;
     ChromeColors themeChrome_;
     ChromeColors userChrome_;
+
+    /*
+     * A tab starts at $HOME; a split inherits the directory of the pane it was
+     * opened from, which is what every tiling terminal does and what makes a
+     * split useful for looking at the same tree twice.
+     */
+    StartDirectory newTabDirectory_{StartDirectory::Kind::Home, QString()};
+    StartDirectory newSplitDirectory_{StartDirectory::Kind::Cwd, QString()};
 
     int windowWidth_ = DEFAULT_WINDOW_WIDTH;
     int windowHeight_ = DEFAULT_WINDOW_HEIGHT;

@@ -6,11 +6,56 @@
 #include <QDebug>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QKeyCombination>
 #include <QKeyEvent>
 #include <yaml-cpp/yaml.h>
 #include <algorithm>
 #include <optional>
+
+/* ------------------------------------------------------- StartDirectory */
+
+StartDirectory StartDirectory::fromString(const QString& text) {
+    const QString trimmed = text.trimmed();
+
+    if (trimmed.isEmpty()
+        || trimmed.compare(QLatin1String("home"), Qt::CaseInsensitive) == 0) {
+        return {Kind::Home, QString()};
+    }
+    /* "inherit" reads better in some configurations and means the same thing. */
+    if (trimmed.compare(QLatin1String("cwd"), Qt::CaseInsensitive) == 0
+        || trimmed.compare(QLatin1String("inherit"), Qt::CaseInsensitive) == 0) {
+        return {Kind::Cwd, QString()};
+    }
+
+    /* Anything else is a path. `~` is expanded here rather than at use, so what
+     * resolve() holds is always something chdir() can be given directly. */
+    QString path = trimmed;
+    if (path == QLatin1String("~")) {
+        path = QDir::homePath();
+    } else if (path.startsWith(QLatin1String("~/"))) {
+        path = QDir::homePath() + path.mid(1);
+    }
+    return {Kind::Custom, QDir::cleanPath(path)};
+}
+
+QString StartDirectory::resolve(const QString& inherited) const {
+    switch (kind) {
+    case Kind::Cwd:
+        if (!inherited.isEmpty() && QFileInfo(inherited).isDir()) return inherited;
+        break;
+    case Kind::Custom:
+        if (!path.isEmpty() && QFileInfo(path).isDir()) return path;
+        if (!path.isEmpty()) {
+            qWarning() << "Config: start directory" << path
+                       << "does not exist; using the home directory";
+        }
+        break;
+    case Kind::Home:
+        break;
+    }
+    return QDir::homePath();
+}
 
 namespace {
 
@@ -191,6 +236,9 @@ struct Config::Parser {
         if (const YAML::Node node = root["cursor"]; node && node.IsMap()) cursor(node);
         if (const YAML::Node node = root["window"]; node && node.IsMap()) window(node);
         if (const YAML::Node node = root["scrollback"]; node && node.IsMap()) scrollback(node);
+        if (const YAML::Node node = root["directories"]; node && node.IsMap()) {
+            directories(node);
+        }
         if (const YAML::Node node = root["mouse"]; node && node.IsMap()) mouse(node);
         if (const YAML::Node node = root["tab_bar"]; node && node.IsMap()) tabBar(node);
         if (const YAML::Node node = root["mac_os_bindings"]; node) {
@@ -335,6 +383,20 @@ struct Config::Parser {
         }
     }
 
+    /*
+     * Each value is either "home", "cwd" (equivalently "inherit") or a path.
+     * One spelling covers both of the things a user might want -- a fixed
+     * directory, or "wherever I already am" -- without a separate mode switch.
+     */
+    void directories(const YAML::Node& node) {
+        if (const auto newTab = readString(node, "new_tab")) {
+            config.newTabDirectory_ = StartDirectory::fromString(*newTab);
+        }
+        if (const auto newSplit = readString(node, "new_split")) {
+            config.newSplitDirectory_ = StartDirectory::fromString(*newSplit);
+        }
+    }
+
     void mouse(const YAML::Node& node) {
         if (const auto alternateScroll = readBool(node, "alternate_scroll")) {
             config.alternateScroll_ = *alternateScroll;
@@ -450,6 +512,8 @@ void Config::applyBuiltInDefaults() {
     builtInChrome_ = ChromeColors{};
     themeChrome_ = ChromeColors{};
     userChrome_ = ChromeColors{};
+    newTabDirectory_ = StartDirectory{StartDirectory::Kind::Home, QString()};
+    newSplitDirectory_ = StartDirectory{StartDirectory::Kind::Cwd, QString()};
     windowWidth_ = DEFAULT_WINDOW_WIDTH;
     windowHeight_ = DEFAULT_WINDOW_HEIGHT;
     windowOpacity_ = 1.0f;

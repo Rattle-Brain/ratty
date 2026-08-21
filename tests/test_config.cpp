@@ -666,6 +666,77 @@ window:
                 "a fully transparent window is prevented");
 }
 
+/*
+ * Where a new pane starts.
+ *
+ * Tabs and splits are separate settings on purpose, and both accept the same
+ * three spellings, so all six combinations are worth pinning: the two defaults,
+ * a fixed path, and the fallbacks that keep resolve() from ever handing back
+ * something unusable.
+ */
+void testStartDirectories() {
+    check::section("new tab and new split start directories");
+
+    const QString home = QDir::homePath();
+
+    loadWithUserConfig(nullptr);
+    check::that(Config::instance().newTabDirectory().kind == StartDirectory::Kind::Home,
+                "by default a new tab starts at home");
+    check::that(Config::instance().newSplitDirectory().kind == StartDirectory::Kind::Cwd,
+                "and a new split follows the pane it came from");
+
+    /* A split set to inherit takes the directory it is handed... */
+    check::equal(Config::instance().newSplitDirectory().resolve(sandbox->path()).toStdString(),
+                 sandbox->path().toStdString(),
+                 "an inheriting split resolves to the directory it was given");
+    /* ...and falls back to home when the pane cannot say where it is, rather
+     * than to whatever directory RaTTY itself was launched from. */
+    check::equal(Config::instance().newSplitDirectory().resolve(QString()).toStdString(),
+                 home.toStdString(),
+                 "with nothing to inherit it falls back to home");
+    /* A tab ignores what it is handed: it is configured as home. */
+    check::equal(Config::instance().newTabDirectory().resolve(sandbox->path()).toStdString(),
+                 home.toStdString(),
+                 "a home-configured tab ignores the inherited directory");
+
+    loadWithUserConfig(R"(
+directories:
+  new_tab: cwd
+  new_split: home
+)");
+    check::that(Config::instance().newTabDirectory().kind == StartDirectory::Kind::Cwd,
+                "the two settings can be swapped over");
+    check::that(Config::instance().newSplitDirectory().kind == StartDirectory::Kind::Home,
+                "and a split can be pinned to home");
+
+    /* Custom paths, which is the other thing a user might want. `~` expands. */
+    const QString custom = sandbox->path() + QStringLiteral("/projects");
+    QDir().mkpath(custom);
+    loadWithUserConfig(QStringLiteral(R"(
+directories:
+  new_tab: "%1"
+  new_split: "~"
+)").arg(custom).toUtf8().constData());
+
+    check::that(Config::instance().newTabDirectory().kind == StartDirectory::Kind::Custom,
+                "a path is taken as a path");
+    check::equal(Config::instance().newTabDirectory().resolve(QString()).toStdString(),
+                 custom.toStdString(), "and is what the shell starts in");
+    check::equal(Config::instance().newSplitDirectory().resolve(QString()).toStdString(),
+                 home.toStdString(), "a bare ~ expands to home");
+
+    /* A directory that has since been removed must not leave a pane unopenable. */
+    loadWithUserConfig(R"(
+directories:
+  new_tab: /this/path/does/not/exist
+)");
+    check::equal(Config::instance().newTabDirectory().resolve(QString()).toStdString(),
+                 home.toStdString(),
+                 "a configured path that no longer exists falls back to home");
+
+    loadWithUserConfig(nullptr);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -700,5 +771,6 @@ int main(int argc, char** argv) {
     testUnknownThemeIsSafe();
     testMalformedFileKeepsDefaults();
     testValueClamping();
+    testStartDirectories();
     return check::report("test_config");
 }

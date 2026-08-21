@@ -19,8 +19,9 @@
 #include <algorithm>
 #include <cmath>
 
-TerminalWidget::TerminalWidget(QWidget* parent)
+TerminalWidget::TerminalWidget(QWidget* parent, const QString& startDirectory)
     : QOpenGLWidget(parent)
+    , startDirectory_(startDirectory)
 {
     /*
      * The surface format is set once for the whole application in main(); doing
@@ -136,7 +137,8 @@ void TerminalWidget::initializeGL() {
     const int cols = layout_.isValid() ? layout_.cols : DefaultCols;
 
     session_ = std::make_unique<TerminalSession>(rows, cols,
-                                                Config::instance().palette(), this);
+                                                Config::instance().palette(),
+                                                startDirectory_, this);
     session_->setScrollbackLines(Config::instance().scrollbackLines());
     session_->setAlternateScroll(Config::instance().alternateScroll());
     connect(session_.get(), &TerminalSession::screenChanged,
@@ -288,6 +290,27 @@ bool TerminalWidget::event(QEvent* event) {
     }
 
     return result;
+}
+
+bool TerminalWidget::focusNextPrevChild(bool /*next*/) {
+    /*
+     * Tab belongs to the shell, so this pane never gives it up.
+     *
+     * QWidget::event() consumes Key_Tab and Key_Backtab for focus traversal
+     * *before* keyPressEvent() is called, and only falls through to the key
+     * handler if traversal found nothing to move to. With a single pane there is
+     * nothing, so Tab worked; the moment the window was split there was, and Tab
+     * moved the caret to the other pane instead of completing a filename.
+     *
+     * Refusing traversal here is what lets the event reach keyPressEvent(),
+     * where InputHandler encodes it as HT -- and Shift+Tab as CBT, which is what
+     * shells bind to reverse completion.
+     *
+     * Moving between panes is deliberately on its own bindings
+     * (focus_left/right/up/down): a terminal cannot afford to spend Tab on
+     * window management.
+     */
+    return false;
 }
 
 void TerminalWidget::resizeGL(int, int) {
@@ -762,6 +785,10 @@ void TerminalWidget::focusOutEvent(QFocusEvent* event) {
     if (session_) session_->sendFocusEvent(false);
     restartBlink();
     update();
+}
+
+QString TerminalWidget::workingDirectory() const {
+    return session_ ? session_->workingDirectory() : QString();
 }
 
 void TerminalWidget::copySelection() {

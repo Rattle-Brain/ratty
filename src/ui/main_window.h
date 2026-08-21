@@ -71,6 +71,12 @@ private:
     void changeFontSize(int delta);
     void goToTab(int oneBasedIndex);
 
+    /*
+     * The directory the current pane's shell is in, for the "inherit" start
+     * directory setting. Empty when there is no pane or its shell has gone.
+     */
+    QString currentPaneDirectory() const;
+
     /* The focused pane of the current tab, or nullptr. */
     SplitContainer* focusedPane() const;
     /* Its terminal, which is what most actions actually want. */

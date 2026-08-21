@@ -29,12 +29,19 @@ class TerminalSession : public QObject {
 public:
     /* `palette` seeds this session's colours; an application may then retheme
      * them through OSC 4/10/11/12 without affecting other sessions. */
-    TerminalSession(int rows, int cols, const Palette& palette, QObject* parent = nullptr);
+    /* `workingDirectory` is where the shell starts; see PTY's constructor. */
+    TerminalSession(int rows, int cols, const Palette& palette,
+                    const QString& workingDirectory = QString(),
+                    QObject* parent = nullptr);
     ~TerminalSession() override;
 
     bool isValid() const;
     /* The shell's process id, or -1. Identity across a reparent is what proves
      * the session was preserved rather than respawned. */
+    /* Where the shell is now, or empty if it cannot be determined. Used to
+     * open a new split in the directory the current one is in. */
+    QString workingDirectory() const;
+
     pid_t shellPid() const { return pty_ ? pty_->childPid() : -1; }
 
     const Screen& screen() const { return emulator_.screen(); }

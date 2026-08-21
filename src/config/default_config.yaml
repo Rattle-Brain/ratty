@@ -111,6 +111,20 @@ mouse:
   # drags and the wheel are reported to them instead of scrolling the
   # scrollback. Hold Shift to bypass that and scroll locally anyway.
 
+# Where a newly opened pane's shell starts.
+#
+# Each accepts one of:
+#   home    the home directory
+#   cwd     the directory the pane it was opened from is in ("inherit" is a
+#           synonym); falls back to home if that cannot be determined
+#   a path  e.g. ~/work or /srv/project -- `~` is expanded
+directories:
+  # A new tab is a fresh piece of work, so it starts at home.
+  new_tab: home
+  # A split is nearly always a second view of the job already in hand, so it
+  # follows the pane it came from. Set this to `home` for the old behaviour.
+  new_split: cwd
+
 window:
   width: 1280
   height: 720

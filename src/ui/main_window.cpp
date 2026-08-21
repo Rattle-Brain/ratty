@@ -77,13 +77,29 @@ void MainWindow::updateTabBarVisibility() {
     tabBar_->setVisible(visible);
 }
 
+QString MainWindow::currentPaneDirectory() const {
+    /*
+     * Asked of the pane the new one is being opened from, and only used when the
+     * setting says to inherit. Empty is a perfectly good answer -- there may be
+     * no pane yet, or the shell may have exited -- and StartDirectory::resolve()
+     * falls back to $HOME for it.
+     */
+    const TerminalWidget* terminal = focusedTerminal();
+    return terminal ? terminal->workingDirectory() : QString();
+}
+
 void MainWindow::addTab() {
     if (tabCount() >= MaxTabs) {
         qWarning() << "MainWindow: tab limit reached (" << MaxTabs << ")";
         return;
     }
 
-    SplitContainer* root = SplitContainer::createLeaf(nullptr);
+    /* A new tab is a fresh piece of work, so by default it starts at $HOME
+     * rather than wherever the current pane wandered off to. */
+    const QString startDirectory =
+        Config::instance().newTabDirectory().resolve(currentPaneDirectory());
+
+    SplitContainer* root = SplitContainer::createLeaf(nullptr, startDirectory);
     connectRoot(root);
 
     const int index = tabWidget_->addTab(root, QStringLiteral("Terminal"));
@@ -391,9 +407,18 @@ void MainWindow::splitFocusedPane(bool horizontal) {
     const int index = tabWidget_->currentIndex();
     const QString label = tabLabel(index);
 
+    /*
+     * Read before the surgery: once the tree has been rearranged the pane is
+     * still alive, but asking first keeps the ordering obvious. By default a
+     * split inherits this pane's directory, which is the whole point of one.
+     */
+    const QString startDirectory = Config::instance().newSplitDirectory().resolve(
+        pane->terminal() ? pane->terminal()->workingDirectory() : QString());
+
     SplitContainer* newPane = nullptr;
-    SplitContainer* newRoot = horizontal ? pane->splitHorizontal(0.5f, &newPane)
-                                         : pane->splitVertical(0.5f, &newPane);
+    SplitContainer* newRoot =
+        horizontal ? pane->splitHorizontal(0.5f, &newPane, startDirectory)
+                   : pane->splitVertical(0.5f, &newPane, startDirectory);
     if (!newRoot) return;
 
     installTabRoot(index, newRoot, label);

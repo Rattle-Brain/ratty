@@ -30,7 +30,14 @@ class TerminalWidget : public QOpenGLWidget, protected QOpenGLFunctions {
     Q_OBJECT
 
 public:
-    explicit TerminalWidget(QWidget* parent = nullptr);
+    /*
+     * `startDirectory` is where this pane's shell begins, resolved by the caller
+     * from the configuration (see StartDirectory). It has to be known at
+     * construction because the session is created the first time the widget
+     * gets a GL context, which is before anything else can set it.
+     */
+    explicit TerminalWidget(QWidget* parent = nullptr,
+                            const QString& startDirectory = QString());
     ~TerminalWidget() override;
 
     /* Marks this pane as the focused one in a split layout. */
@@ -60,6 +67,10 @@ public:
     void reloadFont();
 
     QString title() const { return title_; }
+
+    /* The directory this pane's shell is in now, or empty if unknown. A new
+     * split configured to inherit starts here. */
+    QString workingDirectory() const;
 
     /* The shell's process id, or -1 if none is running. */
     pid_t shellPid() const { return session_ ? session_->shellPid() : -1; }
@@ -92,6 +103,11 @@ protected:
      * resizing the widget, so resizeGL() cannot be relied on to catch it.
      */
     bool event(QEvent* event) override;
+    /*
+     * Refuses Tab-based focus traversal, which is what keeps Tab and Shift+Tab
+     * available to the shell. See the implementation.
+     */
+    bool focusNextPrevChild(bool next) override;
     void initializeGL() override;
     void resizeGL(int width, int height) override;
     void paintGL() override;
@@ -183,6 +199,8 @@ private:
     bool cursorPhaseOn_ = true;
     bool paneFocused_ = false;
     QString title_;
+    /* Where this pane's shell was told to start. */
+    QString startDirectory_;
 
     /*
      * What the font on screen was rasterized for, so a screen change is

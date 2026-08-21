@@ -25,10 +25,11 @@ SplitContainer::SplitContainer(QWidget* parent)
 
 SplitContainer::~SplitContainer() = default;
 
-SplitContainer* SplitContainer::createLeaf(QWidget* parent) {
+SplitContainer* SplitContainer::createLeaf(QWidget* parent,
+                                           const QString& startDirectory) {
     auto* node = new SplitContainer(parent);
     node->type_ = Leaf;
-    node->terminal_ = new TerminalWidget(node);
+    node->terminal_ = new TerminalWidget(node, startDirectory);
 
     connect(node->terminal_, &TerminalWidget::sessionEnded, node, [node]() {
         emit node->paneSessionEnded(node);
@@ -118,13 +119,14 @@ void SplitContainer::adoptChildSignals(SplitContainer* child) {
 }
 
 SplitContainer* SplitContainer::performSplit(SplitType splitType, float ratio,
-                                             SplitContainer** newPane) {
+                                             SplitContainer** newPane,
+                                             const QString& startDirectory) {
     if (type_ != Leaf) {
         qWarning() << "SplitContainer: only leaves can be split";
         return nullptr;
     }
 
-    SplitContainer* newLeaf = createLeaf(nullptr);
+    SplitContainer* newLeaf = createLeaf(nullptr, startDirectory);
     SplitContainer* oldParent = parent_;
 
     /*
@@ -174,12 +176,14 @@ SplitContainer* SplitContainer::performSplit(SplitType splitType, float ratio,
     return container->rootNode();
 }
 
-SplitContainer* SplitContainer::splitHorizontal(float ratio, SplitContainer** newPane) {
-    return performSplit(Horizontal, ratio, newPane);
+SplitContainer* SplitContainer::splitHorizontal(float ratio, SplitContainer** newPane,
+                                               const QString& startDirectory) {
+    return performSplit(Horizontal, ratio, newPane, startDirectory);
 }
 
-SplitContainer* SplitContainer::splitVertical(float ratio, SplitContainer** newPane) {
-    return performSplit(Vertical, ratio, newPane);
+SplitContainer* SplitContainer::splitVertical(float ratio, SplitContainer** newPane,
+                                             const QString& startDirectory) {
+    return performSplit(Vertical, ratio, newPane, startDirectory);
 }
 
 void SplitContainer::detachChild(SplitContainer* child) {

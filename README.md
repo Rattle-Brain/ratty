@@ -63,6 +63,9 @@ font:
   size: 15
 scrollback:
   lines: 20000
+directories:
+  new_tab: home        # home | cwd | a path
+  new_split: cwd       # splits follow the pane they came from
 tab_bar:
   style: pills
   position: bottom

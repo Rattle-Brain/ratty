@@ -36,7 +36,10 @@ public:
     };
 
     /* A new leaf with its own terminal. */
-    static SplitContainer* createLeaf(QWidget* parent = nullptr);
+    /* `startDirectory` is where the new pane's shell begins; empty inherits
+     * RaTTY's own directory. Callers resolve it from the configuration. */
+    static SplitContainer* createLeaf(QWidget* parent = nullptr,
+                                      const QString& startDirectory = QString());
 
     ~SplitContainer() override;
 
@@ -50,8 +53,10 @@ public:
      * installed in the tab widget: reparenting a widget into a QStackedWidget
      * clears Qt focus, so anything focused during the surgery is lost.
      */
-    SplitContainer* splitHorizontal(float ratio = 0.5f, SplitContainer** newPane = nullptr);
-    SplitContainer* splitVertical(float ratio = 0.5f, SplitContainer** newPane = nullptr);
+    SplitContainer* splitHorizontal(float ratio = 0.5f, SplitContainer** newPane = nullptr,
+                                    const QString& startDirectory = QString());
+    SplitContainer* splitVertical(float ratio = 0.5f, SplitContainer** newPane = nullptr,
+                                  const QString& startDirectory = QString());
 
     /*
      * Remove this pane. Returns the new root of the tree, or nullptr if this is
@@ -119,7 +124,8 @@ private:
                                            SplitContainer* second, float ratio,
                                            QSize span);
 
-    SplitContainer* performSplit(SplitType splitType, float ratio, SplitContainer** newPane);
+    SplitContainer* performSplit(SplitType splitType, float ratio, SplitContainer** newPane,
+                                 const QString& startDirectory);
     /* `sizes` is the splitter division to restore, for callers that detached
      * the old child first; empty means "whatever the splitter reports now". */
     void replaceChild(SplitContainer* oldChild, SplitContainer* newChild,

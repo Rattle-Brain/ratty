@@ -28,6 +28,8 @@
 #include <QKeyEvent>
 #include <QInputMethodEvent>
 #include <QMouseEvent>
+#include <QDir>
+#include <QFileInfo>
 #include <QOffscreenSurface>
 #include <QOpenGLContext>
 #include <QTemporaryDir>
@@ -617,6 +619,126 @@ void testFontFollowsItsDisplay() {
     settle(120);
 }
 
+/*
+ * Tab belongs to the shell.
+ *
+ * Qt's own QWidget::event() takes Key_Tab and Key_Backtab for focus traversal
+ * *before* keyPressEvent() ever sees them, so in a split window Tab moved the
+ * caret to the next pane instead of asking the shell to complete. With a single
+ * pane there is nothing to move to, focusNextPrevChild() answers false and Tab
+ * falls through -- which is why this only ever showed up once a pane was split.
+ */
+void testTabReachesTheShellRatherThanTheNextPane() {
+    check::section("Tab goes to the shell, not to the next pane");
+
+    MainWindow window;
+    window.resize(1000, 620);
+    window.show();
+    window.activateWindow();
+    settle(1400);
+
+    const auto ctrlShift = Qt::ControlModifier | Qt::ShiftModifier;
+    sendShortcut(window, ctrlShift, Qt::Key_W);      // split left/right
+    settle(1300);
+
+    SplitContainer* root = window.currentRoot();
+    SplitContainer* second = root ? root->child2() : nullptr;
+    check::that(second != nullptr && second->terminal() != nullptr,
+                "two panes, with the new one current");
+    if (!second || !second->terminal()) return;
+
+    TerminalWidget* focused = second->terminal();
+    check::that(window.focusWidget() == focused, "the new pane holds the caret");
+
+    /* Exactly what the platform delivers: a key event to the focus widget. */
+    QKeyEvent tab(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier, QStringLiteral("\t"));
+    QCoreApplication::sendEvent(focused, &tab);
+    settle(200);
+    check::that(window.focusWidget() == focused, "Tab left the caret where it was");
+
+    /* Shift+Tab arrives as Key_Backtab and must not walk backwards either. */
+    QKeyEvent backtab(QEvent::KeyPress, Qt::Key_Backtab, Qt::ShiftModifier);
+    QCoreApplication::sendEvent(focused, &backtab);
+    settle(200);
+    check::that(window.focusWidget() == focused, "and neither did Shift+Tab");
+}
+
+/*
+ * Where a new pane's shell starts, end to end.
+ *
+ * This exercises the whole chain rather than the settings: PTY chdir()s before
+ * exec, and workingDirectory() asks the operating system where the shell got to
+ * -- /proc on Linux, proc_pidinfo on macOS -- which is what lets a split open
+ * where the pane it came from is.
+ */
+void testPanesStartInTheRequestedDirectory() {
+    check::section("a pane starts where it was told, and a split can follow it");
+
+    /* Two real directories inside the sandbox, resolved through QDir so that a
+     * symlinked /tmp (which macOS has) does not make the comparison fail. */
+    QTemporaryDir scratch;
+    check::that(scratch.isValid(), "a scratch directory to start shells in");
+    if (!scratch.isValid()) return;
+
+    const QString first = QFileInfo(scratch.path()).canonicalFilePath();
+    const QString second = first + QStringLiteral("/nested");
+    check::that(QDir().mkpath(second), "and a second one below it");
+
+    SplitContainer* root = SplitContainer::createLeaf(nullptr, first);
+    root->resize(900, 500);
+    root->show();
+    settle(1500);
+
+    TerminalWidget* original = root->terminal();
+    check::that(original != nullptr && original->shellPid() > 0, "the pane started a shell");
+    if (!original) return;
+
+    const QString reported = QFileInfo(original->workingDirectory()).canonicalFilePath();
+    check::equal(reported.toStdString(), first.toStdString(),
+                 "and that shell is in the directory it was given");
+
+    /* A split told to inherit lands in the same place. */
+    SplitContainer* inheritingPane = nullptr;
+    SplitContainer* afterInherit =
+        root->splitHorizontal(0.5f, &inheritingPane, original->workingDirectory());
+    check::that(afterInherit != nullptr && inheritingPane != nullptr, "the split happened");
+    if (!afterInherit || !inheritingPane) return;
+    afterInherit->resize(900, 500);
+    afterInherit->show();
+    settle(1500);
+
+    TerminalWidget* inherited = inheritingPane->terminal();
+    check::that(inherited != nullptr && inherited->shellPid() > 0, "the new pane has a shell");
+    if (inherited) {
+        check::equal(QFileInfo(inherited->workingDirectory()).canonicalFilePath().toStdString(),
+                     first.toStdString(),
+                     "which inherited the directory of the pane it came from");
+    }
+
+    /* And a split told somewhere else goes there instead, which is the same code
+     * path a configured path or `home` takes. */
+    SplitContainer* elsewherePane = nullptr;
+    SplitContainer* afterElsewhere =
+        inheritingPane->splitVertical(0.5f, &elsewherePane, second);
+    check::that(afterElsewhere != nullptr && elsewherePane != nullptr,
+                "a second split happened");
+    if (afterElsewhere && elsewherePane) {
+        afterElsewhere->resize(900, 500);
+        afterElsewhere->show();
+        settle(1500);
+        TerminalWidget* elsewhere = elsewherePane->terminal();
+        if (elsewhere) {
+            check::equal(
+                QFileInfo(elsewhere->workingDirectory()).canonicalFilePath().toStdString(),
+                second.toStdString(),
+                "and a split pointed elsewhere starts there instead");
+        }
+    }
+
+    (afterElsewhere ? afterElsewhere : afterInherit)->deleteLater();
+    settle(300);
+}
+
 int main(int argc, char** argv) {
     QSurfaceFormat format;
     format.setVersion(3, 3);
@@ -655,5 +777,7 @@ int main(int argc, char** argv) {
     testFocusReturnsToThePaneLastUsed();
     testComposedInputReachesTheShell();
     testFontFollowsItsDisplay();
+    testTabReachesTheShellRatherThanTheNextPane();
+    testPanesStartInTheRequestedDirectory();
     return check::report("test_splits_gl");
 }

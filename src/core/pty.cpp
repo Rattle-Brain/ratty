@@ -14,6 +14,14 @@
 #include <sys/ioctl.h>
 #include <sys/wait.h>
 
+/* workingDirectory() asks the operating system where the shell is, and the two
+ * platforms answer through completely different interfaces. */
+#if defined(__linux__)
+  #include <climits>
+#elif defined(__APPLE__)
+  #include <libproc.h>
+#endif
+
 namespace {
 
 /*
@@ -46,13 +54,31 @@ std::string PTY::getUserShell() {
     return "/bin/sh";
 }
 
-void PTY::execChild(const std::string& shell) {
+void PTY::execChild(const std::string& shell, const std::string& workingDirectory) {
     /*
      * Start a *login* shell (argv[0] prefixed with '-'), which is what
      * Terminal.app and kitty do on macOS: without it ~/.zprofile never runs and
      * PATH ends up missing Homebrew and friends.
      */
     const std::string argv0 = "-" + baseName(shell);
+
+    /*
+     * Before exec, so the shell's own startup files see it and `pwd` agrees.
+     * A failure is deliberately not fatal: the directory may have been removed
+     * since it was configured or since the pane we inherited it from last
+     * looked, and starting somewhere is better than a pane that never opens.
+     */
+    if (!workingDirectory.empty() && chdir(workingDirectory.c_str()) != 0) {
+        /* The parent's stderr is the pty master, so this is not printed into
+         * the user's shell; PWD is corrected below regardless. */
+        perror("chdir");
+    }
+    /*
+     * Some shells trust an inherited PWD over getcwd(), and a stale one makes
+     * the prompt disagree with the actual directory. Unsetting it makes the
+     * shell work it out for itself.
+     */
+    unsetenv("PWD");
 
     setsid();
 #ifdef TIOCSCTTY
@@ -82,7 +108,7 @@ void PTY::execChild(const std::string& shell) {
     _exit(127);
 }
 
-PTY::PTY(int rows, int cols)
+PTY::PTY(int rows, int cols, const std::string& workingDirectory)
     : rows_(rows)
     , cols_(cols)
 {
@@ -105,7 +131,7 @@ PTY::PTY(int rows, int cols)
     }
 
     if (child_pid_ == 0) {
-        execChild(shell);
+        execChild(shell, workingDirectory);
     }
 
     /* Parent: non-blocking master for the event loop, and close-on-exec so
@@ -232,6 +258,40 @@ ssize_t PTY::write(const char* buf, size_t len) {
         break;
     }
     return static_cast<ssize_t>(written);
+}
+
+std::string PTY::workingDirectory() const {
+    if (child_pid_ <= 0 || child_exited_) return std::string();
+
+#if defined(__linux__)
+    /*
+     * /proc/<pid>/cwd is a symlink to the directory. readlink() on it needs no
+     * privileges for a process of the same user, which our own child always is.
+     */
+    const std::string link = "/proc/" + std::to_string(child_pid_) + "/cwd";
+    char buffer[PATH_MAX];
+    const ssize_t length = ::readlink(link.c_str(), buffer, sizeof(buffer) - 1);
+    if (length <= 0) return std::string();
+    buffer[length] = '\0';
+    return std::string(buffer);
+
+#elif defined(__APPLE__)
+    /*
+     * macOS has no /proc. proc_pidinfo() answers the same question, and
+     * PROC_PIDVNODEPATHINFO is the call that carries the current directory;
+     * it is permitted for a process of the same uid without any entitlement.
+     */
+    struct proc_vnodepathinfo info{};
+    const int written = proc_pidinfo(child_pid_, PROC_PIDVNODEPATHINFO, 0,
+                                     &info, sizeof(info));
+    if (written < static_cast<int>(sizeof(info))) return std::string();
+    if (info.pvi_cdir.vip_path[0] == '\0') return std::string();
+    return std::string(info.pvi_cdir.vip_path);
+
+#else
+    /* No portable way to ask. Callers fall back to the configured default. */
+    return std::string();
+#endif
 }
 
 void PTY::resize(int rows, int cols) {

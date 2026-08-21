@@ -7,13 +7,14 @@
 #include <QDebug>
 #include <vector>
 
-TerminalSession::TerminalSession(int rows, int cols, const Palette& palette, QObject* parent)
+TerminalSession::TerminalSession(int rows, int cols, const Palette& palette,
+                                 const QString& workingDirectory, QObject* parent)
     : QObject(parent)
     , emulator_(rows, cols)
 {
     emulator_.setBasePalette(palette);
 
-    pty_ = std::make_unique<PTY>(rows, cols);
+    pty_ = std::make_unique<PTY>(rows, cols, workingDirectory.toStdString());
 
     if (!pty_->isValid()) {
         qCritical() << "TerminalSession: failed to create PTY";
@@ -41,6 +42,11 @@ TerminalSession::TerminalSession(int rows, int cols, const Palette& palette, QOb
 }
 
 TerminalSession::~TerminalSession() = default;
+
+QString TerminalSession::workingDirectory() const {
+    if (!pty_) return QString();
+    return QString::fromStdString(pty_->workingDirectory());
+}
 
 bool TerminalSession::isValid() const {
     return pty_ && pty_->isValid();

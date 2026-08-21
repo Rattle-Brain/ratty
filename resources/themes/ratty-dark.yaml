@@ -1,0 +1,23 @@
+# RaTTY's own dark theme, and the default.
+name: RaTTY Dark
+colors:
+  background: "#1e1e1e"
+  foreground: "#dcdcdc"
+  selection_background: "#6495ed80"
+
+  black:          "#000000"
+  red:            "#cd3131"
+  green:          "#0dbc79"
+  yellow:         "#e5e510"
+  blue:           "#2472c8"
+  magenta:        "#bc3fbc"
+  cyan:           "#11a8cd"
+  white:          "#e5e5e5"
+  bright_black:   "#666666"
+  bright_red:     "#f14c4c"
+  bright_green:   "#23d18b"
+  bright_yellow:  "#f5f543"
+  bright_blue:    "#3b8eea"
+  bright_magenta: "#d670d6"
+  bright_cyan:    "#29b8db"
+  bright_white:   "#ffffff"

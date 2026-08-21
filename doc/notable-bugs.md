@@ -300,3 +300,46 @@ configured size behind the widget's back leaves exactly the same inconsistency,
 and the test fails without the `paintGL()` check.
 
 ---
+
+## Tab moved between panes instead of completing a filename
+
+**Symptom.** In a split window, pressing Tab jumped the caret to the other pane
+instead of asking the shell to complete. With a single pane it worked fine, which
+made it look like a split bug.
+
+**Investigation.** Both of the obvious suspects were innocent. `InputHandler`
+mapped `Key_Tab` to HT and `Key_Backtab` to CBT correctly, and
+`tests/test_input.cpp` already asserted that Tab resolves to `ACTION_NONE` — no
+keybinding was claiming it.
+
+**Cause.** Qt never delivered the event. `QWidget::event()` handles Tab itself,
+*before* `keyPressEvent()`:
+
+```cpp
+case QEvent::KeyPress: {
+    if (!(k->modifiers() & (Qt::ControlModifier | Qt::AltModifier))) {
+        if (k->key() == Qt::Key_Backtab || ...)  res = focusNextPrevChild(false);
+        else if (k->key() == Qt::Key_Tab)        res = focusNextPrevChild(true);
+        if (res) break;          // <-- consumed; keyPressEvent() never runs
+    }
+    keyPressEvent(k);
+```
+
+Every pane has `Qt::StrongFocus`, so with two of them `focusNextPrevChild(true)`
+found somewhere to go, returned true, and the event was consumed. With one pane
+there was nowhere to go, it returned false, and Tab fell through to
+`keyPressEvent()` and worked — which is exactly why the bug appeared to be about
+splits.
+
+**Fix.** `TerminalWidget::focusNextPrevChild()` returns false unconditionally.
+Refusing traversal is what lets the event reach `keyPressEvent()`. Moving between
+panes is deliberately on its own bindings (`focus_left`/`right`/`up`/`down`): a
+terminal cannot afford to spend Tab on window management.
+
+Pinned by `tests/test_splits_gl.cpp`
+(`testTabReachesTheShellRatherThanTheNextPane`), which splits a window and then
+sends a real `Key_Tab` to the focused pane. It fails without the override. The
+matching `Tab -> HT` assertion was also added to `tests/test_input.cpp`, which
+had only ever covered Shift+Tab.
+
+---
