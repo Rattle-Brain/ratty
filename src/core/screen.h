@@ -34,6 +34,7 @@
 #define CORE_SCREEN_H
 
 #include "cell.h"
+#include "history.h"
 #include <deque>
 #include <vector>
 
@@ -144,8 +145,16 @@ public:
     bool scrollViewToBottom() { return scrollViewTo(0); }
     bool scrollViewToTop() { return scrollViewTo(maxViewOffset()); }
 
-    /* The grid as displayed: history rows above, live rows below. With no
-     * offset this is exactly at(). */
+    /*
+     * The grid as displayed: history rows above, live rows below. With no
+     * offset this is exactly at().
+     *
+     * A history row is stored compressed, so the reference may point into an
+     * internal decode buffer that the next call to viewAt() or viewRow() is
+     * free to overwrite. Read it before calling either again -- which is what
+     * every caller already does, and what the reference-returning signature
+     * always implied.
+     */
     const Cell& viewAt(int row, int col) const;
 
     /*
@@ -161,6 +170,11 @@ public:
      * row captured at a narrower width is shorter than the screen; the columns
      * past it are blank, exactly as viewAt() reports them. nullptr for a row
      * outside the grid.
+     *
+     * As with viewAt(), a history row is decompressed into an internal buffer,
+     * so the pointer is valid only until the next viewAt()/viewRow() call. The
+     * renderer walks one row to completion before asking for the next, which is
+     * the access pattern this is built for.
      */
     const Cell* viewRow(int row, int& length) const;
 
@@ -181,6 +195,15 @@ private:
     /* Physical row index for a logical row. */
     int physicalRow(int row) const { return rowMap_[static_cast<size_t>(row)]; }
 
+    /*
+     * Decompress history row `absolute` into the scratch buffer and return it,
+     * or return the buffer already holding it. Cheap to call per cell, which is
+     * what viewAt() does.
+     */
+    const Cell* decodedHistory(int absolute, int& length) const;
+    /* Any change to history_ invalidates what the scratch buffer holds. */
+    void invalidateDecoded() { decodedIndex_ = -1; }
+
     std::vector<Cell> cells_;
     std::vector<int> rowMap_;
 
@@ -188,8 +211,15 @@ private:
      * Scrollback. A deque of whole rows rather than a second flat buffer: rows
      * are appended and evicted one at a time and never addressed as a
      * rectangle, and the width they were captured at has to travel with them.
+     *
+     * Rows are stored compressed -- see history.h, which explains why -- and
+     * expanded through decodeScratch_ on the way out.
      */
-    std::deque<std::vector<Cell>> history_;
+    std::deque<HistoryLine> history_;
+
+    /* The most recently decompressed history row, and which one it is. */
+    mutable std::vector<Cell> decodeScratch_;
+    mutable int decodedIndex_ = -1;
     int historyLimit_ = 0;
     int viewOffset_ = 0;
 

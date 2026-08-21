@@ -227,7 +227,18 @@ bool GLRenderer::setFont(const QStringList& families, const QStringList& fallbac
 
 void GLRenderer::beginFrame(int framebufferWidth, int framebufferHeight,
                             const QColor& clearColor) {
+    beginFrame(0, 0, framebufferWidth, framebufferHeight, clearColor);
+}
+
+void GLRenderer::beginFrame(int left, int bottom, int framebufferWidth, int framebufferHeight,
+                            const QColor& clearColor) {
     if (!initialized_) return;
+
+    gl_->glViewport(left, bottom, framebufferWidth, framebufferHeight);
+    /* Confine the clear below to this pane; without it the first pane drawn
+     * would clear the whole window and erase its neighbours. */
+    gl_->glEnable(GL_SCISSOR_TEST);
+    gl_->glScissor(left, bottom, framebufferWidth, framebufferHeight);
 
     backgroundVertices_.clear();
     textVertices_.clear();
@@ -249,7 +260,18 @@ void GLRenderer::beginFrame(int framebufferWidth, int framebufferHeight,
 
     gl_->glDisable(GL_DEPTH_TEST);
     gl_->glEnable(GL_BLEND);
-    gl_->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    /*
+     * Colour blends normally; the destination alpha is left alone.
+     *
+     * With a plain glBlendFunc, every translucent thing drawn over the surface
+     * -- the veil over an unfocused pane most of all -- also blends *its* alpha
+     * in, pulling the framebuffer's alpha below 1. That did not show when a
+     * pane was a QOpenGLWidget, because Qt composited the result into an opaque
+     * backing store and threw the alpha away. Drawing straight into a native
+     * layer, it is the window server that reads that alpha, and a dimmed pane
+     * would make the window itself translucent.
+     */
+    gl_->glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
 
     gl_->glClearColor(static_cast<GLfloat>(clearColor.redF()),
                       static_cast<GLfloat>(clearColor.greenF()),
@@ -265,6 +287,10 @@ void GLRenderer::endFrame() {
     flushRects(backgroundVertices_);
     flushText();
     flushRects(overlayVertices_);
+
+    /* Leave the scissor off, so whoever draws next is not silently clipped to
+     * the pane that happened to be drawn last. */
+    gl_->glDisable(GL_SCISSOR_TEST);
 }
 
 void GLRenderer::appendRect(std::vector<RectVertex>& target, int x, int y,

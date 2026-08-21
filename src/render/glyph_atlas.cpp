@@ -54,10 +54,15 @@ bool GlyphAtlas::createTexture(int size) {
 
     gl_->glBindTexture(GL_TEXTURE_2D, textureId_);
 
-    const std::vector<uint8_t> zeros(
-        static_cast<size_t>(size_) * static_cast<size_t>(size_) * BytesPerPixel, 0);
+    /*
+     * Allocate the storage without a client-side image, then zero it in bands.
+     * Passing a fully-sized zero buffer here instead cost one heap block as
+     * large as the texture -- 4 MiB for the initial atlas and 64 MiB at the
+     * 4096 px cap -- purely to hand the driver a page of zeros at a time.
+     */
     gl_->glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, size_, size_, 0,
-                      GL_RGBA, GL_UNSIGNED_BYTE, zeros.data());
+                      GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    zeroFill();
 
     gl_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     gl_->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -97,13 +102,30 @@ void GlyphAtlas::clear() {
     /* Zeroing the texture is not strictly required (nothing references the old
      * regions any more) but it keeps stale coverage out of any glyph whose
      * bitmap is later uploaded with a smaller footprint. */
-    const std::vector<uint8_t> zeros(
-        static_cast<size_t>(size_) * static_cast<size_t>(size_) * BytesPerPixel, 0);
     gl_->glBindTexture(GL_TEXTURE_2D, textureId_);
-    gl_->glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    gl_->glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, size_, size_,
-                         GL_RGBA, GL_UNSIGNED_BYTE, zeros.data());
+    zeroFill();
     gl_->glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+/*
+ * Clear the whole texture using a scratch buffer of bounded size, uploaded as
+ * horizontal bands. The texture is assumed to be bound already.
+ */
+void GlyphAtlas::zeroFill() {
+    if (!gl_ || textureId_ == 0 || size_ <= 0) return;
+
+    const size_t rowBytes = static_cast<size_t>(size_) * BytesPerPixel;
+    int bandRows = static_cast<int>(ZeroBandBytes / rowBytes);
+    bandRows = std::clamp(bandRows, 1, size_);
+
+    std::vector<uint8_t> zeros(rowBytes * static_cast<size_t>(bandRows), 0);
+
+    gl_->glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    for (int y = 0; y < size_; y += bandRows) {
+        const int rows = std::min(bandRows, size_ - y);
+        gl_->glTexSubImage2D(GL_TEXTURE_2D, 0, 0, y, size_, rows,
+                             GL_RGBA, GL_UNSIGNED_BYTE, zeros.data());
+    }
 }
 
 bool GlyphAtlas::allocate(int width, int height, AtlasRegion& out) {

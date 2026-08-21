@@ -18,6 +18,7 @@
 class QTabWidget;
 class SplitContainer;
 class TabBar;
+class TerminalCanvas;
 class TerminalWidget;
 
 class MainWindow : public QMainWindow {
@@ -38,6 +39,9 @@ public:
 
 protected:
     void keyPressEvent(QKeyEvent* event) override;
+    /* The shared surface is positioned by hand over the tab widget's page area,
+     * so it has to be repositioned whenever that area moves or changes size. */
+    void resizeEvent(QResizeEvent* event) override;
 
 private slots:
     void onPaneSessionEnded(SplitContainer* pane);
@@ -112,6 +116,13 @@ private:
 
     QTabWidget* tabWidget_ = nullptr;
     TabBar* tabBar_ = nullptr;
+
+    /*
+     * The one GPU surface this window draws every pane through. Owned by Qt
+     * through its container widget; see terminal_canvas.h for why there is one
+     * per window rather than one per pane.
+     */
+    TerminalCanvas* canvas_ = nullptr;
 
     /*
      * Panes in the order they last held focus, most recent first. This is what

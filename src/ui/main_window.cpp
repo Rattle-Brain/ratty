@@ -3,6 +3,8 @@
  */
 
 #include "main_window.h"
+#include "terminal_canvas.h"
+#include <QVBoxLayout>
 #include "split_container.h"
 #include "tab_bar.h"
 #include "terminal_widget.h"
@@ -47,8 +49,39 @@ void MainWindow::setupUi() {
      * has to click to get a cursor back. */
     connect(tabWidget_, &QTabWidget::currentChanged, this, &MainWindow::onCurrentTabChanged);
 
-    setCentralWidget(tabWidget_);
+    /*
+     * The tab widget goes inside a plain host, and the shared GPU surface is
+     * added as its *sibling*, stacked over the page area.
+     *
+     * A sibling rather than a child of the tab widget on purpose: the canvas
+     * hands mouse events back to whatever widget is underneath, and it finds
+     * that widget by asking the tab widget what is at the point. Were the
+     * canvas one of its children, it would find itself.
+     */
+    auto* host = new QWidget(this);
+    auto* hostLayout = new QVBoxLayout(host);
+    hostLayout->setContentsMargins(0, 0, 0, 0);
+    hostLayout->setSpacing(0);
+    hostLayout->addWidget(tabWidget_);
+    setCentralWidget(host);
+
+    /*
+     * No canvas on a platform that cannot give us a GL context. Panes then draw
+     * nothing, which is what the offscreen test runs expect, rather than
+     * failing inside Qt's paint machinery.
+     */
+    if (TerminalCanvas::isSupported()) {
+        canvas_ = new TerminalCanvas();
+        canvas_->setPageProvider(tabWidget_);
+        canvas_->createContainer(host);
+    }
+
     applyTabBarConfiguration();
+}
+
+void MainWindow::resizeEvent(QResizeEvent* event) {
+    QMainWindow::resizeEvent(event);
+    if (canvas_) canvas_->syncGeometry();
 }
 
 void MainWindow::applyTabBarConfiguration() {
@@ -288,6 +321,13 @@ void MainWindow::onPaneFocused(SplitContainer* pane) {
 
 void MainWindow::onCurrentTabChanged(int index) {
     restoreFocusIn(rootAt(index));
+    /* A different page is showing, so the surface has to cover it and redraw
+     * the panes it holds. The panes of the tab just left are still registered
+     * but no longer visible, so they simply stop being drawn. */
+    if (canvas_) {
+        canvas_->syncGeometry();
+        canvas_->update();
+    }
 }
 
 TerminalWidget* MainWindow::focusedTerminal() const {

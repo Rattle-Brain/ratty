@@ -1,16 +1,20 @@
 /*
- * TerminalWidget - OpenGL view of one terminal session
+ * TerminalWidget - one terminal session, as a pane
  *
- * Deliberately thin: it owns a GL context, a GLRenderer and a TerminalSession,
- * translates Qt events into session input, and paints. Process management, byte
+ * Deliberately thin: it owns a TerminalSession, translates Qt events into
+ * session input, and describes how to draw itself. Process management, byte
  * decoding and VT interpretation live in TerminalSession; the grid-to-pixels
  * mapping lives in TerminalRenderer.
  *
- * All rendering happens in *physical* pixels. Qt hands resizeGL() the widget's
- * logical size but sets the GL viewport to the device-pixel size before
- * paintGL(), so anything drawn in logical coordinates is silently magnified by
- * the device pixel ratio. Every geometry value below is therefore multiplied by
- * devicePixelRatio(), and the font is rasterized at that same scale.
+ * It does not own a GPU surface and does not paint itself. Every pane in a
+ * window draws through one shared TerminalCanvas, which is what makes a pane
+ * cost no GPU memory -- see terminal_canvas.h for why that matters. What stays
+ * here is everything Qt is good at and a canvas would have to reinvent: layout
+ * through QSplitter, focus, the keyboard, and input methods.
+ *
+ * All rendering happens in *physical* pixels: the canvas gives this pane a
+ * viewport already scaled by the device pixel ratio, so geometry computed here
+ * is multiplied by that same ratio and the font is rasterized to match.
  */
 
 #ifndef UI_TERMINAL_WIDGET_H
@@ -20,13 +24,14 @@
 #include "../render/gl_renderer.h"
 #include "../render/terminal_renderer.h"
 #include "input_handler.h"
-#include <QOpenGLFunctions>
-#include <QOpenGLWidget>
+#include <QImage>
+#include <QWidget>
 #include <memory>
 
 class QTimer;
+class TerminalCanvas;
 
-class TerminalWidget : public QOpenGLWidget, protected QOpenGLFunctions {
+class TerminalWidget : public QWidget {
     Q_OBJECT
 
 public:
@@ -85,6 +90,27 @@ public:
      */
     void applyConfiguration();
 
+    /*
+     * Draw this pane into the window's shared surface, at the given viewport in
+     * physical pixels (`bottom` measured from the bottom of the surface, as GL
+     * counts). Called by TerminalCanvas, which owns the renderer.
+     */
+    void renderInto(GLRenderer& renderer, int left, int bottom, int width, int height);
+
+    /*
+     * This pane's pixels, read back from the shared surface. Panes have no
+     * framebuffer of their own any more; this keeps the one thing that was
+     * worth asking a QOpenGLWidget for.
+     */
+    QImage grabFramebuffer() const;
+
+    /*
+     * Recompute the grid for the current font and push the new size to the
+     * session. Public because the canvas calls it for every pane when the font
+     * is re-rasterized, which is a window-wide event.
+     */
+    void updateGeometryForFont();
+
     QString title() const { return title_; }
 
     /* The directory this pane's shell is in now, or empty if unknown. A new
@@ -119,7 +145,7 @@ protected:
      * Watches for the widget moving to a display with a different device pixel
      * ratio, which changes how many physical pixels a point is worth and so
      * invalidates every rasterized glyph. Qt delivers this without necessarily
-     * resizing the widget, so resizeGL() cannot be relied on to catch it.
+     * resizing the widget, so a resize cannot be relied on to catch it.
      */
     bool event(QEvent* event) override;
     /*
@@ -127,9 +153,8 @@ protected:
      * available to the shell. See the implementation.
      */
     bool focusNextPrevChild(bool next) override;
-    void initializeGL() override;
-    void resizeGL(int width, int height) override;
-    void paintGL() override;
+    void resizeEvent(QResizeEvent* event) override;
+    void showEvent(QShowEvent* event) override;
 
     void keyPressEvent(QKeyEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
@@ -149,11 +174,23 @@ protected:
 private slots:
     void onScreenChanged();
     void onBlinkTick();
-    /* Release GL-owned objects while their context is still current. */
-    void releaseGLResources();
 
 private:
-    /* Physical-pixel size of the framebuffer Qt gave us. */
+    /* The window's shared GPU surface, or nullptr before it exists. */
+    TerminalCanvas* canvas() const;
+    /* Ask the shared surface for a repaint; this widget paints nothing itself. */
+    void requestRepaint();
+    /* Create the session on first use, once the canvas can size the grid. */
+    void ensureSession();
+    /*
+     * Start the shell once the pane has been laid out, without waiting to be
+     * painted. Posted rather than run inline: at showEvent() time the splitter
+     * has not divided the space yet, so the pane is still at its minimum size
+     * and the grid computed from it would be the wrong one.
+     */
+    void scheduleSessionStart();
+
+    /* Physical-pixel size of this pane's slice of the shared surface. */
     int framebufferWidth() const;
     int framebufferHeight() const;
     double scaleFactor() const;
@@ -199,37 +236,22 @@ private:
     /* Recompute the layout and push the new size to the session. Called on
      * resize, on font change and when the widget moves to a screen with a
      * different device pixel ratio. */
-    void updateGeometryForFont();
-    bool applyFontScale();
-    /* True when the rasterized font no longer matches the display or the
-     * configured size, and has to be rebuilt before the next frame. */
-    bool fontScaleStale() const;
-    /* This screen's logical DPI, never zero. */
-    double logicalDpi() const;
     void restartBlink();
 
-    std::unique_ptr<GLRenderer> renderer_;
     std::unique_ptr<TerminalSession> session_;
     TerminalRenderer gridRenderer_;
     TerminalRenderer::Layout layout_;
     InputHandler inputHandler_;
 
     QTimer* blinkTimer_ = nullptr;
+    /* A session start is already posted; do not post a second. */
+    bool sessionStartPosted_ = false;
     bool cursorPhaseOn_ = true;
     bool paneFocused_ = false;
     bool paneDimmed_ = false;
     QString title_;
     /* Where this pane's shell was told to start. */
     QString startDirectory_;
-
-    /*
-     * What the font on screen was rasterized for, so a screen change is
-     * detectable. All three are inputs to applyFontScale(), and all three can
-     * change without this widget being resized.
-     */
-    double lastScaleFactor_ = 0.0;
-    double lastLogicalDpi_ = 0.0;
-    int lastFontSize_ = 0;
 
     /* Leftover wheel rotation, in eighths of a degree. */
     int wheelRemainder_ = 0;

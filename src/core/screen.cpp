@@ -61,6 +61,7 @@ void Screen::setHistoryLimit(int lines) {
 void Screen::clearHistory() {
     if (history_.empty() && viewOffset_ == 0) return;
     history_.clear();
+    invalidateDecoded();
     viewOffset_ = 0;
     touch();
 }
@@ -79,13 +80,15 @@ void Screen::pushHistory(int row) {
      * remains but the allocator is left out of it.
      */
     if (historyLimit_ > 0 && static_cast<int>(history_.size()) >= historyLimit_) {
-        std::vector<Cell> recycled = std::move(history_.front());
+        HistoryLine recycled = std::move(history_.front());
         history_.pop_front();
-        recycled.assign(src, src + cols_);
+        recycled.encode(src, cols_);
         history_.push_back(std::move(recycled));
     } else {
-        history_.emplace_back(src, src + cols_);
+        history_.emplace_back();
+        history_.back().encode(src, cols_);
     }
+    invalidateDecoded();
     trimHistory();
 
     /*
@@ -100,9 +103,11 @@ void Screen::pushHistory(int row) {
 }
 
 void Screen::trimHistory() {
+    if (static_cast<int>(history_.size()) <= historyLimit_) return;
     while (static_cast<int>(history_.size()) > historyLimit_) {
         history_.pop_front();
     }
+    invalidateDecoded();
 }
 
 bool Screen::scrollViewTo(int offset) {
@@ -117,6 +122,21 @@ bool Screen::scrollViewBy(int lines) {
     return scrollViewTo(viewOffset_ + lines);
 }
 
+const Cell* Screen::decodedHistory(int absolute, int& length) const {
+    const HistoryLine& line = history_[static_cast<size_t>(absolute)];
+    length = line.width();
+    if (length == 0) return nullptr;
+
+    if (decodedIndex_ != absolute) {
+        if (static_cast<int>(decodeScratch_.size()) < length) {
+            decodeScratch_.resize(static_cast<size_t>(length));
+        }
+        line.decode(decodeScratch_.data());
+        decodedIndex_ = absolute;
+    }
+    return decodeScratch_.data();
+}
+
 const Cell& Screen::viewAt(int row, int col) const {
     static const Cell blank{};
     if (viewOffset_ == 0) return at(row, col);
@@ -128,13 +148,15 @@ const Cell& Screen::viewAt(int row, int col) const {
         return at(absolute - historySize(), col);
     }
 
-    const std::vector<Cell>& line = history_[static_cast<size_t>(absolute)];
-    if (col >= static_cast<int>(line.size())) {
-        /* The window is wider than it was when this line was captured. History
-         * is not reflowed, so the rest of the row is blank. */
+    int length = 0;
+    const Cell* cells = decodedHistory(absolute, length);
+    if (col >= length) {
+        /* The window is wider than it was when this line was captured, or the
+         * row's blank tail was not stored. History is not reflowed, so the rest
+         * of the row is blank. */
         return blank;
     }
-    return line[static_cast<size_t>(col)];
+    return cells[col];
 }
 
 const Cell* Screen::viewRow(int row, int& length) const {
@@ -146,11 +168,12 @@ const Cell* Screen::viewRow(int row, int& length) const {
          * viewAt() does. */
         const int absolute = historySize() - viewOffset_ + row;
         if (absolute < historySize()) {
-            const std::vector<Cell>& line = history_[static_cast<size_t>(absolute)];
-            length = std::min(cols_, static_cast<int>(line.size()));
+            int stored = 0;
+            const Cell* cells = decodedHistory(absolute, stored);
             /* An empty captured row yields length 0, so the pointer is never
-             * dereferenced even though data() may be null. */
-            return line.data();
+             * dereferenced even though it may be null. */
+            length = std::min(cols_, stored);
+            return cells;
         }
         row = absolute - historySize();
         if (row < 0 || row >= rows_) return nullptr;
@@ -245,6 +268,7 @@ void Screen::reset(const Pen& pen) {
     }
     /* RIS discards the scrollback, as it does on a real terminal. */
     history_.clear();
+    invalidateDecoded();
     viewOffset_ = 0;
     cursorRow_ = 0;
     cursorCol_ = 0;

@@ -99,6 +99,8 @@ private:
 
     bool createTexture(int size);
     void destroyTexture();
+    /* Zero the whole texture in bounded bands; assumes it is already bound. */
+    void zeroFill();
     bool allocate(int width, int height, AtlasRegion& out);
     /* Uploads `bitmap` into `region`, widening a coverage mask to RGBA. */
     void upload(const AtlasRegion& region, const GlyphBitmap& bitmap);
@@ -120,6 +122,9 @@ private:
     static constexpr int Padding = 1;
     static constexpr int MaxSize = 4096;
     static constexpr int BytesPerPixel = 4;
+    /* Upload budget for zeroing the texture, so clearing a 4096 px atlas costs
+     * a 256 KiB scratch buffer rather than a 64 MiB one. */
+    static constexpr size_t ZeroBandBytes = 256 * 1024;
 
     /* Scratch buffer for widening coverage masks, reused across uploads. */
     std::vector<uint8_t> uploadScratch_;

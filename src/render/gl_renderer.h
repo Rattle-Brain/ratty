@@ -61,6 +61,18 @@ public:
 
     /* framebufferWidth/Height are in physical pixels. */
     void beginFrame(int framebufferWidth, int framebufferHeight, const QColor& clearColor);
+
+    /*
+     * Draw into a sub-rectangle of the surface, in physical pixels, with `bottom`
+     * measured from the bottom of the framebuffer the way GL counts.
+     *
+     * This is what lets every pane in a window share one surface and one atlas:
+     * the viewport moves, so each pane still draws in its own coordinate space
+     * with (0, 0) at its top-left corner and needs to know nothing about where
+     * it sits. A scissor confines the clear to the pane, so one pane cannot wipe
+     * out another that was drawn before it.
+     */
+    void beginFrame(int left, int bottom, int width, int height, const QColor& clearColor);
     void endFrame();
 
     /*

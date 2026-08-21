@@ -55,6 +55,7 @@ endif()
 set(RATTY_SOURCES
     src/main.cpp
 
+    src/core/history.cpp
     src/core/mouse.cpp
     src/core/palette.cpp
     src/core/pty.cpp
@@ -72,6 +73,7 @@ set(RATTY_SOURCES
     src/ui/input_handler.cpp
     src/ui/main_window.cpp
     src/ui/split_container.cpp
+    src/ui/terminal_canvas.cpp
     src/ui/tab_bar.cpp
     src/ui/terminal_widget.cpp
 
@@ -93,6 +95,7 @@ set(RATTY_HEADERS
     src/platform/platform.h
 
     src/core/cell.h
+    src/core/history.h
     src/core/unicode.h
     src/core/cursor.h
     src/core/mouse.h
@@ -113,6 +116,7 @@ set(RATTY_HEADERS
     src/ui/input_handler.h
     src/ui/main_window.h
     src/ui/split_container.h
+    src/ui/terminal_canvas.h
     src/ui/tab_bar.h
     src/ui/terminal_widget.h
 

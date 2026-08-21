@@ -1,8 +1,9 @@
 /*
- * TerminalWidget - OpenGL terminal view implementation
+ * TerminalWidget - terminal pane implementation
  */
 
 #include "terminal_widget.h"
+#include "terminal_canvas.h"
 #include "../config/config.h"
 #include <QApplication>
 #include <QClipboard>
@@ -13,14 +14,15 @@
 #include <QKeyCombination>
 #include <QKeyEvent>
 #include <QMouseEvent>
-#include <QOpenGLContext>
 #include <QTimer>
+#include <QResizeEvent>
+#include <QShowEvent>
 #include <QWheelEvent>
 #include <algorithm>
 #include <cmath>
 
 TerminalWidget::TerminalWidget(QWidget* parent, const QString& startDirectory)
-    : QOpenGLWidget(parent)
+    : QWidget(parent)
     , startDirectory_(startDirectory)
 {
     /*
@@ -45,7 +47,14 @@ TerminalWidget::TerminalWidget(QWidget* parent, const QString& startDirectory)
      */
     setAttribute(Qt::WA_InputMethodEnabled, true);
     setMouseTracking(true);
+    /*
+     * This pane never paints. The shared canvas is stacked over it and draws it,
+     * so Qt should not spend a backing-store fill on a widget that is always
+     * covered -- and must not clear it to a colour that would flash through
+     * during a resize.
+     */
     setAttribute(Qt::WA_OpaquePaintEvent);
+    setAttribute(Qt::WA_NoSystemBackground);
     setMinimumSize(200, 100);
 
     blinkTimer_ = new QTimer(this);
@@ -54,9 +63,15 @@ TerminalWidget::TerminalWidget(QWidget* parent, const QString& startDirectory)
 }
 
 TerminalWidget::~TerminalWidget() {
-    /* A no-op if the context was already destroyed and took the renderer with
-     * it, which is the usual case. */
-    releaseGLResources();
+    if (TerminalCanvas* c = canvas()) c->removePane(this);
+}
+
+TerminalCanvas* TerminalWidget::canvas() const {
+    return TerminalCanvas::forWidget(this);
+}
+
+void TerminalWidget::requestRepaint() {
+    if (TerminalCanvas* c = canvas()) c->update();
 }
 
 double TerminalWidget::scaleFactor() const {
@@ -78,59 +93,24 @@ int TerminalWidget::paddingPixels() const {
     return static_cast<int>(std::lround(Config::instance().windowPadding() * scaleFactor()));
 }
 
-void TerminalWidget::initializeGL() {
-    initializeOpenGLFunctions();
-
-    QOpenGLContext* context = QOpenGLContext::currentContext();
-    if (context) {
-        const QSurfaceFormat format = context->format();
-        if (format.majorVersion() < 3
-            || (format.majorVersion() == 3 && format.minorVersion() < 3)) {
-            qCritical() << "TerminalWidget: OpenGL 3.3 core required, got"
-                        << format.majorVersion() << "." << format.minorVersion();
-            return;
-        }
-
-        /*
-         * Reparenting a QOpenGLWidget -- which is exactly what splitting a pane
-         * does -- destroys its context and creates a new one, so this runs more
-         * than once. Everything the previous renderer owned belongs to the dead
-         * context, and must be released while that context is still current.
-         */
-        connect(context, &QOpenGLContext::aboutToBeDestroyed,
-                this, &TerminalWidget::releaseGLResources, Qt::UniqueConnection);
-    }
-
-    /* GL resources cannot outlive their context, so the renderer is rebuilt. */
-    renderer_ = std::make_unique<GLRenderer>();
-    if (!renderer_->initialize()) {
-        qCritical() << "TerminalWidget: renderer initialization failed";
-        renderer_.reset();
-        return;
-    }
-
-    if (!applyFontScale()) {
-        qCritical() << "TerminalWidget: no usable font, nothing can be drawn";
-        return;
-    }
-
-    layout_ = TerminalRenderer::computeLayout(renderer_->fontMetrics(),
-                                             framebufferWidth(), framebufferHeight(),
-                                             paddingPixels());
-
+void TerminalWidget::ensureSession() {
     /*
-     * The session must NOT be rebuilt. It owns the pty and the shell, neither of
-     * which has anything to do with the GL context: recreating it here killed the
-     * running shell and replaced it with an empty one every time a pane was
-     * split, which looked exactly like the terminal going blank.
+     * The session owns the pty and the shell. It is created once, lazily, as
+     * soon as the canvas can tell us how big a grid fits -- and never rebuilt.
+     * When panes owned their own GL context this ran from initializeGL(), which
+     * Qt calls again on every reparent; rebuilding the session there killed the
+     * running shell every time a pane was split. There is no context to lose
+     * now, but the invariant is worth keeping stated: nothing below re-creates
+     * a session that already exists.
      */
-    if (session_) {
-        if (layout_.isValid()) {
-            session_->resize(layout_.rows, layout_.cols);
-        }
-        restartBlink();
-        update();
-        return;
+    if (session_) return;
+
+    TerminalCanvas* c = canvas();
+    GLRenderer* renderer = c ? c->renderer() : nullptr;
+    if (renderer && renderer->hasFont()) {
+        layout_ = TerminalRenderer::computeLayout(renderer->fontMetrics(),
+                                                 framebufferWidth(), framebufferHeight(),
+                                                 paddingPixels());
     }
 
     const int rows = layout_.isValid() ? layout_.rows : DefaultRows;
@@ -161,84 +141,70 @@ void TerminalWidget::initializeGL() {
     restartBlink();
 }
 
-void TerminalWidget::releaseGLResources() {
+void TerminalWidget::showEvent(QShowEvent* event) {
+    QWidget::showEvent(event);
     /*
-     * Called from QOpenGLContext::aboutToBeDestroyed, where the outgoing context
-     * is still current -- the only moment at which these objects can be deleted
-     * correctly. Deleting them later would issue GL calls against a context that
-     * no longer exists.
+     * Register with the window's surface, creating one if this pane tree is
+     * being used outside a MainWindow. Done on show rather than in the
+     * constructor because a pane is built before it is put in its window, and
+     * until then window() is not the window it will end up in.
      */
-    if (!renderer_) return;
-
-    makeCurrent();
-    renderer_.reset();
-    doneCurrent();
-}
-
-double TerminalWidget::logicalDpi() const {
-    /*
-     * Qt reports 72 logical DPI on macOS and 96 on most of X11/Wayland. It is a
-     * per-screen figure, so it changes under us exactly when the device pixel
-     * ratio does.
-     */
-    const double dpi = logicalDpiY();
-    return dpi > 0 ? dpi : 96.0;
-}
-
-bool TerminalWidget::fontScaleStale() const {
-    /*
-     * True when the font on screen was rasterized for conditions that no longer
-     * hold. Any of the three inputs to applyFontScale() can change without this
-     * widget being resized -- dragging the window to a display with a different
-     * device pixel ratio changes two of them -- and until the font is rebuilt,
-     * glyphs rasterized for the old ratio are drawn one texel per *physical*
-     * pixel into a framebuffer scaled by the new one. That is the whole of the
-     * "font grows when I move to the other monitor" bug: at 12 pt on a 2x
-     * display the atlas holds 24 px glyphs, and on a 1x display those 24 px are
-     * drawn at 24 logical pixels -- twice the size asked for, while the config
-     * still says 12.
-     */
-    if (!renderer_ || !renderer_->hasFont()) return false;
-
-    return std::abs(scaleFactor() - lastScaleFactor_) > 0.001
-        || std::abs(logicalDpi() - lastLogicalDpi_) > 0.001
-        || Config::instance().fontSize() != lastFontSize_;
-}
-
-bool TerminalWidget::applyFontScale() {
-    if (!renderer_) return false;
-
-    const Config& config = Config::instance();
-    const double scale = scaleFactor();
-    const double dpi = logicalDpi();
-
-    /*
-     * Points to physical pixels. The device pixel ratio carries the HiDPI factor
-     * on top of the logical DPI; multiplying the two is exactly how Qt sizes its
-     * own text.
-     */
-    const double pixelSize = config.fontSize() * (dpi / 72.0) * scale;
-
-    if (!renderer_->setFont(config.fontFamilies(), config.fontFallbacks(), pixelSize,
-                            config.emojiScale())) {
-        return false;
+    if (TerminalCanvas* c = TerminalCanvas::ensureFor(this)) {
+        c->addPane(this);
+        c->syncGeometry();
+        /*
+         * Bring the font up now, but leave the session to the first frame.
+         *
+         * A pane is shown before its splitter has laid it out, so at this point
+         * it is still at its minimum size -- creating the session here told the
+         * shell a 5x24 grid and left it that way. By the first frame the
+         * geometry is settled and the grid is the real one.
+         */
+        c->ensureReady();
+        c->update();
     }
+    scheduleSessionStart();
+}
 
-    lastScaleFactor_ = scale;
-    lastLogicalDpi_ = dpi;
-    lastFontSize_ = config.fontSize();
-    return true;
+void TerminalWidget::scheduleSessionStart() {
+    if (session_ || sessionStartPosted_) return;
+    sessionStartPosted_ = true;
+
+    /*
+     * Once the event loop has laid this pane out, size the grid and start the
+     * shell -- whether or not a frame has been drawn yet.
+     *
+     * Hanging this off the first paint instead meant a pane that was never
+     * painted never started its shell at all, which is not hypothetical: a
+     * compositor that does not expose the window (a headless Wayland session,
+     * a window opened minimised) produces no frames, and the terminal would sit
+     * there with no shell in it.
+     */
+    QTimer::singleShot(0, this, [this]() {
+        sessionStartPosted_ = false;
+        if (session_) return;
+        if (TerminalCanvas* c = canvas()) c->ensureReady();
+        updateGeometryForFont();
+        ensureSession();
+        requestRepaint();
+    });
+}
+
+QImage TerminalWidget::grabFramebuffer() const {
+    TerminalCanvas* c = canvas();
+    return c ? c->grabPane(this) : QImage();
 }
 
 void TerminalWidget::reloadFont() {
-    if (!renderer_) return;
-
-    makeCurrent();
-    if (applyFontScale()) {
-        updateGeometryForFont();
+    /*
+     * The font belongs to the window, not the pane: one canvas, one atlas, one
+     * rasterization. Asking the canvas to redo it re-lays-out every pane, which
+     * is what a font change requires anyway.
+     */
+    if (TerminalCanvas* c = canvas()) {
+        c->invalidateFont();
+        c->update();
     }
-    doneCurrent();
-    update();
 }
 
 void TerminalWidget::applyConfiguration() {
@@ -261,13 +227,15 @@ void TerminalWidget::applyConfiguration() {
 
     /* The cursor's style and whether it blinks are both settings. */
     restartBlink();
-    update();
+    requestRepaint();
 }
 
 void TerminalWidget::updateGeometryForFont() {
-    if (!renderer_ || !renderer_->hasFont()) return;
+    TerminalCanvas* c = canvas();
+    GLRenderer* renderer = c ? c->renderer() : nullptr;
+    if (!renderer || !renderer->hasFont()) return;
 
-    layout_ = TerminalRenderer::computeLayout(renderer_->fontMetrics(),
+    layout_ = TerminalRenderer::computeLayout(renderer->fontMetrics(),
                                              framebufferWidth(), framebufferHeight(),
                                              paddingPixels());
     if (!layout_.isValid()) return;
@@ -278,12 +246,9 @@ void TerminalWidget::updateGeometryForFont() {
 }
 
 bool TerminalWidget::event(QEvent* event) {
-    /*
-     * Let Qt react first: it is the base implementation that recreates the
-     * backing framebuffer at the new ratio, and devicePixelRatioF() only reports
-     * the new value once it has.
-     */
-    const bool result = QOpenGLWidget::event(event);
+    /* Let Qt react first, so devicePixelRatioF() already reports the new value
+     * by the time the cases below look at it. */
+    const bool result = QWidget::event(event);
 
     switch (event->type()) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
@@ -291,23 +256,25 @@ bool TerminalWidget::event(QEvent* event) {
      * Qt 6.6 is the first version that says this directly. Guarded rather than
      * simply required, because needing 6.6 to build would rule out every
      * current Debian and Ubuntu LTS for the sake of one enumerator -- and on
-     * older Qt the screen-change event below plus the check in paintGL() cover
-     * exactly the same ground.
+     * older Qt the screen-change event below plus the canvas's own staleness
+     * check cover exactly the same ground.
      */
     case QEvent::DevicePixelRatioChange:
 #endif
     case QEvent::ScreenChangeInternal:
         /*
          * Moving the window between displays does not necessarily resize the
-         * widget -- the logical geometry is unchanged -- so resizeGL() may never
-         * run, and without this nothing would notice the new ratio at all.
+         * widget -- the logical geometry is unchanged -- so a resize may never
+         * come, and without this nothing would notice the new ratio at all.
          *
-         * Asking for a repaint rather than re-rasterizing here on the spot:
-         * paintGL() does the work with the context already current, which
-         * spares this path a makeCurrent() at a moment when the widget may be
-         * hidden or on its way out.
+         * The canvas re-rasterizes on its next frame rather than here: it owns
+         * the font and the context, and doing it during an event that may be
+         * arriving at a hidden pane would be the wrong moment.
          */
-        if (fontScaleStale()) update();
+        if (TerminalCanvas* c = canvas()) {
+            c->invalidateFont();
+            c->update();
+        }
         break;
     default:
         break;
@@ -337,27 +304,31 @@ bool TerminalWidget::focusNextPrevChild(bool /*next*/) {
     return false;
 }
 
-void TerminalWidget::resizeGL(int, int) {
-    /*
-     * No glViewport() call here: Qt sets the viewport to the device-pixel size
-     * of its backing framebuffer immediately before every paintGL(), so setting
-     * it from the logical size (as this used to) was both wrong and pointless.
-     */
-    if (!renderer_) return;
+void TerminalWidget::resizeEvent(QResizeEvent* event) {
+    QWidget::resizeEvent(event);
 
     /*
-     * Moving to a screen with a different ratio changes how many pixels a point
-     * is worth, so the font has to be re-rasterized before the layout is
-     * recomputed. No makeCurrent() here: Qt invokes resizeGL() with the context
-     * already current, and releasing it would leave Qt's own resize handling
-     * without a context.
+     * The pane moved or changed size, so the canvas has to redraw it somewhere
+     * new -- and the grid it covers has to be recomputed and pushed to the
+     * shell. syncGeometry() is here too because a resize of any pane is also
+     * how the page area itself changes size.
      */
-    if (fontScaleStale()) applyFontScale();
-
     updateGeometryForFont();
+    if (TerminalCanvas* c = canvas()) {
+        c->syncGeometry();
+        c->update();
+    }
 }
 
-void TerminalWidget::paintGL() {
+void TerminalWidget::renderInto(GLRenderer& renderer, int left, int bottom,
+                                int paneWidth, int paneHeight) {
+    /*
+     * The session cannot be created before the canvas has a font, because the
+     * shell has to be told a grid size at start-up. The first frame is
+     * therefore also where the session comes from.
+     */
+    ensureSession();
+
     /*
      * The palette belongs to the session, not to Config: an application can
      * retheme its own terminal through OSC 4/10/11/12, and that must not leak
@@ -368,26 +339,11 @@ void TerminalWidget::paintGL() {
     const QColor background = palette.defaultBackground();
 
     /*
-     * Rebuild the font first if the display it was rasterized for is no longer
-     * the display being drawn on -- see fontScaleStale(). This is where it is
-     * actually done, rather than in the events that notice it: paintGL() runs
-     * with the context already current, and putting the single re-rasterization
-     * point here means no frame can be composed from a font built for a
-     * different screen, whatever Qt did or did not deliver.
+     * The viewport puts this pane's origin at (0, 0), so everything below is in
+     * the pane's own coordinate space and knows nothing about where on the
+     * shared surface it landed.
      */
-    if (renderer_ && renderer_->isInitialized() && fontScaleStale()) {
-        if (applyFontScale()) updateGeometryForFont();
-    }
-
-    if (!renderer_ || !renderer_->isInitialized()) {
-        glClearColor(static_cast<GLfloat>(background.redF()),
-                     static_cast<GLfloat>(background.greenF()),
-                     static_cast<GLfloat>(background.blueF()), 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
-        return;
-    }
-
-    renderer_->beginFrame(framebufferWidth(), framebufferHeight(), background);
+    renderer.beginFrame(left, bottom, paneWidth, paneHeight, background);
 
     if (session_ && layout_.isValid()) {
         TerminalRenderer::Options options;
@@ -395,7 +351,7 @@ void TerminalWidget::paintGL() {
         options.cursorPhaseOn = cursorPhaseOn_;
         options.cursorStyle = effectiveCursorStyle();
 
-        gridRenderer_.paint(*renderer_, session_->screen(), palette, layout_, options);
+        gridRenderer_.paint(renderer, session_->screen(), palette, layout_, options);
     }
 
     /*
@@ -412,16 +368,10 @@ void TerminalWidget::paintGL() {
     if (paneDimmed_ && Config::instance().dimUnfocusedSplits()) {
         QColor veil = background;
         veil.setAlphaF(Config::instance().splitDimStrength());
-        renderer_->fillOverlay(0, 0, framebufferWidth(), framebufferHeight(), veil);
+        renderer.fillOverlay(0, 0, paneWidth, paneHeight, veil);
     }
 
-    renderer_->endFrame();
-
-    if (renderer_->needsRepaint()) {
-        /* The atlas grew while this frame was being built, so part of it was
-         * dropped. Ask for one more pass; the atlas is now large enough. */
-        update();
-    }
+    renderer.endFrame();
 }
 
 CursorStyle TerminalWidget::effectiveCursorStyle() const {
@@ -446,12 +396,12 @@ void TerminalWidget::onScreenChanged() {
      */
     cursorPhaseOn_ = true;
     restartBlink();
-    update();
+    requestRepaint();
 }
 
 void TerminalWidget::onBlinkTick() {
     cursorPhaseOn_ = !cursorPhaseOn_;
-    update();
+    requestRepaint();
 }
 
 void TerminalWidget::restartBlink() {
@@ -475,13 +425,13 @@ void TerminalWidget::restartBlink() {
 void TerminalWidget::setPaneFocused(bool focused) {
     if (paneFocused_ == focused) return;
     paneFocused_ = focused;
-    update();
+    requestRepaint();
 }
 
 void TerminalWidget::setPaneDimmed(bool dimmed) {
     if (paneDimmed_ == dimmed) return;
     paneDimmed_ = dimmed;
-    update();
+    requestRepaint();
 }
 
 void TerminalWidget::keyPressEvent(QKeyEvent* event) {
@@ -496,14 +446,14 @@ void TerminalWidget::keyPressEvent(QKeyEvent* event) {
     }
 
     if (!session_ || !session_->isValid()) {
-        QOpenGLWidget::keyPressEvent(event);
+        QWidget::keyPressEvent(event);
         return;
     }
 
     const QByteArray bytes = inputHandler_.keyEventToBytes(event,
                                                            session_->applicationCursorKeys());
     if (bytes.isEmpty()) {
-        QOpenGLWidget::keyPressEvent(event);
+        QWidget::keyPressEvent(event);
         return;
     }
 
@@ -512,7 +462,7 @@ void TerminalWidget::keyPressEvent(QKeyEvent* event) {
      * typed would land out of sight, which feels like the terminal has stopped
      * responding.
      */
-    if (session_->scrollViewToBottom()) update();
+    if (session_->scrollViewToBottom()) requestRepaint();
 
     session_->sendInput(bytes);
     event->accept();
@@ -721,7 +671,7 @@ void TerminalWidget::wheelEvent(QWheelEvent* event) {
 
 void TerminalWidget::scrollLines(int lines) {
     if (!session_ || lines == 0) return;
-    if (session_->scrollViewBy(lines)) update();
+    if (session_->scrollViewBy(lines)) requestRepaint();
 }
 
 void TerminalWidget::scrollPages(int pages) {
@@ -732,17 +682,17 @@ void TerminalWidget::scrollPages(int pages) {
 }
 
 void TerminalWidget::scrollToTop() {
-    if (session_ && session_->scrollViewToTop()) update();
+    if (session_ && session_->scrollViewToTop()) requestRepaint();
 }
 
 void TerminalWidget::scrollToBottom() {
-    if (session_ && session_->scrollViewToBottom()) update();
+    if (session_ && session_->scrollViewToBottom()) requestRepaint();
 }
 
 void TerminalWidget::clearScrollback() {
     if (!session_) return;
     session_->clearScrollback();
-    update();
+    requestRepaint();
 }
 
 int TerminalWidget::viewOffset() const {
@@ -754,12 +704,12 @@ int TerminalWidget::historySize() const {
 }
 
 void TerminalWidget::focusInEvent(QFocusEvent* event) {
-    QOpenGLWidget::focusInEvent(event);
+    QWidget::focusInEvent(event);
     /* DECSET 1004: applications that track focus dim their cursor or pause an
      * animation when the window loses it. */
     if (session_) session_->sendFocusEvent(true);
     restartBlink();
-    update();
+    requestRepaint();
 }
 
 void TerminalWidget::inputMethodEvent(QInputMethodEvent* event) {
@@ -779,7 +729,7 @@ void TerminalWidget::inputMethodEvent(QInputMethodEvent* event) {
     if (!committed.isEmpty() && session_ && session_->isValid()) {
         /* Same courtesy as typing: bring the live screen back into view first,
          * or the echo of what was just composed lands out of sight. */
-        if (session_->scrollViewToBottom()) update();
+        if (session_->scrollViewToBottom()) requestRepaint();
         session_->sendInput(committed);
     }
 
@@ -823,15 +773,15 @@ QVariant TerminalWidget::inputMethodQuery(Qt::InputMethodQuery query) const {
     case Qt::ImAnchorPosition:
         return 0;
     default:
-        return QOpenGLWidget::inputMethodQuery(query);
+        return QWidget::inputMethodQuery(query);
     }
 }
 
 void TerminalWidget::focusOutEvent(QFocusEvent* event) {
-    QOpenGLWidget::focusOutEvent(event);
+    QWidget::focusOutEvent(event);
     if (session_) session_->sendFocusEvent(false);
     restartBlink();
-    update();
+    requestRepaint();
 }
 
 QString TerminalWidget::workingDirectory() const {
