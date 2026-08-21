@@ -159,6 +159,34 @@ otherwise arrive as `CSI 5 ; 2 ~` and be interpreted by whatever is running.
 Any keystroke that produces terminal input returns the view to the live screen
 first. Scrolling back and then typing must not leave the echo out of sight.
 
+### Reloading the configuration
+
+`reload_config` re-reads `~/.config/ratty/config.yaml` and applies it to every
+pane in every tab, so a theme, font, colour or split setting can be tried without
+restarting. The shells keep running: the pty and the child process have nothing to
+do with any of these settings, and losing a running command to a colour change
+would make the feature not worth having. Bound to `cmd+f5` and `cmd+shift+r`
+(`super+` on Linux).
+
+The loader rebuilds every layer from scratch rather than merging onto what is
+already there, so a setting **deleted** from the file reverts to its default on
+reload rather than lingering. Two things are deliberately left alone: the window's
+size and fullscreen state, which are start-up settings and would otherwise fight
+whatever the user has since done with the window. A reload does reset a palette an
+application had set for itself through `OSC 4`/`10`/`11`/`12`, on the grounds that
+the user has just asked to see the configuration.
+
+There is no on-screen confirmation — a terminal has nowhere to put one — so a
+reload writes `Config: reloaded` to stderr, and any YAML error in the file is
+reported there too.
+
+### Fullscreen
+
+`fullscreen` is on `cmd+ctrl+f`, `F11` and `cmd+Enter` (`super+` on Linux). Both
+spellings of Enter are bound, because Qt reports the main key as `Key_Return` and
+the numeric keypad's as `Key_Enter` — binding one leaves the other dead. Plain
+Enter is untouched and still sends a carriage return to the shell.
+
 `Config::save()` no longer exists. It was a no-op that logged "not yet
 implemented" while `closeEvent` dutifully wrote the window size into it;
 persisting geometry is listed in `todo-ratty.md` instead of being pretended at.

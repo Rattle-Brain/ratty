@@ -739,6 +739,199 @@ void testPanesStartInTheRequestedDirectory() {
     settle(300);
 }
 
+/*
+ * Dimming, measured off the framebuffer rather than trusted.
+ *
+ * The same pane is grabbed twice -- once while it holds the keyboard and once
+ * after the other pane has taken it -- so the content is identical and the only
+ * variable is the veil. A pane on its own is grabbed too, because dimming a
+ * single-pane tab would read as a rendering fault rather than as a hint.
+ */
+double meanLuminance(const QImage& image) {
+    if (image.isNull()) return 0.0;
+
+    const QImage rgb = image.convertToFormat(QImage::Format_RGB32);
+    double total = 0.0;
+    int counted = 0;
+    for (int y = 0; y < rgb.height(); y += 2) {
+        for (int x = 0; x < rgb.width(); x += 2) {
+            const QRgb pixel = rgb.pixel(x, y);
+            total += 0.2126 * qRed(pixel) + 0.7152 * qGreen(pixel) + 0.0722 * qBlue(pixel);
+            ++counted;
+        }
+    }
+    return counted > 0 ? total / counted : 0.0;
+}
+
+void testUnfocusedPanesAreDimmed() {
+    check::section("a pane that is not current is drawn dimmer");
+
+    MainWindow window;
+    window.resize(1000, 620);
+    window.show();
+    window.activateWindow();
+    settle(1500);
+
+    SplitContainer* first = window.currentRoot();
+    check::that(first != nullptr && first->terminal() != nullptr, "one pane to start");
+    if (!first || !first->terminal()) return;
+
+    /* On its own, a pane is never dimmed. */
+    check::that(!first->terminal()->isPaneDimmed(), "a lone pane is not dimmed");
+    const double alone = meanLuminance(first->terminal()->grabFramebuffer());
+
+    const auto ctrlShift = Qt::ControlModifier | Qt::ShiftModifier;
+    sendShortcut(window, ctrlShift, Qt::Key_W);      // split left/right
+    settle(1500);
+
+    SplitContainer* root = window.currentRoot();
+    SplitContainer* second = root ? root->child2() : nullptr;
+    check::that(second != nullptr && second->terminal() != nullptr, "a second pane appeared");
+    if (!root || !second || !second->terminal()) return;
+
+    /* The new pane took the keyboard, so the original is now the dim one. */
+    SplitContainer* original = root->child1();
+    check::that(original != nullptr && original->terminal() != nullptr,
+                "the original pane is still there");
+    if (!original || !original->terminal()) return;
+
+    check::that(original->terminal()->isPaneDimmed(), "the pane left behind is dimmed");
+    check::that(!second->terminal()->isPaneDimmed(), "and the current one is not");
+
+    const double dimmed = meanLuminance(original->terminal()->grabFramebuffer());
+
+    /* Focus it back and grab the very same pane again. */
+    original->focusPane();
+    settle(600);
+    check::that(!original->terminal()->isPaneDimmed(), "focusing it clears the dimming");
+    const double lit = meanLuminance(original->terminal()->grabFramebuffer());
+
+    check::that(dimmed < lit,
+                "the same pane is measurably darker while another one is current");
+    check::that(alone > 0.0 && lit > 0.0, "and both frames actually drew something");
+
+    /* Closing back down to one pane must undim what is left, or a window that
+     * has ever been split would stay faded for good. */
+    sendShortcut(window, ctrlShift, Qt::Key_C);      // close_split
+    settle(1500);
+    SplitContainer* survivor = window.currentRoot();
+    if (survivor && survivor->isLeaf() && survivor->terminal()) {
+        check::that(!survivor->terminal()->isPaneDimmed(),
+                    "closing back to a single pane clears the dimming");
+    }
+}
+
+/*
+ * Hot reload, end to end.
+ *
+ * The interesting part is not that Config::load() runs again -- it is that the
+ * result reaches every pane in every tab, and that the shells survive it. A
+ * reload that killed the running command would be worse than no reload at all.
+ */
+void testConfigurationReloadsInPlace() {
+    check::section("reloading the configuration applies without a restart");
+
+    /* A private HOME so the developer's own config is neither read nor written,
+     * and so the file can be rewritten between reloads. */
+    QTemporaryDir home;
+    check::that(home.isValid(), "a sandbox home");
+    if (!home.isValid()) return;
+
+    const QByteArray realHome = qgetenv("HOME");
+    qputenv("HOME", home.path().toUtf8());
+    const QString configDir = home.path() + QStringLiteral("/.config/ratty");
+    QDir().mkpath(configDir);
+    const QString configPath = configDir + QStringLiteral("/config.yaml");
+
+    const auto writeConfig = [&configPath](const char* yaml) {
+        QFile file(configPath);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) return false;
+        file.write(yaml);
+        file.close();
+        return true;
+    };
+
+    check::that(writeConfig("font:\n  size: 14\ntheme: ratty-dark\n"), "an initial config");
+    Config::instance().load();
+
+    MainWindow window;
+    window.resize(1000, 620);
+    window.show();
+    window.activateWindow();
+    settle(1500);
+
+    const auto ctrlShift = Qt::ControlModifier | Qt::ShiftModifier;
+    sendShortcut(window, ctrlShift, Qt::Key_W);      // a second pane to prove reach
+    settle(1500);
+
+    SplitContainer* root = window.currentRoot();
+    check::that(root != nullptr && paneCount(window) == 2, "two panes before the reload");
+    if (!root) { qputenv("HOME", realHome); return; }
+
+    SplitContainer* left = root->child1();
+    SplitContainer* right = root->child2();
+    if (!left || !right || !left->terminal() || !right->terminal()) {
+        qputenv("HOME", realHome);
+        return;
+    }
+
+    const pid_t leftPid = left->terminal()->shellPid();
+    const pid_t rightPid = right->terminal()->shellPid();
+    check::that(leftPid > 0 && rightPid > 0, "both panes have a shell");
+
+    /* Cell geometry is the observable proof the font was rebuilt; the caret
+     * rectangle is one cell, in logical pixels. */
+    const auto cellHeight = [](TerminalWidget* t) {
+        return t->inputMethodQuery(Qt::ImCursorRectangle).toRectF().height();
+    };
+    const double leftBefore = cellHeight(left->terminal());
+    const double rightBefore = cellHeight(right->terminal());
+    check::that(leftBefore > 1.0 && rightBefore > 1.0, "and a measurable cell size");
+
+    /* Change the font size and the background, then reload through the real
+     * keybinding path rather than by calling the method. */
+    check::that(writeConfig("font:\n  size: 24\ncolors:\n  background: \"#101820\"\n"),
+                "a changed config on disk");
+
+    const Action reload = Config::instance().lookupAction(
+        Config::instance().keybindingFor(ACTION_RELOAD_CONFIG));
+    check::equal(static_cast<int>(reload), static_cast<int>(ACTION_RELOAD_CONFIG),
+                 "reload_config is bound to a key");
+
+    const QKeySequence key = Config::instance().keybindingFor(ACTION_RELOAD_CONFIG);
+    check::that(!key.isEmpty(), "and that key is discoverable");
+    sendShortcut(window, key[0].keyboardModifiers(),
+                 static_cast<Qt::Key>(key[0].key()));
+    settle(1200);
+
+    check::equal(Config::instance().fontSize(), 24, "the new configuration was read");
+    check::that(Config::instance().palette().defaultBackground() == QColor(0x10, 0x18, 0x20),
+                "including the new background colour");
+
+    /* Both panes, not just the focused one. */
+    check::that(cellHeight(left->terminal()) > leftBefore * 1.3,
+                "the pane that was not focused re-rasterized too");
+    check::that(cellHeight(right->terminal()) > rightBefore * 1.3,
+                "and so did the focused one");
+
+    /* And the shells are the same shells. */
+    check::equal(static_cast<int>(left->terminal()->shellPid()), static_cast<int>(leftPid),
+                 "the left shell survived the reload");
+    check::equal(static_cast<int>(right->terminal()->shellPid()), static_cast<int>(rightPid),
+                 "and so did the right one");
+
+    /* A setting removed from the file reverts to its default rather than
+     * lingering, which is the property that makes load() safe to repeat. */
+    check::that(writeConfig("theme: ratty-dark\n"), "a config with the size removed");
+    sendShortcut(window, key[0].keyboardModifiers(), static_cast<Qt::Key>(key[0].key()));
+    settle(1200);
+    check::equal(Config::instance().fontSize(), Config::DEFAULT_FONT_SIZE,
+                 "a deleted setting goes back to its default");
+
+    qputenv("HOME", realHome);
+    Config::instance().load();
+}
+
 int main(int argc, char** argv) {
     QSurfaceFormat format;
     format.setVersion(3, 3);
@@ -779,5 +972,7 @@ int main(int argc, char** argv) {
     testFontFollowsItsDisplay();
     testTabReachesTheShellRatherThanTheNextPane();
     testPanesStartInTheRequestedDirectory();
+    testUnfocusedPanesAreDimmed();
+    testConfigurationReloadsInPlace();
     return check::report("test_splits_gl");
 }

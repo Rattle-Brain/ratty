@@ -65,6 +65,14 @@ private:
     int indexOfRootContaining(const SplitContainer* node) const;
 
     bool handleAction(Action action);
+    /*
+     * Re-read the configuration and apply it to every pane in every tab, so a
+     * theme, font or colour change can be seen without restarting. Deliberately
+     * leaves the window's geometry and fullscreen state alone -- those are
+     * start-up settings, and reasserting them would fight whatever the user has
+     * since done with the window.
+     */
+    void reloadConfiguration();
     void splitFocusedPane(bool horizontal);
     void closeFocusedPane();
     void focusNeighbour(Qt::Orientation orientation, bool forward);

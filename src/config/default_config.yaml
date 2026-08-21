@@ -1,156 +1,66 @@
-# RaTTY default configuration
-#
-# This file ships inside the binary. To change anything, copy the settings you
-# care about into ~/.config/ratty/config.yaml -- that file is an *overlay*, so it
-# only needs the keys you want to change, and everything else keeps the defaults
-# below.
-#
-# One YAML gotcha worth knowing: '#' starts a comment, so hex colours must be
-# quoted.
-#     background: "#1e1e1e"     <- correct
-#     background: #1e1e1e       <- an empty value and a comment
+# RaTTY defaults. Do not edit: this file is compiled into the binary.
+# Copy what you want into ~/.config/ratty/config.yaml, which is an overlay.
+# Why each default is what it is: doc/default-config.md
 
 font:
-  # Families are tried in order; the first one actually installed wins. If none
-  # are, RaTTY uses whatever font the system has set as its monospaced default.
+  # Tried in order; the first family actually installed wins. If none are,
+  # the system's monospaced default is used.
   family:
     - DroidSansMono Nerd Font
     - DroidSansM Nerd Font
     - Droid Sans Mono Nerd Font
     - DroidSansMono NF
     - Droid Sans Mono for Powerline
-
-  # Consulted for characters the main font does not have, ahead of RaTTY's own
-  # search. Left empty, RaTTY already falls back to the system monospaced font,
-  # to any installed colour-emoji font, and to the Nerd Fonts symbols font it
-  # ships with -- which is what draws a TUI's file-type icons, since those live in
-  # private-use code points no stock font carries. So this list is only for
-  # pinning a specific family of your own.
+  # Extra families for code points the primary font lacks.
   fallback: []
-
-  size: 13
+  size: 13                    # 6 - 72
+  # Emoji height as a multiple of a capital letter's. Above 1.0 because a round
+  # shape has to be drawn larger than a flat one to look the same size.
+  emoji_scale: 1.25           # 0.3 - 1.5
 
 cursor:
-  # block | hollow | underline | bar
-  # An application's own request (DECSCUSR) takes precedence while it applies.
-  style: bar
+  style: bar                  # block | hollow | underline | bar
   blink: true
 
-# The colour scheme. One of the themes that ship with RaTTY:
-#
-#   ratty-dark          catppuccin-mocha    nord
-#   dracula             one-dark            tokyo-night
-#   gruvbox-dark        gruvbox-light
-#   solarized-dark      solarized-light
-#
+# ratty-dark | ratty-light | dracula | nord | tokyo-night | one-dark
+# catppuccin-mocha | gruvbox-dark | gruvbox-light | solarized-dark | solarized-light
 theme: ratty-dark
 
-# Anything under `colors:` overrides the theme, so you can take a scheme and
-# change one thing. Order does not matter: the theme is always applied first.
-#
-#   theme: nord
-#   colors:
-#     red: "#ff0000"
-#
-# `cursor` left unset follows the foreground, so a theme that inverts the
-# terminal does not leave the cursor invisible.
+# Overrides the theme. Accepts background, foreground, cursor,
+# selection_background, and the 16 ANSI names (red, bright_red, ...).
+# Hex values must be quoted: "#1e1e1e"
 colors: {}
-#   background:           "#1e1e1e"
-#   foreground:           "#dcdcdc"
-#   cursor:               "#dcdcdc"
-#   selection_background: "#6495ed80"
-#   black:   "#000000"    bright_black:   "#666666"
-#   red:     "#cd3131"    bright_red:     "#f14c4c"
-#   green:   "#0dbc79"    bright_green:   "#23d18b"
-#   yellow:  "#e5e510"    bright_yellow:  "#f5f543"
-#   blue:    "#2472c8"    bright_blue:    "#3b8eea"
-#   magenta: "#bc3fbc"    bright_magenta: "#d670d6"
-#   cyan:    "#11a8cd"    bright_cyan:    "#29b8db"
-#   white:   "#e5e5e5"    bright_white:   "#ffffff"
 
 tab_bar:
-  # minimal   text only, with a short accent along the edge facing the terminal
-  # underline a full-width accent rule and a faint wash behind the active tab
-  # blocks    the active tab is a filled rectangle, tabs divided by hairlines
-  # pills     the active tab is a filled rounded capsule
-  # powerline angled chevrons, echoing a Powerline prompt
-  style: powerline
-
-  # bottom | top
-  position: bottom
-
-  # always | multiple | never
-  #   multiple hides the bar until a second tab exists, so a single-terminal
-  #   window looks like a terminal rather than a tabbed document.
-  show: multiple
-
-  # Every colour here is optional. Left out, it is derived from the terminal
-  # palette above, so a colour theme does not have to restate the chrome.
+  style: powerline            # minimal | underline | blocks | pills | powerline
+  position: bottom            # top | bottom
+  show: multiple              # always | multiple | never
+  # background, border, active_background, active_foreground,
+  # inactive_foreground, accent. Unset values are derived from the palette.
   colors: {}
-  #   background:          "#252525"
-  #   border:              "#3a3a3a"
-  #   active_background:   "#1e1e1e"
-  #   active_foreground:   "#dcdcdc"
-  #   inactive_foreground: "#8a8a8a"
-  #   accent:              "#3b8eea"
 
-# How much output is kept above the top of the window, per pane.
 scrollback:
-  # Lines of history. 0 turns the scrollback off entirely.
-  lines: 10000
-  # Lines moved per wheel notch. Shift+PageUp / Shift+PageDown move a page.
-  multiplier: 3
+  lines: 10000                # 0 disables the scrollback
+  multiplier: 3               # rows per wheel notch, 1 - 100
 
 mouse:
-  # With a full-screen application up (less, man, vim) and no mouse reporting
-  # active, translate a wheel notch into cursor keys so the pager scrolls.
-  # Applications can still turn this off for themselves (DECRST 1007).
   alternate_scroll: true
 
-  # Applications that ask for the mouse (DECSET 1000/1002/1003) get it: clicks,
-  # drags and the wheel are reported to them instead of scrolling the
-  # scrollback. Hold Shift to bypass that and scroll locally anyway.
+splits:
+  # separator: unset derives it from the theme's accent colour
+  dim_unfocused: true
+  dim_strength: 0.35          # 0.0 - 0.9
 
-# Where a newly opened pane's shell starts.
-#
-# Each accepts one of:
-#   home    the home directory
-#   cwd     the directory the pane it was opened from is in ("inherit" is a
-#           synonym); falls back to home if that cannot be determined
-#   a path  e.g. ~/work or /srv/project -- `~` is expanded
 directories:
-  # A new tab is a fresh piece of work, so it starts at home.
-  new_tab: home
-  # A split is nearly always a second view of the job already in hand, so it
-  # follows the pane it came from. Set this to `home` for the old behaviour.
-  new_split: cwd
+  new_tab: home               # home | cwd | a path such as ~/work
+  new_split: cwd              # cwd follows the pane it was opened from
 
 window:
   width: 1280
   height: 720
-  # Gap in logical pixels between the text and the window edge.
-  padding: 4
-  opacity: 1.0
+  padding: 4                  # logical pixels, 0 - 200
+  opacity: 1.0                # 0.1 - 1.0
   fullscreen: false
 
-# Which set of default keybindings to load.
-#
-#   auto   follow the platform: the macOS set on macOS, the Linux set elsewhere
-#   true   force the macOS set  (a Mac keyboard on a Linux machine, say)
-#   false  force the Linux set
-#
-# The two sets are the same bindings written two ways: the macOS file says `cmd`
-# and the Linux file says `super`, because that is what a reader of each platform
-# expects. Qt maps both to the same modifier, so they behave identically.
-#
-#   macOS:  resources/keybindings/macos.yaml
-#   Linux:  resources/keybindings/linux.yaml
-#
-# To change a binding, add a `keybindings:` section to
-# ~/.config/ratty/config.yaml. Naming an action there replaces every key the
-# defaults gave it; set an action to `none` to remove it.
-#
-#   keybindings:
-#     ctrl+shift+t: split_vertical   # move it off ctrl+shift+w
-#     ctrl+shift+w: none             # and drop the old key
-mac_os_bindings: auto
+# auto follows the platform; true forces the macOS set, false the Linux set.
+mac_os_bindings: auto         # auto | true | false

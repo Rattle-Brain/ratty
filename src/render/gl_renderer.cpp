@@ -196,7 +196,7 @@ const FontMetrics& GLRenderer::fontMetrics() const {
 }
 
 bool GLRenderer::setFont(const QStringList& families, const QStringList& fallbacks,
-                         double pixelSize) {
+                         double pixelSize, double emojiScale) {
     if (pixelSize <= 0.0) return false;
 
     auto toStdVector = [](const QStringList& list) {
@@ -207,7 +207,8 @@ bool GLRenderer::setFont(const QStringList& families, const QStringList& fallbac
     };
 
     std::shared_ptr<FontManager> fonts =
-        FontManager::shared(toStdVector(families), toStdVector(fallbacks), pixelSize);
+        FontManager::shared(toStdVector(families), toStdVector(fallbacks), pixelSize,
+                            emojiScale);
     if (!fonts || !fonts->isValid()) return false;
 
     /*
@@ -330,10 +331,40 @@ void GLRenderer::drawGlyph(char32_t codepoint, FontStyle style,
         return;  // unmapped or blank (space) - nothing to rasterize
     }
 
-    /* Integer placement: the atlas holds pixel-aligned coverage, so any
-     * fractional offset here would resample and soften the glyph. */
-    const float x0 = static_cast<float>(penX + glyph->bearingX);
-    const float y0 = static_cast<float>(baselineY - glyph->bearingY);
+    /*
+     * Integer placement: the atlas holds pixel-aligned coverage, so any
+     * fractional offset here would resample and soften the glyph.
+     */
+    int left = penX + glyph->bearingX;
+    int top = baselineY - glyph->bearingY;
+
+    if (glyph->isColor) {
+        /*
+         * A colour glyph is placed by its *cell*, not by the font's bearing.
+         *
+         * An emoji font positions its glyphs for a text layout engine, and
+         * reports the whole bitmap as standing above the baseline. Honouring
+         * that put the top of the glyph above the top of its own cell, so
+         * consecutive rows of emoji overlapped each other -- which is what a
+         * column of check marks in a build log looked like.
+         *
+         * A terminal has a stronger constraint than the font's opinion: the
+         * glyph belongs inside the cells the emulator assigned it. Emoji
+         * presentation is always two columns wide (see presentationWidth), and
+         * the raster is already sized to fit, so centring is exact and no
+         * scaling is involved.
+         */
+        const FontMetrics& metrics = fonts_->metrics();
+        const int boxWidth = (presentation == GlyphPresentation::Emoji ? 2 : 1)
+                           * metrics.cellWidth;
+        const int boxTop = baselineY - metrics.ascender;
+
+        left = penX + (boxWidth - glyph->region.width) / 2;
+        top = boxTop + (metrics.cellHeight - glyph->region.height) / 2;
+    }
+
+    const float x0 = static_cast<float>(left);
+    const float y0 = static_cast<float>(top);
     const float x1 = x0 + static_cast<float>(glyph->region.width);
     const float y1 = y0 + static_cast<float>(glyph->region.height);
 

@@ -4,6 +4,7 @@
 
 #include "split_container.h"
 #include "terminal_widget.h"
+#include "../config/config.h"
 #include <QVBoxLayout>
 #include <QDebug>
 
@@ -14,6 +15,24 @@ QVBoxLayout* makeFlushLayout(QWidget* owner) {
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
     return layout;
+}
+
+/*
+ * The divider between panes, in the theme's own colours.
+ *
+ * This used to be a hard-coded #3a3a3a, which was chosen against the default
+ * dark theme and read as an oversight on any other: a grey line through a
+ * solarized or gruvbox window belongs to neither. ChromeColors derives it from
+ * the accent instead -- muted back towards the background so it stays a hairline
+ * -- and the user can name a colour outright with `splits.separator`.
+ */
+QString separatorStyleSheet() {
+    const Config& config = Config::instance();
+    const QColor color =
+        config.chromeColors().resolve(config.palette()).splitSeparator;
+
+    return QStringLiteral("QSplitter::handle { background-color: %1; }")
+        .arg(color.name(QColor::HexRgb));
 }
 
 } // namespace
@@ -62,8 +81,7 @@ SplitContainer* SplitContainer::createContainer(SplitType type, SplitContainer* 
     container->splitter_ = new QSplitter(orientation, container);
     container->splitter_->setHandleWidth(1);
     container->splitter_->setChildrenCollapsible(false);
-    container->splitter_->setStyleSheet(
-        QStringLiteral("QSplitter::handle { background-color: #3a3a3a; }"));
+    container->splitter_->setStyleSheet(separatorStyleSheet());
 
     container->child1_ = first;
     container->child2_ = second;
@@ -103,6 +121,14 @@ SplitContainer* SplitContainer::createContainer(SplitType type, SplitContainer* 
     container->adoptChildSignals(first);
     container->adoptChildSignals(second);
     return container;
+}
+
+void SplitContainer::applyConfiguration() {
+    /* The separator is derived from the theme, so a theme change moves it. */
+    if (splitter_) splitter_->setStyleSheet(separatorStyleSheet());
+    if (terminal_) terminal_->applyConfiguration();
+    if (child1_) child1_->applyConfiguration();
+    if (child2_) child2_->applyConfiguration();
 }
 
 void SplitContainer::adoptChildSignals(SplitContainer* child) {
@@ -327,11 +353,22 @@ void SplitContainer::markFocused() {
     if (type_ != Leaf || !terminal_) return;
 
     /* Clear the marker on every other pane so exactly one is current. */
-    if (SplitContainer* root = rootNode()) {
-        root->forEachLeaf([this](SplitContainer* leaf) {
-            if (leaf->terminal_) leaf->terminal_->setPaneFocused(leaf == this);
-        });
-    }
+    SplitContainer* root = rootNode();
+    if (!root) return;
+
+    /*
+     * Dimming is decided here rather than in the pane, because it depends on
+     * something only the tree knows: a tab holding a single pane has nothing to
+     * tell apart, and fading it would just look like a rendering fault.
+     */
+    const bool several = root->countLeaves() > 1;
+
+    root->forEachLeaf([this, several](SplitContainer* leaf) {
+        if (!leaf->terminal_) return;
+        const bool focused = (leaf == this);
+        leaf->terminal_->setPaneFocused(focused);
+        leaf->terminal_->setPaneDimmed(several && !focused);
+    });
 }
 
 void SplitContainer::focusPane() {

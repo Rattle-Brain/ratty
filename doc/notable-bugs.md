@@ -343,3 +343,118 @@ matching `Tab -> HT` assertion was also added to `tests/test_input.cpp`, which
 had only ever covered Shift+Tab.
 
 ---
+
+## A held key produced one character instead of repeating
+
+**Symptom.** Holding `j` in RaTTY typed a single `j`. In kitty the same gesture
+gives `jjjjjjjjjjjj`. The same for any key.
+
+**Investigation.** Nothing in RaTTY was dropping the events. `InputHandler` does
+not look at `QKeyEvent::isAutoRepeat()` at all, and it builds its output from
+`event->text()`, so a repeat is encoded exactly like a first press — even Qt's key
+*compression*, which can merge several presses into one event carrying `"jjj"`,
+would have come out right. The events were never arriving.
+
+**Cause.** macOS "press and hold". Holding a key in a view that participates in
+the text input system offers a menu of accented variants instead of repeating,
+and `TerminalWidget` participates deliberately: `Qt::WA_InputMethodEnabled` is
+what makes a dead-key `~` reachable at all, and was added to fix precisely that
+(see [`~` could not be typed](#-could-not-be-typed-at-all) above). One fix had
+quietly bought the other bug.
+
+The two behaviours are not the same mechanism, which is what makes this fixable
+rather than a trade-off: dead keys and full input methods are composition, and
+press-and-hold is a separate AppKit affordance layered on top. Turning the second
+off leaves the first working.
+
+**Fix.** `platform::enableKeyRepeat()`, called before `QApplication` is
+constructed, registers `ApplePressAndHoldEnabled = NO` for this process only.
+Qt has no API for it, so this is the project's one piece of Objective-C++ and the
+reason `src/platform/` exists. Details, including why it registers the preference
+rather than writing it, are in
+[platform notes](platform-notes.md#a-held-key-offers-accents-instead-of-repeating).
+
+`tests/test_input.cpp` pins the half that is ours: an auto-repeat event encodes
+identically to a first press, for a text key and for an arrow. Whether the
+platform *generates* those events cannot be asserted from a test — no test can
+hold a key down — so that half is verified by holding a key.
+
+---
+
+## Emoji were too big, and consecutive rows overlapped
+
+**Symptom.** A build log full of ✅ drew the check marks larger than the
+surrounding text, and a column of them ran into each other vertically.
+
+**Measurement.** At a 26 px font the cell was 16x32 with an ascender of 25, and
+`U+2705` rasterized to 32x32 reporting `bearingY = +32`:
+
+| | |
+| --- | --- |
+| cell | 16 x 32, ascender 25, capital height 19 |
+| `U+2705` | 32 x 32, bearing +0,+32 |
+| `M`, for scale | 14 x 19 |
+
+**Three faults, found one at a time.** Each fix exposed the next, which is worth
+recording because the first two looked complete.
+
+*Placement.* A glyph is drawn at `baselineY - bearingY`. With the baseline at
+`cellTop + ascender` and a bearing of 32, that is `cellTop - 7`: the emoji began
+seven pixels *above the top of its own cell*, inside the row before it. Colour
+fonts report their whole glyph as standing above the baseline, so the taller the
+glyph the further back it reached. Colour glyphs are now positioned by their
+**cell** -- centred in the two columns the emulator assigned them -- and not by
+the font's bearing. An emoji font positions glyphs for a text layout engine; a
+terminal has the stronger constraint.
+
+*Size.* The target was `min(cellHeight, 2 * cellWidth)`: the whole line box, so a
+32 px emoji sat beside a 19 px capital.
+
+*And the one only a size sweep finds.* Targeting the ascender fitted at 26 px and
+still overflowed at 13 px, because a colour font does not have a size -- it has
+**strikes**. Apple Color Emoji ships 20, 26, 32, 40, 48, 52, 64, 96 and 160,
+FreeType answers a request with the nearest, and the smallest is 20 px. In a 17 px
+cell there is no strike small enough:
+
+```
+px   cell    ascender  emoji   verdict
+13   8x17    13        20x20   OVERFLOWS
+16   10x19   15        20x20   OVERFLOWS
+26   16x32   25        20x20   fits
+28   17x33   26        26x26   fits
+30   18x36   28        20x20   fits      <- smaller than at 28 px
+```
+
+Note the last two rows: the size was not merely wrong, it was not *monotonic*.
+
+**Fix.** Stop treating the strike as the answer. RaTTY picks the smallest strike
+at or above the size it wants and **resamples it down** to exactly that size, so
+emoji track the font instead of hopping between whatever sizes the font ships. The
+target is the primary font's capital height times `font.emoji_scale`, which
+defaults to just under parity with an `M`.
+
+The resampling is a box filter in **premultiplied** space, un-premultiplied once
+at the end. Averaging straight-alpha colour across a transparent edge pulls in the
+colour of pixels that are not really there, and an emoji's outline picks up a halo
+of its own interior; weighting each contribution by its own coverage is what keeps
+the edges clean.
+
+It is done at rasterization rather than by drawing a smaller quad because the
+atlas is sampled 1:1 with `GL_NEAREST` (see [rendering](rendering.md)) -- scaling
+at draw time would alias the bitmap instead of resizing it. Doing it once per
+glyph, cached in the atlas, costs nothing per frame.
+
+**One more trap on the way.** `FT_Bitmap_Size::height` is not the glyph size. For
+Apple Color Emoji the strikes report heights of 26, 34, 42 and 52 while rendering
+glyphs of 20, 26, 32 and 40 -- `height` is the strike's *line* height and
+`y_ppem` is its em. Selecting on `height` picked a strike one step too small every
+time, which capped emoji at 20 px however large the font got. The fix reads
+`y_ppem`.
+
+Pinned by `tests/test_render.cpp` (`testEmojiFitTheirCell`), which sweeps eight
+font sizes and asserts at each that the glyph fits its two cells and its row,
+stays within the ascender, matches the capital-height target to within a pixel,
+and never shrinks as the font grows. A single-size test would have passed two of
+the three broken versions.
+
+---

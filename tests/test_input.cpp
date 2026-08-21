@@ -102,6 +102,16 @@ void testBindingsResolve() {
     expectAction(meta, Qt::Key_Q, ACTION_QUIT, "cmd/super+q");
     expectAction(meta, Qt::Key_K, ACTION_CLEAR_SCROLLBACK, "cmd/super+k");
     expectAction(Qt::NoModifier, Qt::Key_F11, ACTION_FULLSCREEN, "f11");
+    /* Both spellings of the same physical key: Qt reports the main key as
+     * Key_Return and the numeric keypad's as Key_Enter, so binding one leaves
+     * the other dead. */
+    expectAction(meta, Qt::Key_Return, ACTION_FULLSCREEN, "cmd/super+return");
+    expectAction(meta, Qt::Key_Enter, ACTION_FULLSCREEN, "cmd/super+enter (keypad)");
+    /* Plain Return must still be text, not a shortcut. */
+    expectAction(Qt::NoModifier, Qt::Key_Return, ACTION_NONE, "return (newline)");
+    expectAction(meta, Qt::Key_F5, ACTION_RELOAD_CONFIG, "cmd/super+f5");
+    expectAction(meta | Qt::ShiftModifier, Qt::Key_R, ACTION_RELOAD_CONFIG,
+                 "cmd/super+shift+r");
     expectAction(Qt::ShiftModifier, Qt::Key_PageUp, ACTION_SCROLL_UP, "shift+pageup");
 
     /* Font size, through every key event a user might produce. */
@@ -348,6 +358,31 @@ void testKeyEncoding() {
     expectBytes(Qt::ControlModifier, Qt::Key_Backspace, QString(), false, "\x08",
                 "Ctrl+Backspace -> BS");
     expectBytes(Qt::NoModifier, Qt::Key_Escape, QString(), false, "\x1b", "Escape");
+    /*
+     * A held key arrives as a run of auto-repeat events. Every one of them is
+     * real input: dropping them, or treating them as a special case, is what
+     * would turn a held `j` into a single `j`.
+     *
+     * Whether the *platform* generates those events is a separate matter -- on
+     * macOS it does not until press-and-hold is turned off, which
+     * platform::enableKeyRepeat() does. This pins the half that is ours.
+     */
+    {
+        const InputHandler handler;
+        QKeyEvent held(QEvent::KeyPress, Qt::Key_J, Qt::NoModifier,
+                       QStringLiteral("j"), /*autorep=*/true);
+        check::that(held.isAutoRepeat(), "an auto-repeat event says so");
+        check::that(handler.keyEventToBytes(&held, false) == QByteArray("j"),
+                    "and is encoded exactly like the first press");
+
+        /* Repeats of a non-text key have to survive too, or holding an arrow
+         * moves the cursor once. */
+        QKeyEvent heldArrow(QEvent::KeyPress, Qt::Key_Left, Qt::NoModifier,
+                            QString(), /*autorep=*/true);
+        check::that(handler.keyEventToBytes(&heldArrow, false) == QByteArray("\x1b[D"),
+                    "a held arrow key repeats its escape sequence");
+    }
+
     /* Tab is the shell's completion key, so it has to arrive as a plain HT. The
      * encoding was always right; what went wrong was upstream of here -- see
      * TerminalWidget::focusNextPrevChild(). */

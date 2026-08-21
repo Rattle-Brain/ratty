@@ -1,0 +1,41 @@
+# RaTTY Light - the daylight counterpart of RaTTY Dark.
+#
+# A deliberately dim light theme built around a muted blue-grey surface rather
+# than white or near-white. It keeps RaTTY's charcoal, steel-blue and teal
+# identity while reducing the brightness normally associated with light themes.
+
+name: RaTTY Light
+colors:
+  background:           "#aeb8c4"
+  foreground:           "#252b31"
+  cursor:               "#347f76"
+  selection_background: "#929fac"
+
+  black:          "#30373e"
+  red:            "#994c55"
+  green:          "#527d73"
+  yellow:         "#866a27"
+  blue:           "#46678b"
+  magenta:        "#765f76"
+  cyan:           "#3f7482"
+  white:          "#69737d"
+
+  bright_black:   "#4b5660"
+  bright_red:     "#ad5d64"
+  bright_green:   "#638f7b"
+  bright_yellow:  "#9b7d30"
+  bright_blue:    "#527ba4"
+  bright_magenta: "#896e86"
+  bright_cyan:    "#4d8898"
+  bright_white:   "#252b31"
+
+tab_bar:
+  colors:
+    # Slightly darker than the terminal surface, keeping the terminal itself
+    # visually continuous with the active tab.
+    background:          "#929daa"
+    border:              "#7f8b98"
+    active_background:   "#aeb8c4"
+    active_foreground:   "#252b31"
+    inactive_foreground: "#535e69"
+    accent:              "#46678b"

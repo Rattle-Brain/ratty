@@ -100,6 +100,7 @@ constexpr ActionName kActionNames[] = {
     {ACTION_SCROLL_UP,           "scroll_up"},
     {ACTION_SCROLL_DOWN,         "scroll_down"},
     {ACTION_CLEAR_SCROLLBACK,    "clear_scrollback"},
+    {ACTION_RELOAD_CONFIG,       "reload_config"},
 };
 
 /* Named colour keys accepted under "colors", mapped to palette slots 0-15. */
@@ -239,6 +240,7 @@ struct Config::Parser {
         if (const YAML::Node node = root["directories"]; node && node.IsMap()) {
             directories(node);
         }
+        if (const YAML::Node node = root["splits"]; node && node.IsMap()) splits(node);
         if (const YAML::Node node = root["mouse"]; node && node.IsMap()) mouse(node);
         if (const YAML::Node node = root["tab_bar"]; node && node.IsMap()) tabBar(node);
         if (const YAML::Node node = root["mac_os_bindings"]; node) {
@@ -303,6 +305,9 @@ struct Config::Parser {
         }
         if (const auto fallbacks = readStringList(node, "fallback")) {
             config.fontFallbacks_ = normalize(*fallbacks);
+        }
+        if (const auto scale = readDouble(node, "emoji_scale")) {
+            config.emojiScale_ = std::clamp(*scale, 0.3, 1.5);
         }
         if (const auto size = readInt(node, "size")) {
             config.setFontSize(*size);
@@ -380,6 +385,25 @@ struct Config::Parser {
         }
         if (const auto multiplier = readInt(node, "multiplier")) {
             config.scrollMultiplier_ = std::clamp(*multiplier, 1, MAX_SCROLL_MULTIPLIER);
+        }
+    }
+
+    /*
+     * Splits: the divider's colour, and whether panes that are not current fade
+     * back. The separator is staged into the chrome overrides rather than kept
+     * here, so it layers built-in -> theme -> user like every other chrome
+     * colour, and a theme can state it without the user having to.
+     */
+    void splits(const YAML::Node& node) {
+        if (const auto color = readColor(node, "separator")) {
+            chromeOverrides.splitSeparator = *color;
+        }
+        if (const auto dim = readBool(node, "dim_unfocused")) {
+            config.dimUnfocusedSplits_ = *dim;
+        }
+        if (const auto strength = readDouble(node, "dim_strength")) {
+            config.splitDimStrength_ = std::clamp(static_cast<float>(*strength),
+                                                  0.0f, MAX_SPLIT_DIM_STRENGTH);
         }
     }
 
@@ -502,6 +526,7 @@ void Config::applyBuiltInDefaults() {
     fontFamilies_.clear();
     fontFallbacks_.clear();
     fontSize_ = DEFAULT_FONT_SIZE;
+    emojiScale_ = FontManager::DefaultEmojiScale;
     windowPadding_ = DEFAULT_WINDOW_PADDING;
     cursorStyle_ = CursorStyle::Block;
     cursorBlink_ = true;
@@ -512,6 +537,8 @@ void Config::applyBuiltInDefaults() {
     builtInChrome_ = ChromeColors{};
     themeChrome_ = ChromeColors{};
     userChrome_ = ChromeColors{};
+    dimUnfocusedSplits_ = true;
+    splitDimStrength_ = DEFAULT_SPLIT_DIM_STRENGTH;
     newTabDirectory_ = StartDirectory{StartDirectory::Kind::Home, QString()};
     newSplitDirectory_ = StartDirectory{StartDirectory::Kind::Cwd, QString()};
     windowWidth_ = DEFAULT_WINDOW_WIDTH;
@@ -693,6 +720,7 @@ void Config::mergeChrome(ChromeColors& target, const ChromeColors& later) {
     if (later.activeTabForeground) target.activeTabForeground = later.activeTabForeground;
     if (later.inactiveTabForeground) target.inactiveTabForeground = later.inactiveTabForeground;
     if (later.accent) target.accent = later.accent;
+    if (later.splitSeparator) target.splitSeparator = later.splitSeparator;
 }
 
 void Config::applyTheme() {

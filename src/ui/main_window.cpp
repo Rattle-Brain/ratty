@@ -386,10 +386,42 @@ bool MainWindow::handleAction(Action action) {
         if (TerminalWidget* terminal = focusedTerminal()) terminal->clearScrollback();
         return true;
 
+    case ACTION_RELOAD_CONFIG:      reloadConfiguration(); return true;
+
     case ACTION_NONE:
         break;
     }
     return false;
+}
+
+void MainWindow::reloadConfiguration() {
+    Config& config = Config::instance();
+
+    /*
+     * load() starts from applyBuiltInDefaults(), so it is idempotent: every
+     * layer -- built-in, theme, user -- is rebuilt from scratch rather than
+     * merged on top of what is already there. That is what makes calling it a
+     * second time safe, and it means a setting the user has *deleted* since the
+     * last load correctly reverts to its default.
+     */
+    config.load();
+
+    /* Opacity is a live window property; size and fullscreen are not touched. */
+    setWindowOpacity(config.windowOpacity());
+    applyTabBarConfiguration();
+
+    for (int i = 0; i < tabCount(); ++i) {
+        if (SplitContainer* root = rootAt(i)) {
+            root->applyConfiguration();
+        }
+    }
+
+    /*
+     * Said out loud, because a reload that changed nothing visible is otherwise
+     * indistinguishable from one that did not happen -- a mistyped key, or a
+     * config file with a YAML error that the loader has already warned about.
+     */
+    qInfo() << "Config: reloaded";
 }
 
 void MainWindow::goToTab(int oneBasedIndex) {

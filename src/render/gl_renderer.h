@@ -55,7 +55,7 @@ public:
      * gone.
      */
     bool setFont(const QStringList& families, const QStringList& fallbacks,
-                 double pixelSize);
+                 double pixelSize, double emojiScale);
     const FontMetrics& fontMetrics() const;
     bool hasFont() const { return fonts_ && fonts_->isValid(); }
 

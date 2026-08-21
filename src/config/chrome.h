@@ -48,6 +48,10 @@ struct ChromeColors {
     std::optional<QColor> activeTabForeground;
     std::optional<QColor> inactiveTabForeground;
     std::optional<QColor> accent;
+    /* The hairline between split panes. Chrome rather than palette: it is part
+     * of the window, and an application's OSC colour request must not repaint
+     * it. */
+    std::optional<QColor> splitSeparator;
 
     /* The fully determined set, ready to paint with. */
     struct Resolved {
@@ -57,6 +61,7 @@ struct ChromeColors {
         QColor activeTabForeground;
         QColor inactiveTabForeground;
         QColor accent;
+        QColor splitSeparator;
     };
 
     Resolved resolve(const Palette& palette) const;

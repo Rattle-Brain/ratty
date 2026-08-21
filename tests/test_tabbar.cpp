@@ -155,7 +155,13 @@ void testChromeColorsDerivation() {
 void testChromeColorsFromConfig() {
     check::section("chrome colours from the config file");
 
+    /*
+     * Over a theme that states no chrome of its own, so that "unstated" really
+     * does mean "left to be derived". RaTTY's own two themes do state theirs,
+     * which is a separate case and is checked below.
+     */
     loadWithUserConfig(R"(
+theme: nord
 tab_bar:
   colors:
     background: "#101010"
@@ -168,6 +174,24 @@ tab_bar:
                 "the accent was read");
     check::that(!chrome.activeTabForeground.has_value(),
                 "an unstated chrome colour stays unset, to be derived");
+
+    /*
+     * And the layering the other way round: a theme that *does* state chrome
+     * supplies the colours the user did not, while the ones the user named still
+     * win. This is what stops a themed bar being half-overwritten by a config
+     * that only wanted to change the accent.
+     */
+    loadWithUserConfig(R"(
+theme: ratty-dark
+tab_bar:
+  colors:
+    accent: "#ff8800"
+)");
+    const ChromeColors& layered = Config::instance().chromeColors();
+    check::that(layered.accent.has_value() && *layered.accent == QColor(0xff, 0x88, 0x00),
+                "the user's accent beat the theme's");
+    check::that(layered.activeTabForeground.has_value(),
+                "and the theme still supplied what the user did not");
 }
 
 void testBarIsThin() {

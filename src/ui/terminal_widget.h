@@ -44,6 +44,17 @@ public:
     void setPaneFocused(bool focused);
     bool isPaneFocused() const { return paneFocused_; }
 
+    /*
+     * Fade this pane back, because another one has the keyboard.
+     *
+     * Separate from setPaneFocused() because it answers a different question:
+     * whether there is anything to tell apart. Only SplitContainer knows how
+     * many panes share the tab, and a tab holding one pane must not be dimmed
+     * merely because nothing has claimed the marker yet.
+     */
+    void setPaneDimmed(bool dimmed);
+    bool isPaneDimmed() const { return paneDimmed_; }
+
     void copySelection();
     void paste();
 
@@ -65,6 +76,14 @@ public:
 
     /* Font size follows the global config; call after changing it. */
     void reloadFont();
+
+    /*
+     * Re-apply every setting this pane owns after the configuration has been
+     * re-read: colours, font, scrollback and cursor behaviour. The session and
+     * the shell inside it are untouched -- a reload must not cost the user their
+     * running command.
+     */
+    void applyConfiguration();
 
     QString title() const { return title_; }
 
@@ -198,6 +217,7 @@ private:
     QTimer* blinkTimer_ = nullptr;
     bool cursorPhaseOn_ = true;
     bool paneFocused_ = false;
+    bool paneDimmed_ = false;
     QString title_;
     /* Where this pane's shell was told to start. */
     QString startDirectory_;

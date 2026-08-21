@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <string>
 #include <cmath>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -559,17 +560,19 @@ void testSharedFontChainsAreReused() {
 
     const std::vector<std::string> none;
 
-    std::shared_ptr<FontManager> first = FontManager::shared(none, none, 20.0);
+    const double scale = FontManager::DefaultEmojiScale;
+
+    std::shared_ptr<FontManager> first = FontManager::shared(none, none, 20.0, scale);
     if (!first) {
         check::that(true, "skipped - no font available on this machine");
         return;
     }
 
-    std::shared_ptr<FontManager> again = FontManager::shared(none, none, 20.0);
+    std::shared_ptr<FontManager> again = FontManager::shared(none, none, 20.0, scale);
     check::that(again == first, "the same request hands back the very same chain");
     check::that(first->metrics().isValid(), "and it carries usable metrics");
 
-    std::shared_ptr<FontManager> larger = FontManager::shared(none, none, 34.0);
+    std::shared_ptr<FontManager> larger = FontManager::shared(none, none, 34.0, scale);
     check::that(larger && larger != first,
                 "a different pixel size is a different chain");
     if (larger) {
@@ -580,6 +583,101 @@ void testSharedFontChainsAreReused() {
         check::equal(static_cast<int>(std::lround(first->pixelSize())), 20,
                      "and the original chain keeps its own size");
     }
+
+    /* The emoji scale changes what gets rasterized, so it is part of the key. */
+    std::shared_ptr<FontManager> smallerEmoji =
+        FontManager::shared(none, none, 20.0, scale * 0.6);
+    check::that(smallerEmoji && smallerEmoji != first,
+                "a different emoji scale is a different chain");
+}
+
+/*
+ * Emoji have to fit the cell they were given, at every font size.
+ *
+ * Swept across sizes on purpose. A colour font ships a handful of fixed bitmap
+ * strikes -- Apple Color Emoji has 20, 26, 32, 40 and more -- and asking it for
+ * a size gets the nearest one, not the one asked for. So the relationship
+ * between font size and emoji size is where the bugs live, and checking a single
+ * size proves almost nothing: the first version of this fix passed at 26 px
+ * while still overflowing at 13, and a later one fitted everywhere while
+ * silently refusing to grow past 20 px however large the font got.
+ */
+void testEmojiFitTheirCell() {
+    check::section("colour glyphs fit their cell and follow the font size");
+
+    const char32_t emoji[] = {0x2705, 0x274C, 0x1F600, 0x1F680};
+    int measured = 0;
+    int previousHeight = 0;
+    double previousPx = 0.0;
+
+    for (const double px : {12.0, 13.0, 16.0, 20.0, 26.0, 32.0, 40.0, 52.0}) {
+        FontManager fonts;
+        if (!fonts.loadFamily(std::vector<std::string>{}, px)) continue;
+
+        const FontMetrics& metrics = fonts.metrics();
+        if (!metrics.isValid()) continue;
+
+        const std::string at = " at " + std::to_string(static_cast<int>(px)) + "px";
+        check::that(metrics.capHeight > 0 && metrics.capHeight <= metrics.ascender,
+                    "the capital height is measured and sane" + at);
+
+        int tallest = 0;
+        for (const char32_t codepoint : emoji) {
+            GlyphBitmap glyph;
+            if (!fonts.rasterize(codepoint, FontStyleRegular, glyph,
+                                 GlyphPresentation::Emoji)) {
+                continue;
+            }
+            if (!glyph.isColor || glyph.isEmpty()) continue;   // no colour font here
+            ++measured;
+            tallest = std::max(tallest, glyph.height);
+
+            /*
+             * The invariant that matters. Colour glyphs are centred in the cell
+             * the emulator assigned them -- two columns for emoji presentation,
+             * one row -- so fitting that box is exactly what makes overlap
+             * impossible rather than unlikely.
+             */
+            check::that(glyph.width <= 2 * metrics.cellWidth,
+                        "no wider than its two cells" + at);
+            check::that(glyph.height <= metrics.cellHeight,
+                        "no taller than its row" + at);
+            /*
+             * And a property of the *default* scale rather than a hard rule:
+             * staying inside the ascender leaves a visible gap between rows of
+             * emoji, which is the difference between "does not overlap" and
+             * "does not look cramped". A user who dials emoji_scale up past this
+             * is entitled to; the bound above is what protects them.
+             */
+            check::that(glyph.height <= metrics.ascender,
+                        "leaves a gap between rows at the default scale" + at);
+        }
+
+        if (tallest == 0) continue;   // nothing colour here; nothing to compare
+
+        /*
+         * Sized to the capitals rather than to whatever strike the font offered.
+         * Without this the emoji stalled at one strike and stopped tracking the
+         * font, ending up far smaller than the text at large sizes.
+         */
+        const int wanted =
+            static_cast<int>(std::lround(metrics.capHeight * fonts.emojiScale()));
+        check::that(std::abs(tallest - wanted) <= 1,
+                    "sized to the capitals, not to the nearest strike" + at);
+
+        /* And it has to keep growing with the font. */
+        if (previousHeight > 0) {
+            check::that(tallest >= previousHeight,
+                        "no smaller than at " + std::to_string(static_cast<int>(previousPx))
+                            + "px" + at);
+        }
+        previousHeight = tallest;
+        previousPx = px;
+    }
+
+    check::that(measured > 0 ? true : true,
+                measured > 0 ? std::to_string(measured) + " colour glyphs measured"
+                             : "skipped - no colour emoji font installed");
 }
 
 int main(int argc, char** argv) {
@@ -596,5 +694,6 @@ int main(int argc, char** argv) {
     testFontPreferenceOrder();
     testFontMetricsScaleWithPixelSize();
     testSharedFontChainsAreReused();
+    testEmojiFitTheirCell();
     return check::report("test_render");
 }

@@ -83,6 +83,17 @@ public:
     bool alternateScroll() const { return emulator_.alternateScroll(); }
     void setAlternateScroll(bool enable) { emulator_.setAlternateScroll(enable); }
 
+    /*
+     * Replace the colours this session started from, which is what a
+     * configuration reload does.
+     *
+     * Deliberately discards any palette an application set for itself through
+     * OSC 4/10/11/12: the user has just asked to see the new configuration, and
+     * showing them a theme half-overwritten by whatever last ran would be
+     * worse than showing them the theme.
+     */
+    void setBasePalette(const Palette& palette) { emulator_.setBasePalette(palette); }
+
     /* Encode and send one mouse event. A no-op when the application has not
      * asked for reporting, or when this particular event is not reportable in
      * the mode it did ask for. */

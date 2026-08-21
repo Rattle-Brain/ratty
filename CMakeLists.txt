@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(ratty VERSION 0.2.0 LANGUAGES CXX)
+project(ratty VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -38,6 +38,8 @@ find_package(yaml-cpp REQUIRED)
 
 if(APPLE)
     find_library(UTIL_LIB util REQUIRED)
+    # Foundation, for the press-and-hold preference in src/platform.
+    find_library(FOUNDATION_LIB Foundation REQUIRED)
     # OpenGL is deprecated but fully functional on macOS; silence the noise.
     add_compile_definitions(GL_SILENCE_DEPRECATION)
 else()
@@ -78,8 +80,18 @@ set(RATTY_SOURCES
     src/config/config.cpp
 )
 
+# Platform shims. Exactly one implementation is compiled; see src/platform.
+if(APPLE)
+    # Objective-C++, for the one AppKit preference Qt cannot express.
+    list(APPEND RATTY_SOURCES src/platform/platform_mac.mm)
+else()
+    list(APPEND RATTY_SOURCES src/platform/platform_generic.cpp)
+endif()
+
 # Listed so IDEs and AUTOMOC see them.
 set(RATTY_HEADERS
+    src/platform/platform.h
+
     src/core/cell.h
     src/core/unicode.h
     src/core/cursor.h
@@ -147,6 +159,11 @@ target_include_directories(ratty PRIVATE
     ${FREETYPE_INCLUDE_DIRS}
 )
 
+# The version is stated once, above, and reaches the code from here. It used to
+# be written out again as a string literal in main.cpp, which is the kind of
+# duplication that is only ever noticed once the two have already disagreed.
+target_compile_definitions(ratty PRIVATE RATTY_VERSION="${PROJECT_VERSION}")
+
 target_link_libraries(ratty PRIVATE
     Qt6::Core
     Qt6::Gui
@@ -156,6 +173,7 @@ target_link_libraries(ratty PRIVATE
     Freetype::Freetype
     yaml-cpp::yaml-cpp
     ${UTIL_LIB}
+    ${FOUNDATION_LIB}
 )
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

@@ -23,6 +23,7 @@
 #include "theme.h"
 #include "../core/cursor.h"
 #include "../core/palette.h"
+#include "../render/font_manager.h"
 #include <QColor>
 #include <QHash>
 #include <QKeyEvent>
@@ -33,7 +34,6 @@
 #include <optional>
 #include <string>
 
-/* Actions that can be bound to keys. */
 /*
  * Where the shell of a newly opened pane starts.
  *
@@ -69,6 +69,7 @@ struct StartDirectory {
     static StartDirectory fromString(const QString& text);
 };
 
+/* Actions that can be bound to keys. */
 enum Action {
     ACTION_NONE = 0,
 
@@ -107,6 +108,10 @@ enum Action {
     ACTION_SCROLL_UP,
     ACTION_SCROLL_DOWN,
     ACTION_CLEAR_SCROLLBACK,
+
+    /* Re-read the configuration and apply it to every open pane, so a theme,
+     * font or colour change can be seen without restarting. */
+    ACTION_RELOAD_CONFIG,
 };
 
 class Config {
@@ -122,6 +127,12 @@ public:
     static constexpr int MAX_SCROLLBACK_LINES = 1000000;
     static constexpr int DEFAULT_SCROLL_MULTIPLIER = 3;
     static constexpr int MAX_SCROLL_MULTIPLIER = 100;
+    /*
+     * Enough to read at a glance which pane is live, without making the others
+     * illegible -- an unfocused pane is still there to be read.
+     */
+    static constexpr float DEFAULT_SPLIT_DIM_STRENGTH = 0.35f;
+    static constexpr float MAX_SPLIT_DIM_STRENGTH = 0.9f;
 
     static Config& instance();
 
@@ -184,6 +195,13 @@ public:
      */
     QStringList fontFallbacks() const { return fontFallbacks_; }
     int fontSize() const { return fontSize_; }
+    /*
+     * How tall a colour emoji is drawn, as a multiple of the capital height of
+     * the primary font. 1.0 makes an emoji exactly as tall as an `M`; the
+     * default sits just under that, because an emoji in a terminal is an icon in
+     * a line of text rather than a character.
+     */
+    double emojiScale() const { return emojiScale_; }
     void setFontSize(int size);
 
     /* Empty space between the text grid and the window edge, in logical
@@ -215,6 +233,16 @@ public:
      * still turn it off for itself with DECRST 1007.
      */
     bool alternateScroll() const { return alternateScroll_; }
+
+    /*
+     * Splits. `dimUnfocusedSplits` fades every pane except the current one, so
+     * which one has the keyboard is obvious at a glance; `splitDimStrength` is
+     * how far, 0 being no dimming and 1 being fully faded into the background.
+     * A tab holding a single pane is never dimmed -- there is nothing to tell
+     * apart.
+     */
+    bool dimUnfocusedSplits() const { return dimUnfocusedSplits_; }
+    float splitDimStrength() const { return splitDimStrength_; }
 
     /*
      * Where a new pane's shell starts. Tabs and splits are separate settings;
@@ -342,6 +370,7 @@ private:
     QStringList fontFamilies_;
     QStringList fontFallbacks_;
     int fontSize_ = DEFAULT_FONT_SIZE;
+    double emojiScale_ = FontManager::DefaultEmojiScale;
     int windowPadding_ = DEFAULT_WINDOW_PADDING;
 
     CursorStyle cursorStyle_ = CursorStyle::Block;
@@ -365,6 +394,9 @@ private:
      * opened from, which is what every tiling terminal does and what makes a
      * split useful for looking at the same tree twice.
      */
+    bool dimUnfocusedSplits_ = true;
+    float splitDimStrength_ = DEFAULT_SPLIT_DIM_STRENGTH;
+
     StartDirectory newTabDirectory_{StartDirectory::Kind::Home, QString()};
     StartDirectory newSplitDirectory_{StartDirectory::Kind::Cwd, QString()};
 

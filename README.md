@@ -77,7 +77,12 @@ themselves based on your OS, and everything you do not mention keeps its default
 > **One YAML trap:** `#` starts a comment, so hex colours need quoting —
 > `background: "#1e1e1e"`. RaTTY notices and tells you, but the quotes are the fix.
 
-See [doc/configuration.md](doc/configuration.md) for every setting and
+Press `cmd+f5` (`super+f5` on Linux) to reload the file without restarting; the
+shells keep running.
+
+See [doc/configuration.md](doc/configuration.md) for every setting,
+[doc/default-config.md](doc/default-config.md) for an annotated tour of the
+defaults, and
 [doc/keybindings.md](doc/keybindings.md) for the shortcuts.
 
 ## Documentation
@@ -90,7 +95,7 @@ Everything lives in [**doc/**](doc/index.md):
 - [Terminal emulation](doc/terminal-emulation.md) — the grid, the parser, the sequences
 - [Rendering](doc/rendering.md) — fonts, atlas, HiDPI, emoji, box drawing
 - [Widgets, panes and the tab bar](doc/ui.md)
-- [Configuration](doc/configuration.md) · [Keybindings](doc/keybindings.md)
+- [Configuration](doc/configuration.md) · [Default configuration](doc/default-config.md) · [Keybindings](doc/keybindings.md)
 - [Platform notes](doc/platform-notes.md) — where the operating systems disagree
 - [Building and testing](doc/building.md)
 - [Known gaps](doc/known-gaps.md) — what is missing, and why

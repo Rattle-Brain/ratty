@@ -428,25 +428,62 @@ void FontManager::applyPixelSizeToFace(FT_Face face, bool isColorFont,
          * size the font happened to store.
          */
         /*
-         * Emoji are double-width, so they span two cells: fit them to whichever
-         * of the two dimensions is tighter, or they bleed into the next row.
+         * Emoji are double-width, so two cells wide is the horizontal bound.
+         * Vertically the bound is the *ascender*, not the cell height, for two
+         * reasons.
+         *
+         * It looks right: the ascender is how far the tallest text glyph reaches
+         * above the baseline, so an emoji sized to it carries the same visual
+         * weight as the letters beside it. Sized to the full cell height it was
+         * half again as tall as a capital -- at a 26 px font, a 32 px emoji next
+         * to a 19 px `M` -- which is what "the emoji are too big" meant.
+         *
+         * And it leaves room: a colour font reports the whole glyph as sitting
+         * above the baseline (bearingY == height for Apple Color Emoji), so a
+         * glyph taller than the ascender starts above the top of its own cell
+         * and bleeds into the row above. The renderer centres colour glyphs in
+         * the cell rather than trusting that bearing, but keeping the raster
+         * within the cell in the first place is what makes the centring exact
+         * instead of a downscale -- the atlas is sampled 1:1 with GL_NEAREST, so
+         * shrinking a quad at draw time would alias.
          */
-        const int target = metrics_.isValid()
-                               ? std::min(metrics_.cellHeight, 2 * metrics_.cellWidth)
-                               : static_cast<int>(std::lround(pixelSize_));
-        if (FT_Set_Char_Size(face, 0, target * 64, 72, 72) == 0) return;
+        const int target = colorGlyphTarget();
 
-        /* Some builds refuse arbitrary sizes; fall back to the nearest strike. */
+        /*
+         * Prefer the smallest strike that is at least the target, so the
+         * resampling in storeColorBitmap() is always a downscale -- enlarging a
+         * bitmap emoji looks soft and blocky, shrinking one does not. Falling
+         * back to the largest available when every strike is smaller.
+         */
         if (face->num_fixed_sizes > 0) {
-            int best = 0;
-            int bestDelta = std::numeric_limits<int>::max();
+            int best = -1;
+            int bestSize = 0;
             for (int i = 0; i < face->num_fixed_sizes; ++i) {
-                const int delta = std::abs(
-                    static_cast<int>(face->available_sizes[i].height) - target);
-                if (delta < bestDelta) { bestDelta = delta; best = i; }
+                /*
+                 * `y_ppem`, not `height`. FT_Bitmap_Size::height is the strike's
+                 * *line* height -- for Apple Color Emoji the strikes report 26,
+                 * 34, 42, 52 -- while the glyph a strike actually renders is its
+                 * em size: 20, 26, 32, 40. Comparing the target against the line
+                 * height picked a strike one step too small every time, which is
+                 * why the emoji stopped growing at 20 px however large the font
+                 * got.
+                 */
+                const int size = static_cast<int>(face->available_sizes[i].y_ppem >> 6);
+                const bool betterFit = (best < 0)
+                                    || (size >= target && (bestSize < target
+                                                           || size < bestSize))
+                                    || (size < target && bestSize < target
+                                        && size > bestSize);
+                if (betterFit) { best = i; bestSize = size; }
             }
-            FT_Select_Size(face, best);
+            if (best >= 0 && FT_Select_Size(face, best) == 0) return;
         }
+
+        /*
+         * A scalable colour font (COLR/CPAL outlines) can simply be asked for the
+         * size, and then no resampling is needed at all.
+         */
+        FT_Set_Char_Size(face, 0, target * 64, 72, 72);
         return;
     }
 
@@ -620,7 +657,7 @@ std::vector<SharedFontChain>& sharedFontChains() {
 
 std::shared_ptr<FontManager> FontManager::shared(const std::vector<std::string>& families,
                                                  const std::vector<std::string>& fallbacks,
-                                                 double pixelSize) {
+                                                 double pixelSize, double emojiScale) {
     if (pixelSize <= 0.0) return nullptr;
 
     auto& chains = sharedFontChains();
@@ -633,7 +670,8 @@ std::shared_ptr<FontManager> FontManager::shared(const std::vector<std::string>&
     /* The common case: another pane already wants exactly this. */
     for (const SharedFontChain& chain : chains) {
         if (sameRequest(chain)
-            && std::abs(chain.manager->pixelSize() - pixelSize) < 0.01) {
+            && std::abs(chain.manager->pixelSize() - pixelSize) < 0.01
+            && std::abs(chain.manager->emojiScale() - emojiScale) < 0.001) {
             return chain.manager;
         }
     }
@@ -647,12 +685,15 @@ std::shared_ptr<FontManager> FontManager::shared(const std::vector<std::string>&
     for (SharedFontChain& chain : chains) {
         if (sameRequest(chain) && chain.manager.use_count() == 1
             && chain.manager->setPixelSize(pixelSize)) {
+            chain.manager->setEmojiScale(emojiScale);
             return chain.manager;
         }
     }
 
     auto manager = std::make_shared<FontManager>();
     manager->setFallbackFamilies(fallbacks);
+    /* Before loadFamily, so the colour faces are sized from it first time. */
+    manager->setEmojiScale(emojiScale);
     if (!manager->loadFamily(families, pixelSize)) return nullptr;
 
     /* Anything left unheld is a chain no pane came back for -- a size stepped
@@ -699,10 +740,15 @@ void FontManager::computeMetrics() {
      * fullwidth glyphs, which would leave a visible gap between columns.
      */
     int advance = 0;
+    int capHeight = 0;
     for (const char32_t probe : {U'M', U'0', U'x'}) {
         const FT_UInt index = FT_Get_Char_Index(face, probe);
         if (index != 0 && FT_Load_Glyph(face, index, FT_LOAD_NO_BITMAP) == 0) {
             advance = std::max(advance, fixed26_6ToPixelsCeil(face->glyph->advance.x));
+            /* `M` is the capital; the other two are only here for the advance. */
+            if (probe == U'M') {
+                capHeight = fixed26_6ToPixelsCeil(face->glyph->metrics.height);
+            }
         }
     }
     if (advance <= 0) {
@@ -734,6 +780,46 @@ void FontManager::computeMetrics() {
     metrics_.underlinePosition = std::min(metrics_.underlinePosition,
                                           std::max(1, metrics_.descender - 1));
     metrics_.strikethroughPosition = std::max(1, metrics_.ascender / 3);
+
+    /* Fall back to a proportion of the ascender for a font with no `M` -- a
+     * symbol-only face, which cannot be the primary anyway, but the metric has
+     * to be something usable. */
+    metrics_.capHeight = capHeight > 0
+                             ? capHeight
+                             : std::max(1, metrics_.ascender * 3 / 4);
+}
+
+int FontManager::colorGlyphTarget() const {
+    if (!metrics_.isValid()) {
+        return std::max(1, static_cast<int>(std::lround(pixelSize_)));
+    }
+
+    /*
+     * As tall as `emojiScale_` capitals, and then bounded by the cells the glyph
+     * is allowed: two columns wide for emoji presentation, one row tall.
+     *
+     * That bound is what makes overlap impossible rather than merely unlikely,
+     * and it is the cell rather than the ascender because colour glyphs are
+     * centred in their cell rather than placed on the baseline -- so the whole
+     * row height is genuinely available. The ascender only mattered while the
+     * font's own bearing decided the position.
+     */
+    const int wanted = static_cast<int>(std::lround(metrics_.capHeight * emojiScale_));
+    return std::max(1, std::min({wanted, 2 * metrics_.cellWidth, metrics_.cellHeight}));
+}
+
+void FontManager::setEmojiScale(double scale) {
+    /* Clamped rather than trusted: a zero would make every emoji vanish and a
+     * large value would put them back outside their cell. */
+    const double clamped = std::clamp(scale, 0.3, 1.5);
+    if (std::abs(clamped - emojiScale_) < 0.001) return;
+
+    emojiScale_ = clamped;
+    /* Colour faces are sized from this, so they have to be re-requested. */
+    applyPixelSize(primary_);
+    for (const auto& fallback : fallbacks_) {
+        applyPixelSize(*fallback);
+    }
 }
 
 /* ------------------------------------------------------ fallback chain */
@@ -959,6 +1045,77 @@ std::string FontManager::familyForCodepoint(char32_t codepoint, FontStyle,
 
 /* ------------------------------------------------------- rasterization */
 
+void FontManager::storeColorBitmap(const FT_Bitmap& bitmap, int targetWidth,
+                                   int targetHeight, GlyphBitmap& out) {
+    const int sourceWidth = static_cast<int>(bitmap.width);
+    const int sourceHeight = static_cast<int>(bitmap.rows);
+    if (sourceWidth <= 0 || sourceHeight <= 0 || targetWidth <= 0 || targetHeight <= 0) {
+        out.pixels.clear();
+        out.width = 0;
+        out.height = 0;
+        return;
+    }
+
+    out.width = targetWidth;
+    out.height = targetHeight;
+    out.pixels.resize(static_cast<size_t>(targetWidth) * targetHeight * 4);
+
+    /*
+     * A box filter, averaging every source pixel that falls in each destination
+     * pixel. The averaging is done on the *premultiplied* values FreeType hands
+     * back and the un-premultiplication happens once at the end, which is the
+     * part that matters: averaging straight-alpha colour across a transparent
+     * edge pulls in the colour of pixels that are not there, and an emoji's
+     * outline would pick up a halo of whatever the glyph's interior happens to
+     * be. Premultiplied averaging weights each contribution by its own coverage,
+     * which is what makes the edges come out clean.
+     *
+     * When the sizes match this degenerates to a straight copy of one source
+     * pixel per destination pixel, so the common case costs nothing extra.
+     */
+    for (int y = 0; y < targetHeight; ++y) {
+        const int y0 = y * sourceHeight / targetHeight;
+        const int y1 = std::max(y0 + 1, (y + 1) * sourceHeight / targetHeight);
+
+        uint8_t* dst = out.pixels.data() + static_cast<size_t>(y) * targetWidth * 4;
+        for (int x = 0; x < targetWidth; ++x) {
+            const int x0 = x * sourceWidth / targetWidth;
+            const int x1 = std::max(x0 + 1, (x + 1) * sourceWidth / targetWidth);
+
+            uint32_t sumB = 0, sumG = 0, sumR = 0, sumA = 0, count = 0;
+            for (int sy = y0; sy < y1; ++sy) {
+                const unsigned char* row =
+                    bitmap.buffer + static_cast<ptrdiff_t>(sy) * bitmap.pitch;
+                for (int sx = x0; sx < x1; ++sx) {
+                    sumB += row[sx * 4 + 0];
+                    sumG += row[sx * 4 + 1];
+                    sumR += row[sx * 4 + 2];
+                    sumA += row[sx * 4 + 3];
+                    ++count;
+                }
+            }
+            if (count == 0) count = 1;
+
+            /* Still premultiplied at this point. */
+            const uint32_t b = sumB / count;
+            const uint32_t g = sumG / count;
+            const uint32_t r = sumR / count;
+            const uint32_t a = sumA / count;
+
+            /* Straight RGBA out, so colour and coverage glyphs share one blend
+             * mode in the shader. */
+            if (a == 0) {
+                dst[x * 4 + 0] = dst[x * 4 + 1] = dst[x * 4 + 2] = dst[x * 4 + 3] = 0;
+            } else {
+                dst[x * 4 + 0] = static_cast<uint8_t>(std::min(255u, r * 255 / a));
+                dst[x * 4 + 1] = static_cast<uint8_t>(std::min(255u, g * 255 / a));
+                dst[x * 4 + 2] = static_cast<uint8_t>(std::min(255u, b * 255 / a));
+                dst[x * 4 + 3] = static_cast<uint8_t>(a);
+            }
+        }
+    }
+}
+
 bool FontManager::rasterizeFrom(const FaceSet& faces, FontStyle style,
                                 FT_UInt glyphIndex, GlyphBitmap& out) const {
     FT_Face face = faces.faceFor(style);
@@ -1010,31 +1167,22 @@ bool FontManager::rasterizeFrom(const FaceSet& faces, FontStyle style,
     const size_t pixelCount = static_cast<size_t>(out.width) * static_cast<size_t>(out.height);
 
     if (out.isColor) {
-        out.pixels.resize(pixelCount * 4);
-        for (int row = 0; row < out.height; ++row) {
-            const unsigned char* src =
-                bitmap.buffer + static_cast<ptrdiff_t>(row) * bitmap.pitch;
-            uint8_t* dst = out.pixels.data() + static_cast<size_t>(row) * out.width * 4;
-            for (int x = 0; x < out.width; ++x) {
-                /*
-                 * FreeType gives premultiplied BGRA. Undo the premultiplication
-                 * and swap to RGBA so colour and coverage glyphs can share one
-                 * straight-alpha blend mode.
-                 */
-                const uint8_t b = src[x * 4 + 0];
-                const uint8_t g = src[x * 4 + 1];
-                const uint8_t r = src[x * 4 + 2];
-                const uint8_t a = src[x * 4 + 3];
-                if (a == 0) {
-                    dst[x * 4 + 0] = dst[x * 4 + 1] = dst[x * 4 + 2] = dst[x * 4 + 3] = 0;
-                } else {
-                    dst[x * 4 + 0] = static_cast<uint8_t>(std::min(255, r * 255 / a));
-                    dst[x * 4 + 1] = static_cast<uint8_t>(std::min(255, g * 255 / a));
-                    dst[x * 4 + 2] = static_cast<uint8_t>(std::min(255, b * 255 / a));
-                    dst[x * 4 + 3] = a;
-                }
-            }
+        /*
+         * Fit the glyph to the box it is allowed, preserving its aspect ratio.
+         * Whatever strike the font handed back, what reaches the atlas is the
+         * size the layout asked for -- see storeColorBitmap().
+         */
+        const int target = colorGlyphTarget();
+        int targetWidth = out.width;
+        int targetHeight = out.height;
+        if (out.height > target || out.width > 2 * target) {
+            const double scale = std::min(static_cast<double>(target) / out.height,
+                                          static_cast<double>(2 * target) / out.width);
+            targetWidth = std::max(1, static_cast<int>(std::lround(out.width * scale)));
+            targetHeight = std::max(1, static_cast<int>(std::lround(out.height * scale)));
         }
+
+        storeColorBitmap(bitmap, targetWidth, targetHeight, out);
         return true;
     }
 

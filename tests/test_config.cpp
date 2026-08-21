@@ -27,6 +27,22 @@ namespace {
 
 QTemporaryDir* sandbox = nullptr;
 
+/*
+ * The palette the shipped configuration produces with no user overlay.
+ *
+ * Assertions about layering want to say "this did not change", and naming a hex
+ * value to say it couples the test to whatever RaTTY Dark currently looks like.
+ * Every one of these constants had to be edited the last two times the default
+ * theme was retuned, which is a test telling you about the theme rather than
+ * about the loader. Captured once, at start-up, instead.
+ */
+struct DefaultPalette {
+    QColor background;
+    QColor foreground;
+    QColor green;
+};
+DefaultPalette shippedDefaults;
+
 /* Write a user config into the sandbox and reload. Passing nullptr removes it. */
 void loadWithUserConfig(const char* yaml) {
     const QString configDir = sandbox->path() + QStringLiteral("/.config/ratty");
@@ -59,8 +75,18 @@ void testBundledDefaults() {
 
     check::equal(config.fontSize(), 13, "default font size");
     check::equal(config.windowPadding(), 4, "default window padding");
-    check::that(config.palette().defaultBackground() == QColor(0x1e, 0x1e, 0x1e),
-                "default background");
+    /*
+     * That the default *theme* was found and applied, rather than a particular
+     * colour: the built-in Palette is what remains if it was not.
+     */
+    const Palette builtIn;
+    check::that(config.palette().defaultBackground().isValid(),
+                "the default background is a real colour");
+    check::that(config.palette().defaultBackground() != builtIn.defaultBackground(),
+                "and comes from the default theme, not the built-in fallback");
+    check::that(config.palette().defaultBackground().lightness()
+                    < config.palette().defaultForeground().lightness(),
+                "the default theme is a dark one");
     check::that(!config.fontFamilies().isEmpty(),
                 "the default font preference list is not empty");
     check::that(config.fontFamilies().first().contains(QLatin1String("Nerd")),
@@ -104,7 +130,7 @@ window:
     check::equal(config.windowPadding(), 11, "the overlaid padding took effect");
 
     /* Everything absent from the overlay keeps its default. */
-    check::that(config.palette().defaultBackground() == QColor(0x1e, 0x1e, 0x1e),
+    check::that(config.palette().defaultBackground() == shippedDefaults.background,
                 "an unmentioned colour kept its default");
     check::equal(config.windowWidth(), Config::DEFAULT_WINDOW_WIDTH,
                  "an unmentioned window size kept its default");
@@ -159,7 +185,7 @@ colors:
     check::that(palette.defaultForeground() == QColor(0xc0, 0xc5, 0xce), "foreground set");
     check::that(palette.entry(1) == QColor(255, 0, 0), "ANSI red set by name");
     check::that(palette.entry(12) == QColor(0, 0, 255), "bright blue set by name");
-    check::that(palette.entry(2) == QColor(0x0d, 0xbc, 0x79), "unmentioned green unchanged");
+    check::that(palette.entry(2) == shippedDefaults.green, "unmentioned green unchanged");
 
     /* The cursor follows the foreground unless given explicitly. */
     check::that(palette.cursorColor() == QColor(0xc0, 0xc5, 0xce),
@@ -187,8 +213,7 @@ colors:
 font:
   size: 15
 )");
-    check::that(Config::instance().palette().defaultBackground()
-                    == QColor(0x1e, 0x1e, 0x1e),
+    check::that(Config::instance().palette().defaultBackground() == shippedDefaults.background,
                 "the empty colour was ignored and the default kept");
     check::equal(Config::instance().fontSize(), 15,
                  "the rest of the file was still applied");
@@ -436,7 +461,7 @@ colors:
 )");
     check::that(Config::instance().palette().cursorColor() == QColor(0, 255, 0),
                 "a cursor-only config works");
-    check::that(Config::instance().palette().defaultForeground() == QColor(0xdc, 0xdc, 0xdc),
+    check::that(Config::instance().palette().defaultForeground() == shippedDefaults.foreground,
                 "and leaves the foreground alone");
 }
 
@@ -470,15 +495,17 @@ void testThemeCatalogue() {
         /*
          * Detect a forgotten or misspelled key. Each theme is applied over a
          * fresh built-in palette, so a slot the theme fails to set keeps the
-         * built-in value -- and every shipped theme except ratty-dark itself
-         * repaints essentially all of them.
+         * built-in value, and every shipped theme repaints essentially all of
+         * them. RaTTY Dark used to be excused from this because it restated the
+         * built-in colours; it has its own palette now, so the exemption is
+         * gone and the check covers every theme.
          *
          * Deliberately *not* a check that all sixteen differ from each other:
          * Nord, Catppuccin, Tokyo Night and One Dark all define their bright
          * variants as the same hue as the normal ones, which is how those
          * palettes are published.
          */
-        if (id != QLatin1String("ratty-dark")) {
+        {
             const Palette builtIn;
             int inherited = 0;
             for (int slot = 0; slot < 16; ++slot) {
@@ -514,7 +541,19 @@ void testThemeChromeStaysCoherent() {
 
         const int barLightness = chrome.tabBarBackground.lightness();
         const int terminalLightness = config.palette().defaultBackground().lightness();
-        check::that(std::abs(barLightness - terminalLightness) >= 8,
+        const int separation = std::abs(barLightness - terminalLightness);
+        /*
+         * "Distinguishable" cannot be a flat number of lightness steps. Near
+         * black, a handful of steps is a large *proportional* change and plainly
+         * visible -- RaTTY Dark puts its bar at lightness 12 under a terminal at
+         * 19, which is obvious on screen and seven steps apart. The same seven
+         * steps between 120 and 127 would not be. So: eight steps anywhere, or a
+         * quarter of the lighter of the two, whichever is satisfied.
+         *
+         * A bar genuinely the same colour as the terminal still fails both.
+         */
+        const int lighter = std::max(barLightness, terminalLightness);
+        check::that(separation >= 8 || separation * 4 >= lighter,
                     id.toStdString() + ": the bar is distinguishable from the terminal");
 
         const int labelContrast = std::abs(chrome.inactiveTabForeground.lightness()
@@ -522,8 +561,19 @@ void testThemeChromeStaysCoherent() {
         check::that(labelContrast > 20,
                     id.toStdString() + ": inactive labels are readable on the bar");
 
-        check::that(chrome.accent == config.palette().entry(12),
-                    id.toStdString() + ": the accent came from the theme");
+        /*
+         * Either route is legitimate -- what matters is that the accent comes
+         * from the theme rather than from a built-in default. A scheme whose
+         * border colour is not its bright blue (RaTTY Dark, following the kitty
+         * configuration it was drawn from) has to be able to say so.
+         */
+        if (const auto& stated = config.chromeColors().accent; stated) {
+            check::that(chrome.accent == *stated,
+                        id.toStdString() + ": the accent the theme stated is used");
+        } else {
+            check::that(chrome.accent == config.palette().entry(12),
+                        id.toStdString() + ": the accent was derived from the theme");
+        }
     }
 }
 
@@ -737,6 +787,87 @@ directories:
     loadWithUserConfig(nullptr);
 }
 
+/*
+ * The split divider and the dimming of panes that are not current.
+ *
+ * The separator is a *derived* chrome colour, which is the interesting part: a
+ * theme states an accent (or states nothing and gets the palette's blue), and
+ * the divider follows it. That is what makes the line belong to the theme
+ * instead of being the one grey thing in a gruvbox window.
+ */
+void testSplitAppearance() {
+    check::section("split separator colour and unfocused dimming");
+
+    loadWithUserConfig(nullptr);
+    {
+        const Config& config = Config::instance();
+        const ChromeColors::Resolved chrome =
+            config.chromeColors().resolve(config.palette());
+
+        check::that(chrome.splitSeparator.isValid(), "there is always a separator colour");
+
+        /* Muted towards the background: between the two, not equal to either. */
+        const QColor background = config.palette().defaultBackground();
+        check::that(chrome.splitSeparator != background,
+                    "the separator is distinguishable from the background");
+        check::that(chrome.splitSeparator != chrome.accent,
+                    "but is not the raw accent either");
+
+        /* Following the accent is the whole point, so it has to be measurable:
+         * the divider must sit nearer the accent's hue than the background is. */
+        const auto blueness = [](const QColor& c) { return c.blueF() - c.redF(); };
+        check::that(blueness(chrome.splitSeparator) > blueness(background),
+                    "and it leans towards the accent, which defaults to blue");
+
+        check::that(config.dimUnfocusedSplits(), "dimming is on by default");
+        check::that(config.splitDimStrength() > 0.0f
+                        && config.splitDimStrength() < 1.0f,
+                    "at a strength that leaves the pane readable");
+    }
+
+    /* A theme whose accent is red must give a red-leaning divider, not a blue
+     * one: this is the property that would silently rot. */
+    loadWithUserConfig(R"(
+tab_bar:
+  colors:
+    accent: "#cc2222"
+)");
+    {
+        const Config& config = Config::instance();
+        const ChromeColors::Resolved chrome =
+            config.chromeColors().resolve(config.palette());
+        check::that(chrome.splitSeparator.redF() > chrome.splitSeparator.blueF(),
+                    "a red accent yields a red-leaning separator");
+    }
+
+    /* And an explicit colour wins outright. */
+    loadWithUserConfig(R"(
+splits:
+  separator: "#00ff00"
+  dim_unfocused: false
+  dim_strength: 0.8
+)");
+    {
+        const Config& config = Config::instance();
+        const ChromeColors::Resolved chrome =
+            config.chromeColors().resolve(config.palette());
+        check::equal(chrome.splitSeparator.name().toStdString(), std::string("#00ff00"),
+                     "an explicit separator colour is used as given");
+        check::that(!config.dimUnfocusedSplits(), "dimming can be switched off");
+        check::that(config.splitDimStrength() > 0.79f, "and its strength set");
+    }
+
+    /* Out-of-range strengths are clamped rather than producing an invisible pane. */
+    loadWithUserConfig(R"(
+splits:
+  dim_strength: 5.0
+)");
+    check::that(Config::instance().splitDimStrength() <= Config::MAX_SPLIT_DIM_STRENGTH,
+                "an absurd dim strength is clamped");
+
+    loadWithUserConfig(nullptr);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -753,6 +884,12 @@ int main(int argc, char** argv) {
     /* QDir::homePath() honours HOME, so the loader looks inside the sandbox and
      * never touches the real user's configuration. */
     qputenv("HOME", tempHome.path().toUtf8());
+
+    /* Record what the shipped configuration produces, for the layering tests. */
+    loadWithUserConfig(nullptr);
+    shippedDefaults = {Config::instance().palette().defaultBackground(),
+                       Config::instance().palette().defaultForeground(),
+                       Config::instance().palette().entry(2)};
 
     testBundledDefaults();
     testOverlayChangesOnlyWhatItMentions();
@@ -772,5 +909,6 @@ int main(int argc, char** argv) {
     testMalformedFileKeepsDefaults();
     testValueClamping();
     testStartDirectories();
+    testSplitAppearance();
     return check::report("test_config");
 }

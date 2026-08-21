@@ -3,10 +3,16 @@
  */
 
 #include "config/config.h"
+#include "platform/platform.h"
 #include "ui/main_window.h"
 #include <QApplication>
 #include <QIcon>
 #include <QSurfaceFormat>
+
+/* Defined by the build from the single declaration in CMakeLists.txt. */
+#ifndef RATTY_VERSION
+#define RATTY_VERSION "0.0.0-unknown"
+#endif
 
 int main(int argc, char* argv[]) {
     /*
@@ -56,11 +62,18 @@ int main(int argc, char* argv[]) {
      */
     QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts, true);
 
+    /*
+     * Before QApplication, because AppKit reads its defaults as it starts up.
+     * This is what makes a held key repeat on macOS instead of offering a menu
+     * of accented variants; see src/platform/platform.h.
+     */
+    platform::enableKeyRepeat();
+
     QApplication app(argc, argv);
 
     QCoreApplication::setOrganizationName(QStringLiteral("Ratty"));
     QCoreApplication::setApplicationName(QStringLiteral("Ratty"));
-    QCoreApplication::setApplicationVersion(QStringLiteral("0.2.0"));
+    QCoreApplication::setApplicationVersion(QStringLiteral(RATTY_VERSION));
 
     /* From the resource bundle, not a path relative to the working directory. */
     app.setWindowIcon(QIcon(QStringLiteral(":/icons/ratty-logo.png")));

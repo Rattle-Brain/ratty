@@ -52,6 +52,12 @@ struct FontMetrics {
     int underlinePosition = 0;      // pixels below the baseline
     int underlineThickness = 1;
     int strikethroughPosition = 0;  // pixels above the baseline
+    /*
+     * Height of a capital letter. Not used for layout -- it is what colour
+     * emoji are sized against, so that an icon sits among the uppercase letters
+     * rather than filling the whole line box.
+     */
+    int capHeight = 0;
 
     bool isValid() const { return cellWidth > 0 && cellHeight > 0; }
 };
@@ -104,6 +110,21 @@ struct FontFile {
 
 class FontManager {
 public:
+    /*
+     * A quarter again the height of a capital.
+     *
+     * Above parity with an `M` on purpose. An emoji is a round, busy shape and a
+     * capital is a flat one, so matching their heights makes the emoji look
+     * *smaller* than the text rather than equal to it -- the same optical
+     * correction a typeface makes when it draws `O` slightly taller than `H`.
+     * Sized at 0.9 the emoji were legibly too small, and worst at small font
+     * sizes where the cell leaves least room to begin with.
+     *
+     * The value is bounded at use by the cell the glyph occupies, so raising it
+     * cannot reintroduce the overlap this replaced -- see colorGlyphTarget().
+     */
+    static constexpr double DefaultEmojiScale = 1.25;
+
     FontManager();
     ~FontManager();
 
@@ -131,6 +152,22 @@ public:
     double pixelSize() const { return pixelSize_; }
 
     /*
+     * How tall a colour emoji is drawn, as a multiple of the primary font's
+     * capital height. 1.0 makes an emoji exactly as tall as an `M`.
+     *
+     * This exists as a dial because it is purely a matter of taste, and because
+     * the alternative -- letting the emoji font decide -- does not work: a colour
+     * font ships a handful of fixed bitmap strikes (Apple Color Emoji has 20, 26
+     * and 40 pixels among others) and FreeType answers a size request with the
+     * nearest one. That is how a 13 px cell ended up with a 20 px emoji in it,
+     * and why the size used to hop about as the font size changed instead of
+     * following it. Whatever strike comes back is now resampled to the size
+     * asked for here.
+     */
+    void setEmojiScale(double scale);
+    double emojiScale() const { return emojiScale_; }
+
+    /*
      * A ready-made FontManager for this exact font request, shared with every
      * other caller that asks for the same thing.
      *
@@ -147,7 +184,8 @@ public:
      */
     static std::shared_ptr<FontManager> shared(const std::vector<std::string>& families,
                                                const std::vector<std::string>& fallbacks,
-                                               double pixelSize);
+                                               double pixelSize,
+                                               double emojiScale);
 
     const FontMetrics& metrics() const { return metrics_; }
     bool isValid() const;
@@ -241,6 +279,18 @@ private:
 
     bool rasterizeFrom(const FaceSet& faces, FontStyle style, FT_UInt glyphIndex,
                        GlyphBitmap& out) const;
+    /* The box a colour glyph has to fit: as tall as emojiScale() capitals, and
+     * never wider than the two cells emoji presentation occupies. */
+    int colorGlyphTarget() const;
+    /*
+     * Resample a colour bitmap down to `targetWidth` x `targetHeight`, in
+     * premultiplied space, and leave straight RGBA in `out`. Done here rather
+     * than by drawing a smaller quad because the atlas is sampled 1:1 with
+     * GL_NEAREST -- scaling at draw time would alias the bitmap instead of
+     * resizing it.
+     */
+    static void storeColorBitmap(const FT_Bitmap& bitmap, int targetWidth, int targetHeight,
+                                 GlyphBitmap& out);
     /* Cache key combining a code point with the presentation asked for. */
     static uint64_t resolutionKey(char32_t codepoint, GlyphPresentation presentation) {
         return (static_cast<uint64_t>(codepoint) << 2)
@@ -262,6 +312,7 @@ private:
 
     std::string familyName_;
     double pixelSize_ = 0.0;
+    double emojiScale_ = DefaultEmojiScale;
     FontMetrics metrics_;
 };
 

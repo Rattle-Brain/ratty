@@ -59,5 +59,19 @@ ChromeColors::Resolved ChromeColors::resolve(const Palette& palette) const {
      */
     resolved.accent = accent.value_or(palette.entry(12));
 
+    /*
+     * The line between panes is the accent muted back towards the terminal
+     * background, so it belongs to the theme without competing with the text:
+     * a blue theme gets a blue divider, a green one a green divider. Blending
+     * rather than using the accent directly matters on both extremes -- the raw
+     * accent is a bright stripe on a dark theme, and on a light theme it is the
+     * only saturated thing on screen.
+     *
+     * It replaces a hard-coded #3a3a3a, which looked deliberate on the default
+     * dark theme and looked like a mistake on every other one.
+     */
+    resolved.splitSeparator =
+        splitSeparator.value_or(blend(background, resolved.accent, 0.45));
+
     return resolved;
 }

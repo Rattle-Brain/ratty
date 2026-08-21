@@ -219,7 +219,8 @@ bool TerminalWidget::applyFontScale() {
      */
     const double pixelSize = config.fontSize() * (dpi / 72.0) * scale;
 
-    if (!renderer_->setFont(config.fontFamilies(), config.fontFallbacks(), pixelSize)) {
+    if (!renderer_->setFont(config.fontFamilies(), config.fontFallbacks(), pixelSize,
+                            config.emojiScale())) {
         return false;
     }
 
@@ -237,6 +238,29 @@ void TerminalWidget::reloadFont() {
         updateGeometryForFont();
     }
     doneCurrent();
+    update();
+}
+
+void TerminalWidget::applyConfiguration() {
+    const Config& config = Config::instance();
+
+    if (session_) {
+        session_->setScrollbackLines(config.scrollbackLines());
+        session_->setAlternateScroll(config.alternateScroll());
+        session_->setBasePalette(config.palette());
+    }
+
+    /*
+     * reloadFont() covers the font *and* the geometry that depends on it, which
+     * includes the window padding: a changed padding moves the grid origin and
+     * can change the row and column count, so the session has to be resized to
+     * match. Cheap when nothing changed -- an identical font request hands back
+     * the same shared chain and the glyph atlas is left alone.
+     */
+    reloadFont();
+
+    /* The cursor's style and whether it blinks are both settings. */
+    restartBlink();
     update();
 }
 
@@ -374,6 +398,23 @@ void TerminalWidget::paintGL() {
         gridRenderer_.paint(*renderer_, session_->screen(), palette, layout_, options);
     }
 
+    /*
+     * A pane that is not the current one fades back, so which one the keyboard
+     * is talking to is obvious without hunting for the cursor.
+     *
+     * Done as one translucent quad in the background colour over the finished
+     * frame rather than by dimming the colours themselves: it costs six vertices
+     * instead of a second pass through the palette for every cell, it dims the
+     * cursor and the decorations along with the text, and -- because it fades
+     * *towards the background* rather than towards black -- it reads correctly on
+     * a light theme as well as a dark one.
+     */
+    if (paneDimmed_ && Config::instance().dimUnfocusedSplits()) {
+        QColor veil = background;
+        veil.setAlphaF(Config::instance().splitDimStrength());
+        renderer_->fillOverlay(0, 0, framebufferWidth(), framebufferHeight(), veil);
+    }
+
     renderer_->endFrame();
 
     if (renderer_->needsRepaint()) {
@@ -434,6 +475,12 @@ void TerminalWidget::restartBlink() {
 void TerminalWidget::setPaneFocused(bool focused) {
     if (paneFocused_ == focused) return;
     paneFocused_ = focused;
+    update();
+}
+
+void TerminalWidget::setPaneDimmed(bool dimmed) {
+    if (paneDimmed_ == dimmed) return;
+    paneDimmed_ = dimmed;
     update();
 }
 

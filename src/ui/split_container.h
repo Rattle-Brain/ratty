@@ -93,6 +93,12 @@ public:
     SplitContainer* child2() const { return child2_; }
     TerminalWidget* terminal() const { return terminal_; }
 
+    /*
+     * Push a re-read configuration through this subtree: the divider's colour is
+     * this node's business, everything else is the panes'.
+     */
+    void applyConfiguration();
+
     /* Applies `fn` to every leaf in the subtree. */
     template <typename Fn>
     void forEachLeaf(Fn&& fn) {

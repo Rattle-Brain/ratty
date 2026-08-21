@@ -23,6 +23,7 @@ Start with the [overview](overview.md); the rest can be read in any order.
 | Document | What is in it |
 |---|---|
 | [Configuration](configuration.md) | The YAML format, how layering works, every setting |
+| [Default configuration](default-config.md) | What ships in `default_config.yaml`, and why each default is what it is |
 | [Keybindings](keybindings.md) | The two platform sets, key naming, layout tolerance |
 | [Platform notes](platform-notes.md) | Where macOS, Linux and Windows differ — and where a platform lies to you |
 | [Building and testing](building.md) | Dependencies, the build, and how to run the suites |

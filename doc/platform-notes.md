@@ -61,6 +61,43 @@ same as "will draw something". See
 macOS reserves Command+H for "Hide application". A Qt app without a menu bar may
 or may not receive it. If `⌘H` (previous tab) does nothing for you, rebind it.
 
+### A held key offers accents instead of repeating
+
+macOS has two readings of "the user is holding a key down": repeat the character,
+or show a menu of accented variants. The second — "press and hold" — wins for any
+view that takes part in the text input system, and `TerminalWidget` has to take
+part, because that is the only way a dead-key `~` or an accent ever arrives (see
+`Qt::WA_InputMethodEnabled` in its constructor).
+
+The cost was key repeat: holding `j` produced one `j`. A terminal wants repeat
+unambiguously — nothing in a shell or a TUI is served by an accent picker, and the
+diacritics people actually type on a Spanish or French layout come from *dead
+keys*, which are the input method's business and are unaffected. The two
+mechanisms are independent.
+
+Qt exposes no way to say this, so `src/platform/platform_mac.mm` says it to
+AppKit directly, before `QApplication` exists:
+
+```objc
+[[NSUserDefaults standardUserDefaults] registerDefaults:@{
+    @"ApplePressAndHoldEnabled" : @NO
+}];
+```
+
+`registerDefaults:` rather than `setObject:forKey:` on purpose. It writes into
+the registration domain, which lives only in this process: no file is created,
+no other application is affected, and a user who has deliberately run
+`defaults write -g ApplePressAndHoldEnabled -bool true` still has the last word,
+because the global domain outranks the registration one. If you are that user and
+you want repeat in RaTTY as well, clear the global value:
+
+```
+defaults delete -g ApplePressAndHoldEnabled
+```
+
+This is the only Objective-C++ in the project, and the only reason for
+`src/platform/` to exist at all.
+
 ## Linux and the BSDs
 
 - The Super key is `Qt::MetaModifier`, the same modifier `cmd` maps to — which is

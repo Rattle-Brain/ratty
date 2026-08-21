@@ -1,6 +1,6 @@
 # RaTTY — state of the art and roadmap
 
-Last updated for **v0.2.0**, plus the scrollback and mouse work that followed it.
+Last updated for **v0.3.0**.
 
 This file tracks what works, what is broken, and what comes next. Items marked
 🔍 have a design note in
@@ -16,8 +16,9 @@ on HiDPI displays, the VT parser handles what a modern shell and most TUI
 applications emit, and the terminal model is separated cleanly enough from Qt and
 OpenGL to be tested headlessly.
 
-Scrollback and mouse reporting landed after v0.2.0. The one thing a user still
-notices as missing is **text selection**.
+Scrollback and mouse reporting landed in v0.3.0, along with configurable start
+directories, a configuration reload that needs no restart, and per-pane dimming.
+The one thing a user still notices as missing is **text selection**.
 
 ```
 Foundations ████████████████████ done
@@ -150,7 +151,8 @@ Polish       ██████████████░░░░░░ scroll
       default keys for it, and editing the inactive keybinding set is reported
 - [x] Full 256-colour palette, 16 base colours overridable by name
 - [x] `scrollback: lines / multiplier` and `mouse: alternate_scroll` settings
-- [x] Ten built-in colour themes as YAML resources (`ratty-dark`, `nord`,
+- [x] Eleven built-in colour themes as YAML resources (`ratty-dark`,
+      `ratty-light`, `nord`,
       `dracula`, `gruvbox-dark`/`-light`, `solarized-dark`/`-light`,
       `tokyo-night`, `catppuccin-mocha`, `one-dark`), selected by `theme:`
 - [x] Colours staged per layer and merged built-in -> theme -> user, so a theme

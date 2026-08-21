@@ -63,7 +63,14 @@ keybindings:
   # --- window -------------------------------------------------------------
   super+q: quit
   super+ctrl+f: fullscreen
+  super+return: fullscreen
+  super+enter: fullscreen
   f11: fullscreen
+
+  # Re-read ~/.config/ratty/config.yaml and apply it to every open pane, so a
+  # theme or font change can be seen without restarting.
+  super+f5: reload_config
+  super+shift+r: reload_config
 
   # --- scrollback ---------------------------------------------------------
   super+k: clear_scrollback

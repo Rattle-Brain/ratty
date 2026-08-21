@@ -1,5 +1,9 @@
 # Configuration
 
+The shipped defaults live in `src/config/default_config.yaml`, which carries no
+comments on purpose — an annotated walkthrough of it, including the keys it does
+not mention, is in [default-config.md](default-config.md).
+
 
 Settings are **YAML**, loaded in layers, each overriding only the keys it
 contains:
@@ -84,6 +88,11 @@ scrollback:
 mouse:
   alternate_scroll: true
 
+splits:
+  # separator: "#3b8eea"   # unset -> derived from the theme's accent
+  dim_unfocused: true
+  dim_strength: 0.35
+
 directories:
   new_tab: home       # home | cwd | a path
   new_split: cwd
@@ -122,6 +131,23 @@ keybindings:
   `Shift+PageUp`/`PageDown` have nothing to move.
 - `scrollback.multiplier` is how many rows one wheel notch moves. Fractional
   notches from a trackpad accumulate, so a slow drag still scrolls smoothly.
+- `splits.separator` is the colour of the hairline between panes. Left unset it
+  is derived from the theme: the accent colour (itself defaulting to the
+  palette's bright blue, which every theme defines) blended back towards the
+  terminal background, so the divider belongs to the theme without competing
+  with the text. A blue theme gets a blue line, a green one a green line. Themes
+  may set it themselves; a value here wins over the theme's, like every other
+  chrome colour.
+- `splits.dim_unfocused` fades every pane except the one holding the keyboard,
+  which is how you tell at a glance which is which. `splits.dim_strength` is how
+  far, from `0.0` to `0.9`. The fade is towards the terminal background rather
+  than towards black, so it reads correctly on a light theme too, and a tab
+  holding a single pane is never dimmed — there would be nothing to tell apart.
+- `font.emoji_scale` is the height of a colour emoji as a multiple of the primary
+  font's capital height; `1.0` makes one exactly as tall as an `M`. Whatever
+  bitmap strike the emoji font offers is resampled to that size, so emoji track
+  the font size instead of hopping between the sizes the font happens to ship,
+  and can never overflow their cell. Range `0.3` to `1.5`.
 - `directories.new_tab` and `directories.new_split` decide where a newly opened
   pane's shell starts. Each takes one of:
 
