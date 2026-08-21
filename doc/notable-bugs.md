@@ -285,14 +285,17 @@ about never being wrong regardless:
 
 1. `TerminalWidget::event()` handles `QEvent::DevicePixelRatioChange` and
    `QEvent::ScreenChangeInternal`, which is Qt telling us directly.
-2. `fontScaleStale()` names the invariant — the rasterized font matches the
-   ratio, the logical DPI *and* the configured size it was built for. The logical
-   DPI was previously read but not remembered, so a display differing only in DPI
-   was invisible. `resizeGL()` now shares this predicate instead of duplicating
-   part of it.
-3. `paintGL()` checks the same predicate before drawing. A frame is therefore
-   never composed from a font built for a different display, whatever Qt did or
-   did not deliver.
+2. One predicate names the invariant — the rasterized font matches the ratio, the
+   logical DPI *and* the configured size it was built for. The logical DPI was
+   previously read but not remembered, so a display differing only in DPI was
+   invisible. Every path that might notice a change shares that predicate rather
+   than duplicating part of it.
+3. The predicate is checked before drawing, so a frame is never composed from a
+   font built for a different display, whatever Qt did or did not deliver.
+
+*Since the shared canvas, both live in `TerminalCanvas`: the font belongs to the
+window, `refreshFont()` is the predicate, and a change re-lays-out every pane.
+The reasoning is unchanged — only the owner moved.*
 
 Pinned by `tests/test_splits_gl.cpp` (`testFontFollowsItsDisplay`). A second
 monitor cannot be staged in a test, but the recovery mechanism can: moving the
@@ -456,5 +459,80 @@ font sizes and asserts at each that the glyph fits its two cells and its row,
 stays within the ascender, matches the capital-height target to within a pixel,
 and never shrinks as the font grows. A single-size test would have passed two of
 the three broken versions.
+
+## A dimmed pane made the whole window translucent
+
+**Symptom.** Not seen on screen, and that is the point: the readback of a pane
+came out with the right colours and an alpha of **197** instead of 255.
+
+**Cause.** `glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)` blends the
+destination *alpha* along with the colour. Anything translucent drawn over the
+surface therefore pulls the framebuffer's alpha down — and RaTTY draws exactly
+such a thing over every pane that is not the current one, the dim veil. For a
+veil at strength `a` the arithmetic is `a² + (1 − a)`, which for 0.32 is 0.78, or
+197.
+
+This was harmless for as long as panes were `QOpenGLWidget`s: Qt composited the
+result into an opaque backing store and threw the alpha away. Drawing straight
+into a native layer, it is the **window server** that reads that alpha — so a
+dimmed pane would have made the window itself see-through.
+
+**Fix.** `glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO,
+GL_ONE)`. Colour blends as before; destination alpha is left alone.
+
+**Worth generalising.** Moving from a compositor that normalises your output to
+one that does not will expose every place you were sloppy about alpha. The bug
+was years old and completely invisible until the surface changed underneath it.
+
+## Half the window came back blank
+
+**Symptom.** With the shared canvas, panes rendered correctly on screen, but
+`grabFramebuffer()` returned images in which the right-hand pane was a flat
+colour. Only in the tests, and only sometimes.
+
+**Cause.** Two separate mistakes, found in that order.
+
+First, `paintGL()` computed the surface size itself as
+`width() × devicePixelRatio()`. Qt does not promise that: `grabFramebuffer()`
+renders into an offscreen buffer of its own choosing. When the two disagreed the
+panes were laid out for a 1000 px surface and read back from a 2000 px one, so
+everything past the halfway mark was empty. The viewport is now established
+explicitly at the top of every frame.
+
+Second, and more fundamental: `QOpenGLWindow::grabFramebuffer()` is only
+reliable when the window keeps a framebuffer object to render into, and keeping
+one would reinstate the full-window buffer the shared canvas exists to avoid.
+With `NoPartialUpdate` it reads a back buffer whose contents are **undefined
+after a swap** — which is why it came back blank.
+
+**Fix.** `TerminalCanvas::grabPane()` renders a frame and reads it straight back
+with `glReadPixels` before anything is swapped. Exact, and it costs no permanent
+memory.
+
+**Worth generalising.** The tests inspected pixels *only* through the grab path,
+so a grab that set up its own viewport would have hidden a broken on-screen path
+completely. Making `paintGL()` establish the viewport itself removed the
+divergence rather than papering over it.
+
+## A pane with no shell in it
+
+**Symptom.** On a headless Wayland session, every pane came up empty and
+`shellPid()` was −1. Fine on X11, fine on macOS.
+
+**Cause.** Session creation had been moved to the first `renderInto()` call, so
+that the grid handed to the shell would be computed from the pane's real size
+rather than the minimum size it has at `showEvent()` time. That works right up
+until something never paints — and a compositor that does not present the window
+produces no frames at all. No frame, no session, no shell.
+
+**Fix.** `showEvent()` posts the start to the event loop with
+`QTimer::singleShot(0, ...)`. By then the splitter has laid the pane out, so the
+grid is the right one, and it does not depend on a frame ever happening.
+
+**Worth generalising.** "Do it on first paint" is a tempting way to wait for
+layout, and it silently couples liveness to visibility. A zero-timer waits for
+the same thing without that coupling. The earlier symptom of getting this wrong
+was subtler and easy to miss: the shell was told a 5×24 grid for a pane that was
+about to be 34×61.
 
 ---

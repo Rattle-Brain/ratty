@@ -205,8 +205,15 @@ Three pieces, none optional:
 
 ## The mouse
 
-`TerminalWidget` decides, per event, whether the mouse belongs to the
-application or to the terminal:
+**A mouse event does not arrive at the pane directly.** The window's single
+`TerminalCanvas` is a native child window stacked over the panes, so the platform
+delivers to *it*; it hit-tests the widget underneath and forwards. A press
+latches its target until the release, which is what keeps a `QSplitter` divider
+draggable once the pointer leaves it. See
+[one surface per window](rendering.md#one-surface-per-window).
+
+Once the event lands, `TerminalWidget` decides, per event, whether the mouse
+belongs to the application or to the terminal:
 
 ```
 application asked for the mouse (?1000/?1002/?1003)

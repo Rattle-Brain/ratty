@@ -10,6 +10,10 @@ continuations of one logical line, which `Cell` does not carry — and rewrappin
 from the stored cells alone would mangle TUI output that was never a paragraph.
 The same missing information is why there is no scrollback *search* yet.
 
+The rows being stored [compressed](terminal-emulation.md#scrollback) does not
+change this either way: the encoding is lossless and per row, so it neither
+supplies the continuation flag reflow needs nor stands in its way.
+
 **No text selection.** `copySelection()` logs and returns. `Palette` already
 carries a selection colour, `GLRenderer` has an overlay layer, and
 `TerminalWidget` now hit-tests the mouse to a cell and knows when the application

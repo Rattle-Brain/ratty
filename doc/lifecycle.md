@@ -85,44 +85,45 @@ no keybinding in the config file could fire.
 
 ## The OpenGL context lifecycle
 
+There is **one GL context per window**, owned by `TerminalCanvas`, and it is
+created once and never torn down until the window closes. Most of what used to
+be delicate here stopped existing when panes stopped owning surfaces; see
+[one surface per window](rendering.md#one-surface-per-window).
+
 ### `TerminalWidget`
 
-A `QOpenGLWidget` that owns a `GLRenderer`, a `TerminalSession` and a
-`TerminalRenderer`, and does little else: translate events, compute the layout,
-paint. Process management, byte decoding and VT interpretation all live in
-`TerminalSession`; the grid→pixels mapping lives in `TerminalRenderer`.
+A plain `QWidget` that owns a `TerminalSession` and a `TerminalRenderer`, and
+does little else: translate events, compute the layout, describe how to draw
+itself. It has no GL context and no `paintEvent` — the canvas is stacked over it
+and calls `renderInto()` with a viewport. Process management, byte decoding and
+VT interpretation all live in `TerminalSession`; the grid→pixels mapping lives in
+`TerminalRenderer`.
 
 Details worth knowing before editing it:
 
-- **`initializeGL()` can run more than once, and must not rebuild the session.**
-  Reparenting a `QOpenGLWidget` — which is exactly what splitting or closing a
-  pane does — destroys its GL context and creates a new one, so Qt calls
-  `initializeGL()` again. Measured:
-
-  ```
-  [pane] initializeGL #1  ctx=0xca6cc9450
-  --- reparented into a QSplitter ---
-  [pane] initializeGL #2  ctx=0xca6cca7d0
-  ```
-
-  The renderer *must* be rebuilt, because every GL object it owns belonged to the
-  dead context. The `TerminalSession` must *not* be: it owns the pty and the
-  shell, which have nothing to do with any context. Rebuilding it killed the
-  running shell and replaced it with an empty one on every split, which is what
-  made the pane look blank.
-
-  `main()` now sets `Qt::AA_ShareOpenGLContexts`, and Qt skips that teardown
-  entirely when contexts are shared — so in practice the second call above no
-  longer happens. The guard stays, because it is what the invariant rests on and
-  because nothing about it depends on the attribute being set. See
-  [why a split is fast](#why-a-split-is-fast).
-- **GL resources are released from `QOpenGLContext::aboutToBeDestroyed`**, the
-  only moment the outgoing context is still current. Deleting them later would
-  issue GL calls against a context that no longer exists.
-- `resizeGL()` must **not** call `makeCurrent()`/`doneCurrent()`. Qt invokes it
-  with the context already current, and releasing it leaves Qt's own resize
-  handling without one. `reloadFont()`, which is called from outside a paint,
-  does need the pair.
+- **The session must never be rebuilt.** It owns the pty and the shell, and
+  reparenting a pane — which is exactly what splitting or closing one does — must
+  not touch them. This used to be a live hazard: panes were `QOpenGLWidget`s,
+  reparenting destroyed the GL context, Qt called `initializeGL()` again, and the
+  session was rebuilt along with the renderer. That killed the running shell and
+  replaced it with an empty one on every split, which is what made the pane look
+  blank. `ensureSession()` is now idempotent and there is no context to lose, but
+  the invariant is worth keeping stated.
+- **The shell starts on layout, not on paint.** `showEvent()` posts the start to
+  the event loop rather than doing it inline or waiting for a frame. Inline is
+  too early — the splitter has not divided the space yet, so the pane is at its
+  minimum size and the grid handed to the shell is the wrong one (measured: a
+  5×24 grid for a pane that was about to be 34×61). Waiting for a frame is worse:
+  a window a compositor never presents produces no frames, and the terminal ends
+  up with no shell in it at all.
+- **The canvas releases its GL objects with its context current**, in
+  `~TerminalCanvas`. Deleting them later would issue GL calls against a context
+  that no longer exists.
+- **The canvas is not built when the platform has no GL.** The offscreen plugin
+  the non-GL suites run under cannot create a context, and a `QOpenGLWindow`
+  there does not merely draw nothing — it fails inside Qt's own paint machinery.
+  A pane whose window has no canvas simply does not draw, which is the graceful
+  degradation those suites want.
 - The cursor blink timer only runs when the pane has focus *and* blinking is
   enabled. It used to repaint the entire grid twice a second unconditionally.
   Incoming output resets the blink phase so the cursor stays solid while text
@@ -143,7 +144,7 @@ resolution shells out to `fc-match`, once per family per style, and a chain is
 the primary family in four styles, the platform monospace, and six candidate
 emoji families. A four-way split came to **157 subprocess spawns**.
 
-Four things fixed it, in the order they matter:
+Five things fixed it, in the order they matter:
 
 | Change | Where | Effect |
 | --- | --- | --- |
@@ -151,20 +152,24 @@ Four things fixed it, in the order they matter:
 | fontconfig answers memoized for the process | `font_manager.cpp` | 157 spawns → 17, and the 17 are the genuinely distinct questions |
 | `FontManager` instances shared by (families, fallbacks, pixel size) | `FontManager::shared()` | The font chain is built **once** for the whole window; a new pane adopts it |
 | Shader programs shared across the context group | `GLRenderer::acquirePrograms()` | One compile and link per share group instead of per pane |
+| One GL surface for the whole window | `TerminalCanvas` | A new pane brings up no context, no atlas and no buffers, because it has none of its own |
 
 Measured on the same machine and the same configuration: **~450 ms → ~30 ms**.
 
-What is left is Qt and driver cost in bringing up a fresh `QOpenGLContext` —
-about 16 ms of it inside the first `QOpenGLVertexArrayObject::create()` on that
-context. Removing it would mean one context for the whole window rather than one
-per pane, which is a different architecture, not an optimization.
+The last row is what removed the remainder. What used to be left was Qt and
+driver cost in bringing up a fresh `QOpenGLContext` per pane — about 16 ms of it
+inside the first `QOpenGLVertexArrayObject::create()` on that context. That was
+described here as "a different architecture, not an optimization", which was
+true; the architecture changed. A split is now pure widget surgery, and the same
+change is what made a pane cost roughly 1 MB instead of 10.
 
 Two consequences worth remembering when editing:
 
 - A shared `FontManager` must never be resized while anyone else holds it.
   `FontManager::shared()` keys on the pixel size for exactly this reason, and
   only re-scales a chain it can see is unreferenced.
-- The shader programs are held **weakly** by the cache and strongly by each
-  renderer. That is what makes the last renderer to let go the one that deletes
-  them, from `releaseGLResources()`, where a context of the group is current.
+- The shader programs are held **weakly** by the cache and strongly by the
+  renderer. With one renderer per window that is no longer load-bearing for
+  ordering, but it is still what guarantees the programs are deleted while a
+  context of the group is current.
 

@@ -4,9 +4,11 @@
 ```
                      ┌──────────────────────────────────┐
    src/ui/           │ MainWindow                       │  tabs, shortcuts
+                     │   ├─ TerminalCanvas              │  ONE GPU surface
+                     │   │                              │  per window
                      │   └─ SplitContainer (tree)       │  pane layout
-                     │        └─ TerminalWidget         │  QOpenGLWidget
-                     └───────────┬──────────┬───────────┘
+                     │        └─ TerminalWidget         │  QWidget: state and
+                     └───────────┬──────────┬───────────┘  events, never paints
                                  │          │
                  ┌───────────────┘          └──────────────┐
                  ▼                                         ▼
@@ -19,12 +21,20 @@
                 ├─────────────┬────────────┤              ├─────────┬──────────┤
                 │ GlyphAtlas  │FontManager │              │ Screen  │VTParser  │
                 │  texture    │ FreeType   │              │  grid   │ syntax   │
-                └─────────────┴────────────┘              ├─────────┴──────────┤
-                                                          │ PTY  Palette  Cell │
-   src/config/  ┌──────────────────────────┐              └────────────────────┘
-                │ Config (singleton)       │
-                └──────────────────────────┘
+                └─────────────┴────────────┘              ├─────────┼──────────┤
+                                                          │ History │ PTY      │
+   src/config/  ┌──────────────────────────┐              │ packed  │ Palette  │
+                │ Config (singleton)       │              │ rows    │ Cell     │
+                └──────────────────────────┘              └─────────┴──────────┘
 ```
+
+The one structural thing to know: **a pane is not a GPU surface.** Every pane in
+a window draws through the single `TerminalCanvas`, which owns the only
+`GLRenderer` and the only `GlyphAtlas` in the process. `TerminalWidget` is a
+plain `QWidget` that holds terminal state and handles events but never paints —
+it is stacked *under* the canvas, and exists so that `QSplitter` keeps doing the
+layout and Qt keeps doing focus, the keyboard and input methods. See
+[rendering](rendering.md#one-surface-per-window) for why.
 
 ### Dependency rules
 
@@ -52,6 +62,7 @@ easy to violate again:
 | `core/cell.h` | `Cell`, `Color`, `Pen`, rendition flags. 16-byte POD, no Qt. |
 | `core/palette.h/.cpp` | The 256-colour palette and the default fg/bg/cursor. Resolves symbolic colours. |
 | `core/screen.h/.cpp` | The grid, cursor, pending-wrap flag, scrolling region, editing operations, and the scrollback with its view offset. |
+| `core/history.h/.cpp` | One scrollback row, compressed: trailing blanks dropped, attributes run-length encoded, characters narrowed. |
 | `core/vt_parser.h/.cpp` | ECMA-48 state machine. Emits parsed sequences to a `VTHandler`. |
 | `core/terminal_emulator.h/.cpp` | Implements `VTHandler`; owns the pen, the primary and alternate screens, and DEC modes. |
 | `core/terminal_session.h/.cpp` | Owns the pty, the socket notifier and the byte pump. Emits Qt signals. |
@@ -65,7 +76,8 @@ easy to violate again:
 | `render/glyph_atlas.h/.cpp` | Single `GL_RGBA8` texture, shelf packing, glyph cache. |
 | `render/gl_renderer.h/.cpp` | Layered vertex batching, shaders, orthographic projection. |
 | `render/terminal_renderer.h/.cpp` | Grid geometry and the grid→draw-call loop. |
-| `ui/terminal_widget.h/.cpp` | `QOpenGLWidget`; DPI handling, events, paint. |
+| `ui/terminal_widget.h/.cpp` | One pane: session, layout, events, IME. A plain `QWidget` — it owns no GPU surface and does not paint. |
+| `ui/terminal_canvas.h/.cpp` | The single GL surface per window. Draws every pane into its own viewport; forwards mouse events to the widgets underneath. |
 | `ui/split_container.h/.cpp` | Binary pane tree over `QSplitter`. |
 | `ui/main_window.h/.cpp` | Tabs, shortcut dispatch, window title. |
 | `ui/tab_bar.h/.cpp` | The self-drawn tab bar, and the `QTabWidget` that hosts it. |

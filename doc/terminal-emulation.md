@@ -64,11 +64,47 @@ delete, so `DECSTBM` works and full-screen applications can scroll a subrange.
 ### Scrollback
 
 A row leaving the top of the screen is copied into `history_`, a
-`std::deque<std::vector<Cell>>` bounded by `historyLimit_`, and `viewOffset_`
+`std::deque<HistoryLine>` bounded by `historyLimit_`, and `viewOffset_`
 says how many rows the display is scrolled back. `viewAt(row, col)` reads from
 `history + viewport`; `at(row, col)` is unchanged and still means the live grid,
 which is what the emulator writes to whether or not the user is looking at
 history.
+
+**History rows are stored compressed.** Held as raw cells a row costs
+`cols × sizeof(Cell)` — 3200 bytes at 200 columns — so the default 10 000-line
+history came to about 32 MiB *per pane*, plus a heap block each. Eight panes of a
+working day was a quarter of a gigabyte of mostly blanks, and because every row
+was its own allocation, closing the tab did not give it back to the OS.
+
+`HistoryLine` (`core/history.h`) exploits two things about terminal output:
+
+- **Most of a row is trailing blank.** A shell line is rarely as wide as the
+  window. Those cells are dropped, which is free: `Screen` already reports
+  columns past a captured row's width as blank, because history is not reflowed
+  and a row is stored at the width it had. A *default* blank is therefore
+  indistinguishable from "not stored". Trailing cells carrying a non-default
+  background — the coloured bars a TUI draws — are not default blanks, and
+  survive.
+- **Colours change far more slowly than characters do.** Almost every row is one
+  single run of attributes, so they are run-length encoded while characters are
+  kept per cell, narrowed to the smallest fixed width that covers the row: one
+  byte for Latin-1, two for the BMP, four otherwise.
+
+Both halves live in one heap block, so a row still costs exactly one allocation —
+which is what lets `pushHistory()` keep recycling buffers instead of calling the
+allocator once per scrolled line. Measured, 10 000 rows at 200 columns:
+**39.5 MiB → 2.4 MiB**, with the worst case (a different colour in every column)
+still no larger than the raw cells.
+
+The encoding is lossless, and `test_history` pins that for every kind of cell a
+terminal can produce: truecolour, indexed colour, every rendition flag, CJK,
+astral-plane emoji, a NUL code point, and a full-width coloured bar of blanks.
+
+One consequence for callers: **`viewAt()` and `viewRow()` may return a pointer
+into a decode buffer** that the next call to either is free to overwrite. Read
+before calling again. Every caller already does — the renderer walks one row to
+completion before asking for the next, which is the access pattern this is built
+for — and the reference-returning signature always implied as much.
 
 Three decisions are worth stating:
 

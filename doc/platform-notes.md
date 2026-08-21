@@ -98,6 +98,42 @@ defaults delete -g ApplePressAndHoldEnabled
 This is the only Objective-C++ in the project, and the only reason for
 `src/platform/` to exist at all.
 
+### Touching the GPU costs ~120 MB, whatever you do
+
+Worth knowing before anyone files a bug about RaTTY's memory, or tries to fix it
+by changing graphics API.
+
+On Apple Silicon the driver charges a large fixed toll for a process's *first
+draw*. Measured with a pure Metal program — no Qt, no RaTTY:
+
+```
+setup complete (device, queue, shader library, pipeline, 1024² texture)    4.4 MB
+after frame 1 (256×256 render target)                                    123.0 MB
+after frame 2..6                                                         123.0 MB
+```
+
+Same figure for a 256×256 target as for a full-screen one, and the same for
+OpenGL. It is not the atlas, not the window, and not anything the application
+allocates: it is the driver's per-process working set appearing the moment work
+is first submitted. Nothing at application level removes it, and **Metal would
+not remove it either** — that measurement *is* Metal.
+
+So the floor for any GPU-accelerated Qt application on this platform is roughly
+120 MB of driver plus ~28 MB of Qt and AppKit. What RaTTY controls is everything
+above that line, which is why the surface architecture is the way it is; see
+[one surface per window](rendering.md#one-surface-per-window).
+
+Two related traps on the same platform:
+
+- Physical footprint is what Activity Monitor shows, and it **drops sharply when
+  a window is occluded** as the driver releases memory. A before/after comparison
+  is only meaningful if both are sampled with the window in the same visibility
+  state. RSS does not include this memory at all, so the two metrics disagree by
+  a wide margin.
+- Qt's `QRhi` headers (`<rhi/qrhi.h>`) are not shipped by Homebrew's Qt, so
+  `QRhiWidget` is exported but unusable. Do not plan a port around it without
+  checking that first.
+
 ## Linux and the BSDs
 
 - The Super key is `Qt::MetaModifier`, the same modifier `cmd` maps to — which is
@@ -107,6 +143,19 @@ This is the only Objective-C++ in the project, and the only reason for
   per-platform list of known font paths so it still starts.
 - A pty master reports `EIO` rather than end-of-file when the slave is gone; both
   are treated as a normal session end.
+- **libstdc++ is stricter about transitive includes than libc++.** A header that
+  compiles on macOS because something else dragged in `<cstddef>` will fail here.
+  The same applies to Qt version drift: `QImage::flipped()` is Qt 6.9+, while
+  Debian stable ships 6.4, so the deprecated-but-universal spelling or a hand
+  rolled equivalent is the portable choice. Build in a container before claiming
+  Linux support (see [building](building.md#checking-the-linux-build)).
+- The shared canvas is a native child window (`createWindowContainer`). Verified
+  on **X11**: the full suite passes under Xvfb with Mesa's software renderer. On
+  **Wayland** the canvas behaviour itself is verified — input forwarding, divider
+  dragging, click-to-focus and tab-bar stacking all pass — but only against a
+  *headless* compositor, which never presents a window and so cannot exercise
+  anything that depends on a frame having been drawn. A headed Wayland session is
+  untested.
 
 ## Windows
 

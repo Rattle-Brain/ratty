@@ -17,6 +17,13 @@ truecolour, colour emoji, a bundled Nerd Fonts symbols font so a TUI's file-type
 icons render on a bare machine, and a tab bar thin enough not to insult the
 terminal it sits next to.
 
+Every pane in a window shares **one** GPU surface, one glyph atlas and one set of
+buffers. A split therefore costs about a megabyte of terminal state and no
+graphics memory at all, where it used to cost ten; a tab you are not looking at
+is not drawn, and costs nothing. Scrollback is stored packed rather than as raw
+cells, which is worth about 16× on ordinary shell output — the default
+10 000-line history is a couple of megabytes a pane, not forty.
+
 It is a rat, and it speaks TTY. The name was not agonised over.
 
 ## Platform support

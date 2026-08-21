@@ -25,7 +25,10 @@ This document is the "why it is shaped like this" companion to the rest of
 - Mouse reporting for applications (`?1000`/`?1002`/`?1003`, SGR and legacy
   encodings), focus events, and alternate scroll so the wheel drives a pager
 - HiDPI-correct rendering ([why that is hard](rendering.md#physical-pixels-and-why-it-matters))
-- Tabs, recursive split panes, a self-drawn tab bar in five styles
+- Tabs, recursive split panes, a self-drawn tab bar in five styles — every pane
+  in a window shares one GPU surface, so a split costs about a megabyte of
+  terminal state and no graphics memory at all
+  ([why](rendering.md#one-surface-per-window))
 - Layered YAML configuration, ten colour themes, platform keybinding sets
 
 ## What does not

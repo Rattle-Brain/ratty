@@ -1,18 +1,89 @@
 # Rendering
 
 
+## One surface per window
+
+A window has exactly one GPU surface: `TerminalCanvas`, a `QOpenGLWindow`
+embedded in the widget tree with `QWidget::createWindowContainer()` and stacked
+over the tab page. It owns the only `GLRenderer` and the only `GlyphAtlas`, and
+draws every visible pane into its own viewport. Panes are plain `QWidget`s
+underneath it that never paint.
+
+Panes used to be `QOpenGLWidget`s, one GL context and one 4 MiB atlas each. Two
+things were wrong with that, and both are worth understanding before anyone
+reaches for a per-pane surface again.
+
+**A `QOpenGLWidget` does not draw to the window.** It draws to a framebuffer
+object of its own, which Qt then composites into the window's backing store. On
+macOS that composite runs through the GL-on-Metal shim as a full-window texture
+upload on *every flush*:
+
+```
+QWidgetRepaintManager::flush() → QPlatformBackingStore::rhiFlush()
+  → QBackingStoreDefaultCompositor::flush() → QRhiGles2::endFrame()
+    → glTexSubImage2D → AppleMetalOpenGLRenderer → AGXTexture   [14.4 MB]
+```
+
+A native `QOpenGLWindow` renders straight into a layer the window server
+composites. There is no Qt backing-store round trip at all.
+
+**And every extra pane repeated the whole arrangement.** Measured on an M-series
+Mac at 1280×720, same harness, panes opened with the split keybinding:
+
+| panes | one `QOpenGLWidget` each | one shared canvas |
+|---|---|---|
+| 1 | 280 MB | **258 MB** |
+| 2 | 295 MB | 265 MB |
+| 4 | 318 MB | 265 MB |
+| 8 | 355 MB | **266 MB** |
+
+Roughly **10.7 MB per extra pane → 1.07 MB**, and what is left is CPU-side
+terminal state, not GPU memory. A pane in a tab that is not showing is not
+visible, so it is not drawn at all and costs nothing.
+
+Consequences that fall out of the design, and that any change here has to keep:
+
+- **The canvas receives the mouse, because a native child window sits above its
+  siblings whatever the widget stack says.** It hands events back by hit-testing
+  the widget underneath — the pane, or the `QSplitter` handle between two of
+  them — and a press latches its target until the release, so dragging a divider
+  keeps working once the pointer leaves the two pixels it occupies.
+- **Keyboard and input methods are untouched.** The canvas never takes focus
+  (`Qt::NoFocus`), so key and IME events go straight to the focused pane widget
+  as they always did.
+- **The dividers come for free.** The canvas clears the whole surface to the
+  split separator colour and lets the panes paint over it; the only pixels left
+  showing are the gaps between panes. They cannot drift out of step with the
+  pane rectangles the way a separately drawn line could.
+- **The canvas covers the tab page, not the tab widget.** Sized to the whole tab
+  widget it would hide the tab bar — and since the bar only appears with the
+  second tab, the mistake would not show until then. `test_canvas_input` pins
+  this, along with divider dragging and click-to-focus.
+- **Blending must not touch destination alpha.** See
+  [notable bugs](notable-bugs.md#a-dimmed-pane-made-the-whole-window-translucent).
+- **The viewport is established at the top of `paintGL()`.** Each pane narrows
+  it to its own rectangle, so at the end of a frame it describes whichever pane
+  was drawn last; inheriting that would clip every frame after the first into a
+  corner of the window.
+
+There is one cost, and it is not a small one on macOS: a pane that is never
+painted also never gets a chance to do paint-time work. Starting the shell was
+hung off the first frame for exactly one commit, and a compositor that does not
+present the window — a headless Wayland session, a window opened minimised —
+left the terminal with no shell in it. Session start is now posted to the event
+loop after layout instead. Do not move it back.
+
+
 ## Physical pixels, and why it matters
 
 This is the single most important thing in the render layer.
 
-`QOpenGLWidget` hands `resizeGL()` the widget's size in **logical** pixels, but
-sets the GL viewport to the **device-pixel** size of its backing framebuffer
-immediately before every `paintGL()`. Measured on a Retina MacBook:
+The canvas is handed a viewport in **device** pixels, while Qt reports widget
+geometry in **logical** ones. Measured on a Retina MacBook:
 
 ```
-resizeGL args:   400 200   |  widget logical size: 400 200  |  devicePixelRatio: 2
-paintGL viewport set by Qt: 0 0 800 400
-logicalDotsPerInch: 72     |  physicalDotsPerInch: 127.5
+widget logical size: 400 200  |  devicePixelRatio: 2  |  framebuffer: 800 400
+logicalDotsPerInch: 72        |  physicalDotsPerInch: 127.5
 ```
 
 So a projection built from `width()`/`height()` covers a quarter of the
@@ -23,18 +94,20 @@ physical pixels.
 
 The rules that follow:
 
-1. `GLRenderer::beginFrame()` takes the framebuffer size in device pixels and
-   builds a matching orthographic projection.
+1. `GLRenderer::beginFrame()` takes a viewport in device pixels and builds a
+   matching orthographic projection. The pane's origin becomes `(0, 0)`, so a
+   pane draws in its own coordinate space and knows nothing about where on the
+   shared surface it landed.
 2. `TerminalWidget` computes every geometry value as
    `logical × devicePixelRatioF()`.
 3. The font is rasterized at `points × (logicalDpi / 72) × devicePixelRatio`,
-   which is how Qt sizes its own text.
+   which is how Qt sizes its own text. It is rasterized **once per window**, by
+   the canvas: one window is on one screen, so there is a single answer, and a
+   change re-lays-out every pane.
 4. Glyph quads land on integer pixel coordinates, and the atlas uses
    `GL_NEAREST`. With integer positions, fragment centres land exactly on texel
    centres, so the rasterized coverage is reproduced verbatim.
-5. `resizeGL()` no longer calls `glViewport()` at all — Qt has already set it,
-   correctly, and the widget's logical size was the wrong value to use.
-6. No multisampling. MSAA cannot improve an alpha-blended glyph quad (there is no
+5. No multisampling. MSAA cannot improve an alpha-blended glyph quad (there is no
    geometric edge to smooth — the shape lives in the texture's alpha) and only
    adds a resolve blit.
 
@@ -48,9 +121,10 @@ Measured effect on the same display, rasterizing `g` from Menlo:
 Roughly four times the coverage data, a smaller proportion of it spent on soft
 edges, and no resampling pass on top.
 
-Moving the window to a screen with a different ratio is handled: `resizeGL()`
-compares the current scale against the one the font was last rasterized at and
-re-rasterizes when they differ.
+Moving the window to a screen with a different ratio is handled:
+`TerminalCanvas::refreshFont()` compares the current scale against the one the
+font was last rasterized at, re-rasterizes when they differ, and re-lays-out
+every pane in the window.
 
 ## `FontManager`
 
