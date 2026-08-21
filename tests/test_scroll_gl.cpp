@@ -200,6 +200,10 @@ int main(int argc, char** argv) {
     format.setSamples(0);
     QSurfaceFormat::setDefaultFormat(format);
     QCoreApplication::setAttribute(Qt::AA_MacDontSwapCtrlAndMeta, true);
+    /* The same as main(): with contexts shared, reparenting a pane no longer
+     * tears its GL context down, and these suites have to exercise what
+     * actually ships rather than a configuration nothing runs in. */
+    QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts, true);
 
     QApplication app(argc, argv);
 

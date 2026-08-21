@@ -80,6 +80,71 @@ punctuation, never letters, and the fallback runs only for keys it recognises, s
 `ctrl+shift+c` can never decay into `ctrl+c` and steal an interrupt from the
 shell. Both halves of that are asserted.
 
+### Splits are on `v` and `w`
+
+`ctrl+shift+v` splits vertically (top / bottom) and `ctrl+shift+w` horizontally
+(left / right), with `ctrl+shift+c` closing the focused pane. The two split keys
+were the other way round until the mnemonic won: `v` for vertical.
+
+Opening a split focuses the pane it created, and closing one returns the caret to
+the pane it was opened from rather than to whichever leaf sits nearest. Neither
+is a keybinding concern as such — see
+[which pane is current](ui.md#which-pane-is-current).
+
+### Word and line editing
+
+Alt/Option for a word, Cmd/Super for the whole line, is what every native text
+field on both platforms does, and a shell prompt is a text field as far as the
+user is concerned. None of it is a RaTTY *action*: these keys belong to whatever
+is running, so `InputHandler::encodeEditingKey()` translates each one into the
+readline binding that does the same job (zsh's emacs mode agrees on all of them).
+
+| Key | Sent | readline |
+| --- | --- | --- |
+| `Alt+Left` / `Alt+Right` | `ESC b` / `ESC f` | `backward-word` / `forward-word` |
+| `Alt+Backspace` | `ESC DEL` | `backward-kill-word` |
+| `Alt+Delete` | `ESC d` | `kill-word` |
+| `Cmd+Left` / `Cmd+Right` | `Ctrl+A` / `Ctrl+E` | line start / line end |
+| `Cmd+Backspace` | `Ctrl+U` | kill back to the start of the line |
+| `Cmd+Delete` | `Ctrl+K` | kill to the end of the line |
+
+Forwarding the literal xterm form instead — `Alt+Left` is `CSI 1;3D` — is why
+these keys used to do nothing at all: a default bash or zsh binds none of it.
+That form is still what `Ctrl+Arrow` sends (`CSI 1;5C`, which readline *does*
+bind), and `encodeEditingKey()` bows out whenever Control is held for a second
+reason: Ctrl+Alt is how X11 reports AltGr.
+
+### Typing `~`, and the rest of the third level
+
+Two separate things stood between a Spanish keyboard and a tilde, and only the
+second one is really about keys at all.
+
+**`~` is a dead key.** `Option+ñ` on macOS and `AltGr+ñ` on Linux both start a
+composition rather than producing a character, exactly as the accents do (acute,
+then `a`, for `á`). The platform's input method holds that composition and
+delivers the result as a `QInputMethodEvent` — but only to a widget that has set
+`Qt::WA_InputMethodEnabled`, which `TerminalWidget` never did. So the
+composition was dropped on the floor on both platforms, and no input method
+(CJK and friends) worked either. See
+[composed input](ui.md#composed-input-dead-keys-and-input-methods).
+
+**Option and AltGr are compose keys, not Meta.** The parts of the third level
+that are *not* dead keys — `|`, `@`, `[`, `]`, `{`, `}`, `€`, `\` — do arrive as
+ordinary key events, with `Qt::AltModifier` set. RaTTY used to ESC-prefix
+anything carrying that modifier, turning them into Meta keys nothing would
+recognise.
+
+`InputHandler::isComposedText()` tells the two apart using the fact that Qt
+reports `key()` as the character the key carries with **no** modifiers applied at
+all: the ñ key is `Key_Ntilde` no matter what Option did to it. So a character
+that disagrees with its own key was composed by the layout and is sent as itself,
+while `Alt+B` — where `'B'` and `'b'` agree — still becomes the `ESC b` that
+readline binds to `backward-word`. Multi-character results (dead keys, surrogate
+pairs) are text by definition; control characters never come from a layout.
+
+The word- and line-editing keys above are unaffected either way, because arrows
+and Backspace carry no text for a layout to compose.
+
 ### Scrolling
 
 `scroll_up` and `scroll_down` move the scrollback view by a page — one screenful

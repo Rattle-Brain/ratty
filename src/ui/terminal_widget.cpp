@@ -7,6 +7,9 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QDebug>
+#include <QEvent>
+#include <QtGlobal>
+#include <QInputMethodEvent>
 #include <QKeyCombination>
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -27,6 +30,19 @@ TerminalWidget::TerminalWidget(QWidget* parent)
      * resolve blit that softens the result.
      */
     setFocusPolicy(Qt::StrongFocus);
+    /*
+     * Composed input has to be asked for.
+     *
+     * On a Spanish keyboard `~` is a *dead key* -- Option+n-tilde on macOS,
+     * AltGr+n-tilde on Linux -- and so is every accent (the acute, then `a`,
+     * for `a`-acute). None of that arrives as a key event carrying text: the
+     * platform input method holds the half-finished composition and delivers
+     * the result as a QInputMethodEvent, but only to a widget with this
+     * attribute set. Without it the composition is silently dropped, which is
+     * why the tilde could not be typed on either platform, and why no input
+     * method (CJK and friends) worked either.
+     */
+    setAttribute(Qt::WA_InputMethodEnabled, true);
     setMouseTracking(true);
     setAttribute(Qt::WA_OpaquePaintEvent);
     setMinimumSize(200, 100);
@@ -157,25 +173,56 @@ void TerminalWidget::releaseGLResources() {
     doneCurrent();
 }
 
+double TerminalWidget::logicalDpi() const {
+    /*
+     * Qt reports 72 logical DPI on macOS and 96 on most of X11/Wayland. It is a
+     * per-screen figure, so it changes under us exactly when the device pixel
+     * ratio does.
+     */
+    const double dpi = logicalDpiY();
+    return dpi > 0 ? dpi : 96.0;
+}
+
+bool TerminalWidget::fontScaleStale() const {
+    /*
+     * True when the font on screen was rasterized for conditions that no longer
+     * hold. Any of the three inputs to applyFontScale() can change without this
+     * widget being resized -- dragging the window to a display with a different
+     * device pixel ratio changes two of them -- and until the font is rebuilt,
+     * glyphs rasterized for the old ratio are drawn one texel per *physical*
+     * pixel into a framebuffer scaled by the new one. That is the whole of the
+     * "font grows when I move to the other monitor" bug: at 12 pt on a 2x
+     * display the atlas holds 24 px glyphs, and on a 1x display those 24 px are
+     * drawn at 24 logical pixels -- twice the size asked for, while the config
+     * still says 12.
+     */
+    if (!renderer_ || !renderer_->hasFont()) return false;
+
+    return std::abs(scaleFactor() - lastScaleFactor_) > 0.001
+        || std::abs(logicalDpi() - lastLogicalDpi_) > 0.001
+        || Config::instance().fontSize() != lastFontSize_;
+}
+
 bool TerminalWidget::applyFontScale() {
     if (!renderer_) return false;
 
     const Config& config = Config::instance();
     const double scale = scaleFactor();
+    const double dpi = logicalDpi();
 
     /*
-     * Points to physical pixels. Qt reports 72 logical DPI on macOS and 96 on
-     * most of X11/Wayland, and the device pixel ratio carries the HiDPI factor
-     * on top; multiplying the two is exactly how Qt sizes its own text.
+     * Points to physical pixels. The device pixel ratio carries the HiDPI factor
+     * on top of the logical DPI; multiplying the two is exactly how Qt sizes its
+     * own text.
      */
-    const double logicalDpi = logicalDpiY() > 0 ? logicalDpiY() : 96.0;
-    const double pixelSize = config.fontSize() * (logicalDpi / 72.0) * scale;
+    const double pixelSize = config.fontSize() * (dpi / 72.0) * scale;
 
     if (!renderer_->setFont(config.fontFamilies(), config.fontFallbacks(), pixelSize)) {
         return false;
     }
 
     lastScaleFactor_ = scale;
+    lastLogicalDpi_ = dpi;
     lastFontSize_ = config.fontSize();
     return true;
 }
@@ -204,6 +251,45 @@ void TerminalWidget::updateGeometryForFont() {
     }
 }
 
+bool TerminalWidget::event(QEvent* event) {
+    /*
+     * Let Qt react first: it is the base implementation that recreates the
+     * backing framebuffer at the new ratio, and devicePixelRatioF() only reports
+     * the new value once it has.
+     */
+    const bool result = QOpenGLWidget::event(event);
+
+    switch (event->type()) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
+    /*
+     * Qt 6.6 is the first version that says this directly. Guarded rather than
+     * simply required, because needing 6.6 to build would rule out every
+     * current Debian and Ubuntu LTS for the sake of one enumerator -- and on
+     * older Qt the screen-change event below plus the check in paintGL() cover
+     * exactly the same ground.
+     */
+    case QEvent::DevicePixelRatioChange:
+#endif
+    case QEvent::ScreenChangeInternal:
+        /*
+         * Moving the window between displays does not necessarily resize the
+         * widget -- the logical geometry is unchanged -- so resizeGL() may never
+         * run, and without this nothing would notice the new ratio at all.
+         *
+         * Asking for a repaint rather than re-rasterizing here on the spot:
+         * paintGL() does the work with the context already current, which
+         * spares this path a makeCurrent() at a moment when the widget may be
+         * hidden or on its way out.
+         */
+        if (fontScaleStale()) update();
+        break;
+    default:
+        break;
+    }
+
+    return result;
+}
+
 void TerminalWidget::resizeGL(int, int) {
     /*
      * No glViewport() call here: Qt sets the viewport to the device-pixel size
@@ -219,10 +305,7 @@ void TerminalWidget::resizeGL(int, int) {
      * already current, and releasing it would leave Qt's own resize handling
      * without a context.
      */
-    if (std::abs(scaleFactor() - lastScaleFactor_) > 0.001
-        || Config::instance().fontSize() != lastFontSize_) {
-        applyFontScale();
-    }
+    if (fontScaleStale()) applyFontScale();
 
     updateGeometryForFont();
 }
@@ -236,6 +319,18 @@ void TerminalWidget::paintGL() {
      */
     const Palette& palette = session_ ? session_->palette() : Config::instance().palette();
     const QColor background = palette.defaultBackground();
+
+    /*
+     * Rebuild the font first if the display it was rasterized for is no longer
+     * the display being drawn on -- see fontScaleStale(). This is where it is
+     * actually done, rather than in the events that notice it: paintGL() runs
+     * with the context already current, and putting the single re-rasterization
+     * point here means no frame can be composed from a font built for a
+     * different screen, whatever Qt did or did not deliver.
+     */
+    if (renderer_ && renderer_->isInitialized() && fontScaleStale()) {
+        if (applyFontScale()) updateGeometryForFont();
+    }
 
     if (!renderer_ || !renderer_->isInitialized()) {
         glClearColor(static_cast<GLfloat>(background.redF()),
@@ -432,7 +527,11 @@ MouseButton heldButtonFor(Qt::MouseButtons buttons) {
 } // namespace
 
 void TerminalWidget::mousePressEvent(QMouseEvent* event) {
-    setFocus();
+    /* Named rather than the default Qt::OtherFocusReason, and announced: a
+     * click is the user picking this pane, which is what the window's focus
+     * history is built from. */
+    setFocus(Qt::MouseFocusReason);
+    emit paneActivated();
     event->accept();
 
     lastMotionRow_ = -1;
@@ -591,6 +690,71 @@ void TerminalWidget::focusInEvent(QFocusEvent* event) {
     if (session_) session_->sendFocusEvent(true);
     restartBlink();
     update();
+}
+
+void TerminalWidget::inputMethodEvent(QInputMethodEvent* event) {
+    if (!event) return;
+
+    /*
+     * The commit string is what the composition finally resolved to: the `~` of
+     * a dead-key tilde, the `a`-acute of an accent, a run of CJK chosen from a
+     * candidate window. It is ordinary input and goes to the shell as UTF-8.
+     *
+     * The preedit string is the composition still in progress, which the
+     * platform would like drawn under the cursor. RaTTY does not draw it yet
+     * (todo-ratty.md); the event is accepted regardless, because refusing it
+     * abandons the composition instead of letting it finish.
+     */
+    const QByteArray committed = event->commitString().toUtf8();
+    if (!committed.isEmpty() && session_ && session_->isValid()) {
+        /* Same courtesy as typing: bring the live screen back into view first,
+         * or the echo of what was just composed lands out of sight. */
+        if (session_->scrollViewToBottom()) update();
+        session_->sendInput(committed);
+    }
+
+    event->accept();
+}
+
+QRectF TerminalWidget::cursorRectangle() const {
+    if (!layout_.isValid() || !session_) return QRectF(0, 0, 1, 1);
+
+    /* The layout is in physical pixels and Qt wants logical ones; cellAt() does
+     * this conversion in the other direction. */
+    const double scale = scaleFactor();
+    if (scale <= 0.0) return QRectF(0, 0, 1, 1);
+
+    const Screen& screen = session_->screen();
+    const int row = std::clamp(screen.cursorRow(), 0, std::max(0, layout_.rows - 1));
+    const int col = std::clamp(screen.cursorCol(), 0, std::max(0, layout_.cols - 1));
+
+    return QRectF((layout_.originX + col * layout_.cellWidth) / scale,
+                  (layout_.originY + row * layout_.cellHeight) / scale,
+                  layout_.cellWidth / scale, layout_.cellHeight / scale);
+}
+
+QVariant TerminalWidget::inputMethodQuery(Qt::InputMethodQuery query) const {
+    switch (query) {
+    case Qt::ImEnabled:
+        return true;
+    case Qt::ImCursorRectangle:
+        return cursorRectangle();
+    case Qt::ImFont:
+        return font();
+    case Qt::ImHints:
+        /* A terminal wants the characters as typed. Autocorrect,
+         * capitalisation and predictive text would all rewrite them. */
+        return static_cast<int>(Qt::ImhNoAutoUppercase | Qt::ImhNoPredictiveText
+                                | Qt::ImhNoTextHandles);
+    case Qt::ImSurroundingText:
+        /* There is no editable buffer on this side: the shell owns the line. */
+        return QString();
+    case Qt::ImCursorPosition:
+    case Qt::ImAnchorPosition:
+        return 0;
+    default:
+        return QOpenGLWidget::inputMethodQuery(query);
+    }
 }
 
 void TerminalWidget::focusOutEvent(QFocusEvent* event) {

@@ -130,6 +130,25 @@ public:
     bool setPixelSize(double pixelSize);
     double pixelSize() const { return pixelSize_; }
 
+    /*
+     * A ready-made FontManager for this exact font request, shared with every
+     * other caller that asks for the same thing.
+     *
+     * Faces, metrics and the resolved fallback chain depend on nothing but
+     * (families, fallbacks, pixelSize), so two panes showing the same font at
+     * the same size have no reason to own separate copies -- and building a copy
+     * is the expensive part: opening four to eight FT faces and discovering the
+     * fallback chain. Panes come and go constantly (every split reparents them),
+     * so this is what makes a new pane cheap.
+     *
+     * Returns nullptr when no font could be loaded at all. The result is
+     * intended to be held for as long as it is used; a chain nobody holds any
+     * more is dropped when the next distinct request arrives.
+     */
+    static std::shared_ptr<FontManager> shared(const std::vector<std::string>& families,
+                                               const std::vector<std::string>& fallbacks,
+                                               double pixelSize);
+
     const FontMetrics& metrics() const { return metrics_; }
     bool isValid() const;
     const std::string& familyName() const { return familyName_; }
@@ -191,6 +210,8 @@ private:
         bool hasRenderableGlyph(char32_t codepoint) const;
     };
 
+    /* The uncached body of defaultMonospaceFamily(), which memoizes it. */
+    static std::string computeDefaultMonospaceFamily();
     static FontFile resolveExactFamily(const std::string& family, FontStyle style);
     /* Ask fontconfig for any font covering `codepoint`. */
     static std::vector<FontFile> discoverFontsFor(char32_t codepoint);

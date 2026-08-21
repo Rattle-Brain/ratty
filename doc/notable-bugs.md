@@ -145,6 +145,77 @@ Pinned by `tests/test_render.cpp` (`testSpacesDrawNothing`) and
 
 ---
 
+## A third pane crushes the other two into a strip
+
+**Symptom.** Two panes in a tab split evenly. Splitting again squeezed both of
+them into a ~100 px strip along one edge while the new pane took everything else.
+
+**Cause.** `SplitContainer::performSplit()` detaches the leaf being split from
+its parent, wraps it in a new container with its new sibling, and hands that
+container back to the parent through `replaceChild()`. `replaceChild()` preserved
+the parent's split ratio by reading it back:
+
+```cpp
+const QList<int> sizes = splitter_->sizes();   // <- one entry, not two
+splitter_->insertWidget(index, newChild);
+if (sizes.size() == 2) splitter_->setSizes(sizes);
+```
+
+By then the detach had already happened, so that splitter held a **single**
+widget and reported a single size. The `size() == 2` guard was therefore never
+true, `setSizes()` never ran, and a widget QSplitter inserts with no size of its
+own is clamped to its minimum — `TerminalWidget::setMinimumSize(200, 100)`, which
+is exactly the 100 px strip that was reported.
+
+Nothing about the *tree* was wrong, which is why the existing tests passed
+throughout: they asserted topology, visibility and lifetime, never geometry.
+
+**Fix.** Sample the geometry before the surgery destroys it. `performSplit()`
+reads the parent's sizes (and the pane's own `size()`, which the detached
+container cannot measure for itself — it still carries Qt's default 640×480
+placeholder) up front, and passes both down. `closePane()` does the same for the
+grandparent, and now takes the doomed container out of that splitter before the
+promoted sibling goes in, so the splitter never transiently holds three widgets.
+
+Pinned by `tests/test_splits.cpp` (`testNestedSplitKeepsGeometry`,
+`testClosingRestoresTheSiblingsShare`), which assert pixels rather than pointers.
+
+---
+
+## `~` could not be typed at all
+
+**Symptom.** `Option+ñ` on a Spanish Mac keyboard produced nothing. Neither did
+`AltGr+ñ` on Linux.
+
+**First diagnosis, and why it was wrong.** Option and AltGr *are* layout compose
+keys, and RaTTY was ESC-prefixing everything that arrived with
+`Qt::AltModifier` — treating the third level of the layout as a Meta key. That is
+a real bug, and fixing it does make `|`, `@`, `[`, `]` and `€` typable. It does
+nothing for the tilde, because it assumed the tilde arrives as text.
+
+**Cause.** `~` is a **dead key** on both layouts. There is no character in the
+key event at all: `text()` is empty, and the platform input method holds the
+composition until the next keystroke resolves it, then delivers the result as a
+`QInputMethodEvent`. `TerminalWidget` never set `Qt::WA_InputMethodEnabled` and
+implemented neither `inputMethodEvent()` nor `inputMethodQuery()`, so the
+platform had nowhere to deliver it. The same omission meant no accent (acute,
+then `a`, for `á`) and no input method of any kind could reach the shell.
+
+Two platforms failing identically was the clue worth taking seriously: the macOS
+and Linux key-event paths through Qt are quite different, so a shared symptom
+pointed at something neither of them was being asked to do.
+
+**Fix.** All three pieces, in `TerminalWidget`; see
+[composed input](ui.md#composed-input-dead-keys-and-input-methods). The
+Alt-modifier fix stands as well — the two cover different halves of the layout.
+
+Pinned by `tests/test_splits_gl.cpp` (`testComposedInputReachesTheShell`), which
+commits `exit` into a pane the way a composition would and watches the shell act
+on it. Whether the *platform* composes is beyond a test's reach; that the wiring
+exists and carries bytes to the shell is not.
+
+---
+
 ## `fc-match` always answers, so the icon search stopped at the first no
 
 **Symptom.** File-type icons in a Telescope picker rendered as empty boxes, while
@@ -180,5 +251,52 @@ symbol families so that installing one is all it takes.
 
 Pinned by `tests/test_render.cpp` (`testDiscoveryLooksPastPlaceholderFonts`),
 which asks fontconfig what the machine actually has before asserting anything.
+
+---
+
+## The font grows when the window moves to the other monitor
+
+**Symptom**, exactly as reported: a terminal opened on a high-resolution display
+shows its configured 12 pt. Drag the window to a lower-resolution display and the
+text jumps to something nearer 18 px — but only in appearance. The configuration
+still says 12, and pressing the shrink shortcut goes to 11 and *renders* 11, so
+the picture snaps down by a third in one keystroke.
+
+**Cause.** Glyphs are rasterized at an explicit **physical** pixel size, which is
+the configured point size scaled by the screen's logical DPI and its device pixel
+ratio (see [physical pixels](rendering.md#physical-pixels-and-why-it-matters)).
+At 12 pt on a 2× display the atlas therefore holds 24 px glyphs, and that is
+correct: they are drawn one texel per physical pixel into a framebuffer that is
+itself 2× the widget's logical size.
+
+Move the window to a 1× display and the framebuffer becomes 1:1 with logical
+pixels — but nothing re-rasterized the font, so those same 24 px glyphs are now
+drawn at 24 *logical* pixels. Twice the size asked for, while `fontSize()` still
+reads 12. Changing the size then went down the one path that did call
+`applyFontScale()`, which rebuilt the font correctly for the new display, so the
+"fix" was really the first correct rasterization since the move.
+
+`resizeGL()` did check for a changed ratio, and that check was right — it simply
+never ran. Moving a window between displays does not resize the widget: its
+logical geometry is identical on both, so Qt has no resize to report.
+
+**Fix.** Three parts, because the first two are about noticing and the third is
+about never being wrong regardless:
+
+1. `TerminalWidget::event()` handles `QEvent::DevicePixelRatioChange` and
+   `QEvent::ScreenChangeInternal`, which is Qt telling us directly.
+2. `fontScaleStale()` names the invariant — the rasterized font matches the
+   ratio, the logical DPI *and* the configured size it was built for. The logical
+   DPI was previously read but not remembered, so a display differing only in DPI
+   was invisible. `resizeGL()` now shares this predicate instead of duplicating
+   part of it.
+3. `paintGL()` checks the same predicate before drawing. A frame is therefore
+   never composed from a font built for a different display, whatever Qt did or
+   did not deliver.
+
+Pinned by `tests/test_splits_gl.cpp` (`testFontFollowsItsDisplay`). A second
+monitor cannot be staged in a test, but the recovery mechanism can: moving the
+configured size behind the widget's back leaves exactly the same inconsistency,
+and the test fails without the `paintGL()` check.
 
 ---

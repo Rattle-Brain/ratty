@@ -43,6 +43,9 @@ void MainWindow::setupUi() {
 
     tabBar_ = tabs->rattyTabBar();
     connect(tabBar_, &TabBar::tabCloseClicked, this, &MainWindow::closeTab);
+    /* Switching tabs has to land on the pane that tab was left on, or the user
+     * has to click to get a cursor back. */
+    connect(tabWidget_, &QTabWidget::currentChanged, this, &MainWindow::onCurrentTabChanged);
 
     setCentralWidget(tabWidget_);
     applyTabBarConfiguration();
@@ -86,7 +89,7 @@ void MainWindow::addTab() {
     const int index = tabWidget_->addTab(root, QStringLiteral("Terminal"));
     tabWidget_->setCurrentIndex(index);
     updateTabBarVisibility();
-    root->focusPane();
+    giveFocusTo(root);
 }
 
 void MainWindow::connectRoot(SplitContainer* root) {
@@ -99,6 +102,8 @@ void MainWindow::connectRoot(SplitContainer* root) {
             this, &MainWindow::onPaneSessionEnded, Qt::UniqueConnection);
     connect(root, &SplitContainer::paneTitleChanged,
             this, &MainWindow::onPaneTitleChanged, Qt::UniqueConnection);
+    connect(root, &SplitContainer::paneFocused,
+            this, &MainWindow::onPaneFocused, Qt::UniqueConnection);
 }
 
 void MainWindow::onPaneTitleChanged(const QString& title) {
@@ -202,11 +207,71 @@ SplitContainer* MainWindow::focusedPane() const {
 
     if (SplitContainer* focused = root->findFocused()) return focused;
 
-    /* Nothing has keyboard focus (the window may have just been restored);
-     * fall back to the first leaf so shortcuts still do something sensible. */
+    /*
+     * Nothing has Qt focus: the window may have just been restored, or a
+     * reparenting may have dropped it. The tree's own marker outlives both, so
+     * it is the better answer than "the first leaf" -- a shortcut aimed at the
+     * pane the user is looking at would otherwise act on a different one.
+     */
+    if (SplitContainer* marked = root->findMarkedPane()) return marked;
+
     SplitContainer* leaf = root;
     while (leaf && !leaf->isLeaf()) leaf = leaf->child1();
     return leaf;
+}
+
+void MainWindow::giveFocusTo(SplitContainer* pane) {
+    if (!pane || !pane->isLeaf()) return;
+
+    rememberFocus(pane);
+    pane->focusPane();
+}
+
+void MainWindow::rememberFocus(SplitContainer* pane) {
+    if (!pane || !pane->isLeaf()) return;
+
+    /* Prune as we go: a pane can be destroyed without this list hearing. */
+    focusHistory_.removeIf([pane](const QPointer<SplitContainer>& entry) {
+        return entry.isNull() || entry == pane;
+    });
+    focusHistory_.prepend(pane);
+}
+
+void MainWindow::forgetPane(const SplitContainer* pane) {
+    focusHistory_.removeIf([pane](const QPointer<SplitContainer>& entry) {
+        return entry.isNull() || entry == pane;
+    });
+}
+
+void MainWindow::restoreFocusIn(SplitContainer* root) {
+    if (!root) return;
+
+    /*
+     * Decide first and act afterwards. focusPane() reaches back here through
+     * paneFocused -> rememberFocus(), which rewrites the very list being read.
+     */
+    SplitContainer* target = nullptr;
+    for (const QPointer<SplitContainer>& entry : focusHistory_) {
+        if (entry && entry->isLeaf() && root->contains(entry)) {
+            target = entry;
+            break;
+        }
+    }
+
+    if (!target) target = root->findMarkedPane();
+    if (!target) {
+        target = root;
+        while (target && !target->isLeaf()) target = target->child1();
+    }
+    giveFocusTo(target);
+}
+
+void MainWindow::onPaneFocused(SplitContainer* pane) {
+    rememberFocus(pane);
+}
+
+void MainWindow::onCurrentTabChanged(int index) {
+    restoreFocusIn(rootAt(index));
 }
 
 TerminalWidget* MainWindow::focusedTerminal() const {
@@ -221,9 +286,12 @@ void MainWindow::onPaneSessionEnded(SplitContainer* pane) {
     if (index < 0) return;
     const QString label = tabLabel(index);
 
+    forgetPane(pane);
+
     /* A pane with no parent is the whole tab. */
     if (SplitContainer* newRoot = pane->closePane()) {
         installTabRoot(index, newRoot, label);
+        restoreFocusIn(newRoot);
     } else {
         closeTab(index);
     }
@@ -323,10 +391,19 @@ void MainWindow::splitFocusedPane(bool horizontal) {
     const int index = tabWidget_->currentIndex();
     const QString label = tabLabel(index);
 
-    SplitContainer* newRoot = horizontal ? pane->splitHorizontal() : pane->splitVertical();
-    if (newRoot) {
-        installTabRoot(index, newRoot, label);
-    }
+    SplitContainer* newPane = nullptr;
+    SplitContainer* newRoot = horizontal ? pane->splitHorizontal(0.5f, &newPane)
+                                         : pane->splitVertical(0.5f, &newPane);
+    if (!newRoot) return;
+
+    installTabRoot(index, newRoot, label);
+
+    /*
+     * Only now. installTabRoot() reparents the tree into the tab widget's
+     * stacked layout, and that clears Qt focus -- which is why splitting used
+     * to leave the caret on the pane the user had just split away from.
+     */
+    giveFocusTo(newPane);
 }
 
 void MainWindow::closeFocusedPane() {
@@ -336,8 +413,12 @@ void MainWindow::closeFocusedPane() {
     const int index = tabWidget_->currentIndex();
     const QString label = tabLabel(index);
 
+    /* The pane on its way out must not be a candidate for inheriting focus. */
+    forgetPane(pane);
+
     if (SplitContainer* newRoot = pane->closePane()) {
         installTabRoot(index, newRoot, label);
+        restoreFocusIn(newRoot);
     } else {
         closeTab(index);
     }
@@ -348,7 +429,7 @@ void MainWindow::focusNeighbour(Qt::Orientation orientation, bool forward) {
     if (!pane) return;
 
     if (SplitContainer* target = pane->findInDirection(orientation, forward)) {
-        target->focusPane();
+        giveFocusTo(target);
     }
 }
 

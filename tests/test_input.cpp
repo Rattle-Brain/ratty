@@ -86,8 +86,8 @@ void testBindingsResolve() {
     expectAction(meta, Qt::Key_9, ACTION_GOTO_TAB_9, "cmd/super+9");
 
     /* Splits live on Ctrl+Shift. */
-    expectAction(ctrlShift, Qt::Key_W, ACTION_SPLIT_VERTICAL, "ctrl+shift+w (split vertical)");
-    expectAction(ctrlShift, Qt::Key_V, ACTION_SPLIT_HORIZONTAL, "ctrl+shift+v (split horizontal)");
+    expectAction(ctrlShift, Qt::Key_V, ACTION_SPLIT_VERTICAL, "ctrl+shift+v (split vertical)");
+    expectAction(ctrlShift, Qt::Key_W, ACTION_SPLIT_HORIZONTAL, "ctrl+shift+w (split horizontal)");
     expectAction(ctrlShift, Qt::Key_C, ACTION_CLOSE_SPLIT, "ctrl+shift+c (close split)");
 
     /* Pane navigation is the vim direction keys. */
@@ -252,6 +252,93 @@ void testShellKeysAreNotStolen() {
     expectAction(Qt::NoModifier, Qt::Key_Tab, ACTION_NONE, "tab (completion)");
 }
 
+/*
+ * The word- and line-wise editing keys. A terminal that forwards the literal
+ * xterm form for these (CSI 1;3D for Alt+Left) leaves them doing nothing at a
+ * prompt, because a default bash or zsh binds none of it.
+ */
+void testWordAndLineEditing() {
+    check::section("word and line editing keys reach the shell as bindings it has");
+
+    const auto alt = Qt::AltModifier;
+    const auto meta = Qt::MetaModifier;
+
+    /* Alt / Option: a word at a time. */
+    expectBytes(alt, Qt::Key_Left, QString(), false, "\x1b" "b",
+                "Alt+Left -> ESC b (backward-word)");
+    expectBytes(alt, Qt::Key_Right, QString(), false, "\x1b" "f",
+                "Alt+Right -> ESC f (forward-word)");
+    expectBytes(alt, Qt::Key_Backspace, QString(), false, "\x1b" "\x7f",
+                "Alt+Backspace -> ESC DEL (backward-kill-word)");
+    expectBytes(alt, Qt::Key_Delete, QString(), false, "\x1b" "d",
+                "Alt+Delete -> ESC d (kill-word)");
+
+    /* Cmd / Super: the whole line. */
+    expectBytes(meta, Qt::Key_Left, QString(), false, "\x01", "Cmd+Left -> Ctrl+A (line start)");
+    expectBytes(meta, Qt::Key_Right, QString(), false, "\x05", "Cmd+Right -> Ctrl+E (line end)");
+    expectBytes(meta, Qt::Key_Backspace, QString(), false, "\x15",
+                "Cmd+Backspace -> Ctrl+U (kill to line start)");
+    expectBytes(meta, Qt::Key_Delete, QString(), false, "\x0b",
+                "Cmd+Delete -> Ctrl+K (kill to line end)");
+
+    /* Both together is neither, and the plain keys are untouched. */
+    expectBytes(alt | meta, Qt::Key_Left, QString(), false, "\x1b[1;11D",
+                "Alt+Cmd+Left is not an editing key");
+    expectBytes(Qt::NoModifier, Qt::Key_Left, QString(), false, "\x1b[D", "plain Left");
+    expectBytes(Qt::NoModifier, Qt::Key_Backspace, QString(), false, "\x7f", "plain Backspace");
+    expectBytes(Qt::ShiftModifier, Qt::Key_Left, QString(), false, "\x1b[1;2D",
+                "Shift+Left still selects");
+}
+
+/*
+ * Option (macOS) and AltGr (Linux) are the layout's compose key, not Meta.
+ * ESC-prefixing what they produce is what made `~` impossible to type on a
+ * Spanish keyboard.
+ */
+void testComposedCharacters() {
+    check::section("layout-composed characters are sent as themselves");
+
+    /*
+     * Option+ñ on macOS: Qt reports key() as the character the key carries with
+     * no modifiers -- the ñ -- and text() as what the layout composed.
+     */
+    expectBytes(Qt::AltModifier, Qt::Key_Ntilde, QStringLiteral("~"), false, "~",
+                "Option+n-tilde -> ~ (macOS, Spanish layout)");
+    /* The same key on Linux, where X11 reports AltGr as Ctrl+Alt. */
+    expectBytes(Qt::ControlModifier | Qt::AltModifier, Qt::Key_Ntilde, QStringLiteral("~"), false,
+                "~", "AltGr+n-tilde -> ~ (Linux, Spanish layout)");
+    /* And on a layout that reports AltGr as its own modifier. */
+    expectBytes(Qt::GroupSwitchModifier, Qt::Key_Ntilde, QStringLiteral("~"), false, "~",
+                "AltGr+n-tilde -> ~ (GroupSwitch layouts)");
+
+    /* The rest of the third level. */
+    expectBytes(Qt::AltModifier, Qt::Key_1, QStringLiteral("|"), false, "|", "Option+1 -> |");
+    expectBytes(Qt::AltModifier, Qt::Key_E, QStringLiteral("€"), false, "\xe2\x82\xac",
+                "Option+e -> euro sign, as UTF-8");
+    expectBytes(Qt::AltModifier, Qt::Key_G, QStringLiteral("@"), false, "@", "Option+g -> @");
+    expectBytes(Qt::AltModifier, Qt::Key_Plus, QStringLiteral("]"), false, "]", "Option+plus -> ]");
+
+    /*
+     * The other side of the line: when the layout composed nothing, the
+     * character agrees with its own key and Alt still means Meta, so readline's
+     * word bindings keep working.
+     */
+    expectBytes(Qt::AltModifier, Qt::Key_F, QStringLiteral("f"), false, "\x1b" "f",
+                "Alt+F -> ESC f (forward-word)");
+    expectBytes(Qt::AltModifier, Qt::Key_D, QStringLiteral("d"), false, "\x1b" "d",
+                "Alt+D -> ESC d (kill-word)");
+    expectBytes(Qt::AltModifier, Qt::Key_Period, QStringLiteral("."), false, "\x1b" ".",
+                "Alt+. -> ESC . (yank-last-arg)");
+    /* Shift only changes the case, which is not a composition. */
+    expectBytes(Qt::AltModifier | Qt::ShiftModifier, Qt::Key_F, QStringLiteral("F"), false,
+                "\x1b" "F", "Alt+Shift+F -> ESC F");
+
+    /* A dead-key sequence, or anything else the layout resolves to more than
+     * one character, is text too. */
+    expectBytes(Qt::AltModifier, Qt::Key_N, QStringLiteral("ñ"), false, "\xc3\xb1",
+                "a composed accented letter goes through as UTF-8");
+}
+
 void testKeyEncoding() {
     check::section("VT input encoding");
 
@@ -271,7 +358,6 @@ void testKeyEncoding() {
     expectBytes(Qt::NoModifier, Qt::Key_Up, QString(), true, "\x1bOA", "Up (DECCKM set)");
     expectBytes(Qt::ShiftModifier, Qt::Key_Up, QString(), false, "\x1b[1;2A", "Shift+Up");
     expectBytes(Qt::ControlModifier, Qt::Key_Right, QString(), false, "\x1b[1;5C", "Ctrl+Right");
-    expectBytes(Qt::AltModifier, Qt::Key_Left, QString(), false, "\x1b[1;3D", "Alt+Left");
 
     expectBytes(Qt::NoModifier, Qt::Key_Delete, QString(), false, "\x1b[3~", "Delete");
     expectBytes(Qt::ControlModifier, Qt::Key_Delete, QString(), false, "\x1b[3;5~", "Ctrl+Delete");
@@ -281,6 +367,10 @@ void testKeyEncoding() {
 
     expectBytes(Qt::AltModifier, Qt::Key_B, QStringLiteral("b"), false, "\x1b" "b",
                 "Alt+B -> ESC b (back word)");
+    /* Ctrl+Arrow keeps the xterm form: readline binds it, and Ctrl+Alt is how
+     * X11 spells AltGr. */
+    expectBytes(Qt::ControlModifier | Qt::AltModifier, Qt::Key_Left, QString(), false,
+                "\x1b[1;7D", "Ctrl+Alt+Left keeps the xterm form");
     expectBytes(Qt::NoModifier, Qt::Key_A, QStringLiteral("a"), false, "a", "plain 'a'");
     expectBytes(Qt::NoModifier, Qt::Key_unknown, QStringLiteral("ñ"), false, "\xc3\xb1",
                 "non-ASCII text is sent as UTF-8");
@@ -307,5 +397,7 @@ int main(int argc, char** argv) {
     testForcingTheMacOsSet();
     testShellKeysAreNotStolen();
     testKeyEncoding();
+    testWordAndLineEditing();
+    testComposedCharacters();
     return check::report("test_input");
 }

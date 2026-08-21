@@ -4,6 +4,19 @@
  * Encodes modifiers the way xterm does (the "1;<mod>" parameter form), so
  * Shift+Arrow, Ctrl+Arrow and friends reach the shell instead of arriving
  * indistinguishable from the unmodified key.
+ *
+ * Two families of key need more than that form, because a terminal is not the
+ * only thing between the keyboard and the shell:
+ *
+ *   - Word and line editing. Alt+Left, Alt+Backspace, Cmd+Backspace and the
+ *     rest are what every native text field on the platform answers to, and a
+ *     user expects them at a prompt too. The shell has never heard of them, so
+ *     they are translated into the readline / zsh bindings that do the same
+ *     job. See encodeEditingKey().
+ *
+ *   - Layout-composed characters. Option (macOS) and AltGr (Linux) are compose
+ *     keys, not Meta: Option+ñ and AltGr+ñ are both `~`. That character has to
+ *     be sent as itself, not as ESC ~. See isComposedText().
  */
 
 #ifndef UI_INPUT_HANDLER_H
@@ -38,6 +51,10 @@ private:
     QByteArray encodeSpecialKey(const KeyEncoding& encoding, int modifierCode,
                                 bool applicationCursorKeys) const;
     static int modifierCode(Qt::KeyboardModifiers modifiers);
+    /* Word- and line-wise editing keys. Null when `key` is not one of them. */
+    static QByteArray encodeEditingKey(int key, Qt::KeyboardModifiers modifiers);
+    /* True when the keyboard layout, not the Alt modifier, produced `text`. */
+    static bool isComposedText(int key, const QString& text);
 
     QHash<int, KeyEncoding> specialKeys_;
 };

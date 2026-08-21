@@ -37,6 +37,82 @@ InputHandler::InputHandler() {
     specialKeys_.insert(Qt::Key_F12, {"24~", false});
 }
 
+/*
+ * Word- and line-wise editing.
+ *
+ * These are the shortcuts every native text field on the platform has -- Alt /
+ * Option for a word, Cmd / Super for the whole line -- and a shell prompt is a
+ * text field as far as the user is concerned. The shell itself knows nothing
+ * about them, so each one is translated into the readline binding (zsh's emacs
+ * mode agrees on all of these) that does the same thing:
+ *
+ *   Alt+Left / Alt+Right   ESC b / ESC f   backward-word / forward-word
+ *   Alt+Backspace          ESC DEL         backward-kill-word
+ *   Alt+Delete             ESC d           kill-word (the one ahead)
+ *   Cmd+Left / Cmd+Right   Ctrl+A / Ctrl+E line start / line end
+ *   Cmd+Backspace          Ctrl+U          kill back to the start of the line
+ *   Cmd+Delete             Ctrl+K          kill to the end of the line
+ *
+ * Sending the literal xterm form instead -- CSI 1;3D for Alt+Left, which is
+ * what the table in the constructor produces -- is why these keys used to do
+ * nothing: a default bash or zsh binds none of it.
+ */
+QByteArray InputHandler::encodeEditingKey(int key, Qt::KeyboardModifiers modifiers) {
+    /*
+     * Ctrl is left out deliberately. Ctrl+Alt is how X11 reports AltGr, and
+     * Ctrl+Arrow already has a meaning of its own (CSI 1;5C, which readline
+     * does bind).
+     */
+    if (modifiers & Qt::ControlModifier) return QByteArray();
+
+    const bool word = (modifiers & Qt::AltModifier) && !(modifiers & Qt::MetaModifier);
+    const bool line = (modifiers & Qt::MetaModifier) && !(modifiers & Qt::AltModifier);
+    if (!word && !line) return QByteArray();
+
+    /* The escape sequences are split across two literals on purpose: "\x1bb"
+     * would be read as one hex escape, not ESC followed by 'b'. */
+    switch (key) {
+    case Qt::Key_Left:      return word ? QByteArray("\x1b" "b")    : QByteArray("\x01");
+    case Qt::Key_Right:     return word ? QByteArray("\x1b" "f")    : QByteArray("\x05");
+    case Qt::Key_Backspace: return word ? QByteArray("\x1b" "\x7f") : QByteArray("\x15");
+    case Qt::Key_Delete:    return word ? QByteArray("\x1b" "d")    : QByteArray("\x0b");
+    default:                return QByteArray();
+    }
+}
+
+/*
+ * Whether the keyboard layout composed `text`, rather than Alt merely being
+ * held while a key was pressed.
+ *
+ * On macOS the Option key is the layout's third level and on Linux AltGr is,
+ * and both arrive with Qt::AltModifier set. Option+ñ (macOS) and AltGr+ñ
+ * (Linux) are both `~`; so are Option+2 for the euro sign, Option+1 for `|`,
+ * and every other punctuation mark a non-US layout hides up there. All of it is
+ * literal text and must be sent as itself.
+ *
+ * The tell is that Qt reports `key()` as the character the key carries with no
+ * modifiers applied at all -- Key_Ntilde for the ñ key, whatever Option did to
+ * it -- so a composed character is one that disagrees with its own key. Alt+B
+ * on a US layout agrees ('B' and 'b'), and so still becomes the ESC b that
+ * readline binds to backward-word.
+ */
+bool InputHandler::isComposedText(int key, const QString& text) {
+    if (text.isEmpty()) return false;
+    /* A multi-character result is a dead key or a surrogate pair; either way it
+     * is text. */
+    if (text.size() > 1) return true;
+
+    const QChar character = text.at(0);
+    /* Control characters come from the Ctrl paths above, never from a layout. */
+    if (character.unicode() < 0x20 || character.unicode() == 0x7f) return false;
+    /* Key_unknown and the keypad/media range are outside Unicode, so there is
+     * no character to disagree with. */
+    if (key < 0 || key > 0x10ffff) return true;
+
+    const QChar bare(static_cast<char16_t>(key));
+    return bare.toLower() != character.toLower();
+}
+
 int InputHandler::modifierCode(Qt::KeyboardModifiers modifiers) {
     /*
      * xterm's modifier parameter is 1 + a bitmask: shift 1, alt 2, control 4,
@@ -83,6 +159,12 @@ QByteArray InputHandler::keyEventToBytes(const QKeyEvent* event,
     const int key = event->key();
     const Qt::KeyboardModifiers modifiers = event->modifiers();
 
+    /* Ahead of the tables below, which would encode Alt+Left as the CSI form
+     * that no shell binds. */
+    if (const QByteArray editing = encodeEditingKey(key, modifiers); !editing.isEmpty()) {
+        return editing;
+    }
+
     if (const auto it = specialKeys_.constFind(key); it != specialKeys_.constEnd()) {
         return encodeSpecialKey(*it, modifierCode(modifiers), applicationCursorKeys);
     }
@@ -125,8 +207,12 @@ QByteArray InputHandler::keyEventToBytes(const QKeyEvent* event,
 
     const QString text = event->text();
 
-    /* Alt-prefixed input: ESC followed by the unmodified character. */
     if ((modifiers & Qt::AltModifier) && !text.isEmpty()) {
+        /* What the layout composed is literal text -- ESC-prefixing it is what
+         * made `~` impossible to type on a Spanish keyboard. */
+        if (isComposedText(key, text)) return text.toUtf8();
+
+        /* Alt-prefixed input: ESC followed by the unmodified character. */
         QByteArray result("\x1b");
         result += text.toUtf8();
         return result;

@@ -64,11 +64,34 @@ public:
     /* The shell's process id, or -1 if none is running. */
     pid_t shellPid() const { return session_ ? session_->shellPid() : -1; }
 
+    /*
+     * What the platform input method needs to know: that this widget takes
+     * composed input at all, and where to put a candidate window. Public
+     * because QWidget declares it so.
+     */
+    QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
+
 signals:
     void sessionEnded();
     void titleChanged(const QString& title);
+    /*
+     * The user picked this pane by clicking in it.
+     *
+     * Deliberately not driven off focusInEvent(): Qt hands focus out by itself
+     * every time a widget is reparented -- which every split and close does --
+     * and it does not deliver a focus event at all until the window is active.
+     * Neither is the user choosing a pane. A click is.
+     */
+    void paneActivated();
 
 protected:
+    /*
+     * Watches for the widget moving to a display with a different device pixel
+     * ratio, which changes how many physical pixels a point is worth and so
+     * invalidates every rasterized glyph. Qt delivers this without necessarily
+     * resizing the widget, so resizeGL() cannot be relied on to catch it.
+     */
+    bool event(QEvent* event) override;
     void initializeGL() override;
     void resizeGL(int width, int height) override;
     void paintGL() override;
@@ -80,6 +103,13 @@ protected:
     void wheelEvent(QWheelEvent* event) override;
     void focusInEvent(QFocusEvent* event) override;
     void focusOutEvent(QFocusEvent* event) override;
+    /*
+     * Composed input. A dead key produces no text of its own -- the platform
+     * input method holds the composition and delivers the result here, and it
+     * only does that for a widget that has asked (WA_InputMethodEnabled, set in
+     * the constructor). See the implementation.
+     */
+    void inputMethodEvent(QInputMethodEvent* event) override;
 
 private slots:
     void onScreenChanged();
@@ -106,6 +136,13 @@ private:
     bool cellAt(const QPointF& position, int& row, int& col) const;
 
     /*
+     * The cell the cursor is on, in the logical pixels Qt reports geometry in.
+     * This is where the platform puts a candidate window, so getting it wrong
+     * parks one in the corner of the screen.
+     */
+    QRectF cursorRectangle() const;
+
+    /*
      * Hand one mouse event to the application, if it asked for the mouse and
      * this event is reportable. Returns true when the application took it, so
      * the caller knows not to act on it locally.
@@ -129,6 +166,11 @@ private:
      * different device pixel ratio. */
     void updateGeometryForFont();
     bool applyFontScale();
+    /* True when the rasterized font no longer matches the display or the
+     * configured size, and has to be rebuilt before the next frame. */
+    bool fontScaleStale() const;
+    /* This screen's logical DPI, never zero. */
+    double logicalDpi() const;
     void restartBlink();
 
     std::unique_ptr<GLRenderer> renderer_;
@@ -142,8 +184,13 @@ private:
     bool paneFocused_ = false;
     QString title_;
 
-    /* Scale the font was last rasterized at, so a screen change is detectable. */
+    /*
+     * What the font on screen was rasterized for, so a screen change is
+     * detectable. All three are inputs to applyFontScale(), and all three can
+     * change without this widget being resized.
+     */
     double lastScaleFactor_ = 0.0;
+    double lastLogicalDpi_ = 0.0;
     int lastFontSize_ = 0;
 
     /* Leftover wheel rotation, in eighths of a degree. */

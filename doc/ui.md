@@ -35,6 +35,57 @@ through a `QStackedWidget` — which every tab page has — comes back carrying
 reattachment points therefore call `show()` explicitly. This is verified by
 `tests/test_splits.cpp`; the failure mode is a pane that silently vanishes.
 
+### Which pane is current
+
+Two different notions of "current pane" have to coexist here, and conflating them
+was the cause of two separate complaints (a split that left the caret behind, and
+a close that left it nowhere).
+
+*Qt focus* is where a keystroke lands. It is not usable as a record of the user's
+intent, for two reasons: reparenting a widget clears it, and **every** split and
+close reparents most of the tree. Qt then hands focus to whatever sits first in
+the new focus chain — which is not the pane anybody asked for.
+
+*The marker* (`markFocused()`, `findMarkedPane()`, stored per pane in
+`TerminalWidget::paneFocused_`) is RaTTY's own record, and it survives
+reparenting because it is not Qt state.
+
+So the two are split by responsibility. Tree surgery only ever moves the
+**marker** — `performSplit()` marks the pane it created, `closePane()` marks a
+survivor — and reports the new pane to its caller. `MainWindow` applies **Qt
+focus** afterwards, once `installTabRoot()` has finished moving widgets around.
+Doing it in the other order is exactly what silently lost the focus before.
+
+`MainWindow::focusedPane()` reads them in that order too: Qt focus first, then
+the marker, and only then "the first leaf" — so an action fires on the pane the
+user is looking at even when Qt focus has just been dropped on the floor.
+
+### The focus history
+
+Closing a pane should hand the caret back to the pane the user came *from*. The
+tree cannot answer that: all it knows is which node is adjacent, so
+`closePane()` can only offer the promoted sibling's leftmost leaf.
+
+`MainWindow` therefore keeps `focusHistory_`, panes in the order they last held
+focus, most recent first, as `QPointer`s — a pane is destroyed by a close, a
+shell exiting or a tab closing, and none of those routes through the list, so
+dead entries are pruned on the way past rather than tracked. `closeFocusedPane()`
+drops the doomed pane from the history first, so it cannot inherit from itself,
+then `restoreFocusIn()` walks the list for the most recent survivor *in that
+tree*, falling back to the marker and finally to the first leaf.
+
+Only deliberate focus changes go in, or the history would be worthless:
+
+- `giveFocusTo()` — the single path for RaTTY choosing a pane (a new split, a
+  `focus_left`-style action, a tab switch, restoring after a close).
+- `TerminalWidget::paneActivated`, emitted from `mousePressEvent` — the user
+  clicking a pane.
+
+Note that the click signal comes from the mouse handler rather than from
+`focusInEvent`. A focus event cannot do the job: Qt sends one for its own
+reparenting reassignments, and sends none at all until the window is *active*,
+so the marker would go stale in an inactive window.
+
 ## `TabBar`
 
 Qt's stock tab bar is a document-style control: tall, boxy, and styled by the
@@ -111,7 +162,7 @@ root is installed:
 
 ```
 before:  tabCount=1   count()=1
---- Ctrl+Shift+W ---
+--- Ctrl+Shift+W (split) ---
 after:   tabCount=0   count()=0   currentIndex=-1   <- no page at all
 ```
 
@@ -123,6 +174,34 @@ into the new tree (`parentNode() != nullptr`) rather than assuming one is there.
 
 Callers read the tab's label *before* the surgery, because afterwards there may be
 no tab to read it from.
+
+## Composed input: dead keys and input methods
+
+`TerminalWidget` sets `Qt::WA_InputMethodEnabled` and implements
+`inputMethodEvent()` / `inputMethodQuery()`. Without all three a terminal cannot
+type a good part of the world's text, which is how it shipped:
+
+A **dead key** produces no character of its own. On a Spanish keyboard `~` is
+one — `Option+ñ` on macOS, `AltGr+ñ` on Linux — and so is every accent (acute,
+then `a`, for `á`). The key event that arrives carries an empty `text()`; the
+platform input method holds the half-finished composition and delivers the
+result separately, as a `QInputMethodEvent`. It only does that for a widget that
+has asked. Not asking meant the composition was silently discarded and the tilde
+was unreachable on both platforms — as was any input method at all.
+
+Three pieces, none optional:
+
+- `WA_InputMethodEnabled` — without it the platform never routes composition to
+  this widget, and the other two are never called.
+- `inputMethodEvent()` — sends `commitString()` to the shell as UTF-8. The
+  preedit string is the composition still in progress, which ought to be drawn
+  under the cursor; RaTTY does not draw it yet (`todo-ratty.md`) but still
+  *accepts* the event, because refusing it abandons the composition rather than
+  letting it finish.
+- `inputMethodQuery()` — answers `ImEnabled`, and `ImCursorRectangle` so a
+  candidate window opens at the cursor instead of in a corner. That rectangle is
+  the one conversion worth watching: the layout is in physical pixels and Qt
+  asks in logical ones.
 
 ## The mouse
 

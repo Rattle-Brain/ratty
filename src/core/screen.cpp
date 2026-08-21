@@ -69,7 +69,23 @@ void Screen::pushHistory(int row) {
     if (historyLimit_ <= 0 || row < 0 || row >= rows_) return;
 
     const Cell* src = rowData(row);
-    history_.emplace_back(src, src + cols_);
+
+    /*
+     * Reuse the buffer of the row being evicted rather than freeing it and
+     * allocating a replacement of the same size. Once the scrollback is full --
+     * the steady state during any sustained run of output -- every scrolled line
+     * came with one malloc and one free, which together were a fifth of the cost
+     * of receiving output. assign() keeps the existing capacity, so the copy
+     * remains but the allocator is left out of it.
+     */
+    if (historyLimit_ > 0 && static_cast<int>(history_.size()) >= historyLimit_) {
+        std::vector<Cell> recycled = std::move(history_.front());
+        history_.pop_front();
+        recycled.assign(src, src + cols_);
+        history_.push_back(std::move(recycled));
+    } else {
+        history_.emplace_back(src, src + cols_);
+    }
     trimHistory();
 
     /*
@@ -121,6 +137,29 @@ const Cell& Screen::viewAt(int row, int col) const {
     return line[static_cast<size_t>(col)];
 }
 
+const Cell* Screen::viewRow(int row, int& length) const {
+    length = 0;
+    if (row < 0 || row >= rows_) return nullptr;
+
+    if (viewOffset_ != 0) {
+        /* Index into the concatenation of history and the live screen, as
+         * viewAt() does. */
+        const int absolute = historySize() - viewOffset_ + row;
+        if (absolute < historySize()) {
+            const std::vector<Cell>& line = history_[static_cast<size_t>(absolute)];
+            length = std::min(cols_, static_cast<int>(line.size()));
+            /* An empty captured row yields length 0, so the pointer is never
+             * dereferenced even though data() may be null. */
+            return line.data();
+        }
+        row = absolute - historySize();
+        if (row < 0 || row >= rows_) return nullptr;
+    }
+
+    length = cols_;
+    return cells_.data() + static_cast<size_t>(physicalRow(row)) * static_cast<size_t>(cols_);
+}
+
 void Screen::clearRow(int row, const Pen& pen) {
     clearRowRange(0, cols_ - 1, row, pen);
 }
@@ -129,9 +168,22 @@ void Screen::clearRowRange(int fromCol, int toColInclusive, int row, const Pen& 
     if (row < 0 || row >= rows_) return;
     const int from = std::max(0, fromCol);
     const int to = std::min(cols_ - 1, toColInclusive);
-    for (int col = from; col <= to; ++col) {
-        cellRef(row, col).erase(pen);
-    }
+    if (from > to) return;
+
+    /*
+     * An erased cell is the same cell for the whole range -- a space carrying
+     * the pen's colours -- so this is a fill, not a loop of writes. It used to
+     * resolve the row indirection and bounds-check the coordinates once per
+     * cell, which mattered because this is on the scrolling path: every line of
+     * output that pushes the screen up clears a row through here, and a `cat`
+     * does that thousands of times a second.
+     */
+    Cell blank;
+    blank.erase(pen);
+
+    Cell* rowBase = cells_.data() + static_cast<size_t>(physicalRow(row))
+                                        * static_cast<size_t>(cols_);
+    std::fill(rowBase + from, rowBase + to + 1, blank);
 }
 
 void Screen::resize(int rows, int cols, const Pen& pen) {

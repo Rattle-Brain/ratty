@@ -106,6 +106,31 @@ void TerminalEmulator::sendReply(const std::string& text) {
 /* ------------------------------------------------------------ VTHandler */
 
 void TerminalEmulator::print(char32_t ch) {
+    /*
+     * Printable ASCII takes the short way round, and it is worth a special case
+     * because it is very nearly everything a terminal is ever asked to draw.
+     *
+     * Such a code point cannot take part in a grapheme cluster: it is not a
+     * joiner, a variation selector, an emoji modifier, a regional indicator, a
+     * tag, an enclosing keycap or a combining mark, it has no emoji
+     * presentation, and it is one column wide. The general path establishes all
+     * of that by walking a dozen sorted range tables per character, and those
+     * tables alone were measurably several percent of the cost of receiving
+     * output.
+     *
+     * The two cluster flags are still cleared, exactly as beginCluster() would:
+     * an ordinary character ends whatever cluster was in progress.
+     * `awaitingJoinedBase_` is the one case where an ASCII code point does carry
+     * cluster meaning -- a ZWJ arrived immediately before it -- so the fast path
+     * stands aside and lets continueCluster() have it.
+     */
+    if (ch >= U' ' && ch < 0x7F && !awaitingJoinedBase_) {
+        clusterIsEmoji_ = false;
+        regionalIndicatorCount_ = 0;
+        active_->print(ch, pen_, 1, 0);
+        return;
+    }
+
     if (continueCluster(ch)) return;
     beginCluster(ch);
 }

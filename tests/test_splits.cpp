@@ -16,8 +16,16 @@
 #include <QApplication>
 #include <QPointer>
 #include <QTabWidget>
+#include <cstdlib>
+#include <string>
 
 namespace {
+
+/* A QSplitter handle is 1px wide and the halves round, so exact equality is the
+ * wrong assertion; anything under a few pixels is an even split. */
+constexpr int tolerance = 6;
+/* TerminalWidget's minimum size. A pane sitting on it is a crushed pane. */
+constexpr int minimumPaneHeight = 100;
 
 /* Run the deferred-delete queue so a dangling node shows up as a null
  * QPointer instead of merely being scheduled for destruction. */
@@ -106,6 +114,144 @@ void testCloseDownToOne(QTabWidget* tabs, SplitContainer* root) {
                 "closing the only pane reports nullptr so the caller closes the tab");
 }
 
+/*
+ * Geometry, not just topology. A nested split used to hand the new container to
+ * the parent QSplitter with no sizes, and a QSplitter answers that by clamping
+ * the widget to its minimum -- so the moment a third pane appeared, the two
+ * already in the tab were squeezed into a 100px strip along one edge while the
+ * newcomer took everything else. The tree was perfectly correct throughout,
+ * which is why the tests above never noticed.
+ */
+void testNestedSplitKeepsGeometry() {
+    check::section("a nested split divides its own pane, not the whole tab");
+
+    QTabWidget tabs;
+    tabs.resize(1000, 700);
+
+    SplitContainer* topLeft = SplitContainer::createLeaf(nullptr);
+    tabs.addTab(topLeft, QStringLiteral("g"));
+    tabs.show();
+    settle();
+
+    /* Two panes, stacked. */
+    SplitContainer* root = topLeft->splitVertical();
+    installRoot(&tabs, root);
+
+    SplitContainer* bottom = root->child2();
+    const int evenGap = std::abs(root->child1()->height() - bottom->height());
+    check::that(evenGap <= tolerance,
+                "two panes divide the tab evenly (gap " + std::to_string(evenGap) + "px)");
+    const int halfHeight = bottom->height();
+
+    /* Three panes: the top half splits side by side, and it has to pay for the
+     * new pane out of its own half. */
+    SplitContainer* sameRoot = topLeft->splitHorizontal();
+    settle();
+
+    check::that(sameRoot == root, "splitting a nested leaf leaves the root alone");
+    SplitContainer* top = root->child1();
+    check::equal(top->countLeaves(), 2, "the top pane became a split of two");
+
+    check::that(std::abs(top->height() - halfHeight) <= tolerance,
+                "the nested split keeps the half it inherited (" + std::to_string(top->height())
+                    + "px of " + std::to_string(halfHeight) + "px)");
+    check::that(std::abs(bottom->height() - halfHeight) <= tolerance,
+                "the untouched pane keeps its half (" + std::to_string(bottom->height())
+                    + "px of " + std::to_string(halfHeight) + "px)");
+
+    const int sideGap = std::abs(topLeft->width() - top->child2()->width());
+    check::that(sideGap <= tolerance,
+                "and divides that half evenly, side by side (gap " + std::to_string(sideGap)
+                    + "px)");
+
+    /* The failure this all exists to catch: a pane pinned to its minimum. */
+    root->forEachLeaf([](SplitContainer* leaf) {
+        check::that(leaf->height() > minimumPaneHeight,
+                    "no pane is crushed to its minimum (" + std::to_string(leaf->height())
+                        + "px)");
+    });
+}
+
+/* Closing the middle pane of three has to give its space to the sibling that
+ * takes its place, not to whichever pane the splitter feels like. */
+void testClosingRestoresTheSiblingsShare() {
+    check::section("closing a pane hands its space to the promoted sibling");
+
+    QTabWidget tabs;
+    tabs.resize(1000, 700);
+
+    SplitContainer* first = SplitContainer::createLeaf(nullptr);
+    tabs.addTab(first, QStringLiteral("g"));
+    tabs.show();
+    settle();
+
+    SplitContainer* root = first->splitVertical();
+    installRoot(&tabs, root);
+    const int halfHeight = root->child2()->height();
+
+    /* Split the bottom half, then close one of its two panes: the survivor is
+     * promoted into the bottom slot and should fill it. */
+    SplitContainer* bottom = root->child2();
+    check::that(bottom->splitVertical() == root, "the root is unchanged by the nested split");
+    settle();
+
+    SplitContainer* survivor = root->child2()->child2();
+    check::that(bottom->closePane() == root, "closing reports the same root");
+    settle();
+
+    check::that(root->child2() == survivor, "the survivor was promoted");
+    check::that(std::abs(survivor->height() - halfHeight) <= tolerance,
+                "and fills the half its parent held (" + std::to_string(survivor->height())
+                    + "px of " + std::to_string(halfHeight) + "px)");
+    check::that(std::abs(root->child1()->height() - halfHeight) <= tolerance,
+                "leaving the other pane alone (" + std::to_string(root->child1()->height())
+                    + "px of " + std::to_string(halfHeight) + "px)");
+}
+
+/*
+ * The focus marker, which is the tree's own record of which pane is current.
+ * Qt focus cannot play that role: every piece of tree surgery reparents
+ * widgets, and reparenting clears it. So the surgery marks a pane and the
+ * caller applies Qt focus afterwards -- these assertions cover the marking half.
+ */
+void testFocusMarkerTracksSurgery() {
+    check::section("the focus marker follows splits and closes");
+
+    QTabWidget tabs;
+    tabs.resize(1000, 700);
+    SplitContainer* first = SplitContainer::createLeaf(nullptr);
+    tabs.addTab(first, QStringLiteral("f"));
+    tabs.show();
+    settle();
+
+    first->focusPane();
+    check::that(first->findMarkedPane() == first, "a lone pane is the marked one");
+
+    /* Splitting marks the pane it created, and reports it. */
+    SplitContainer* second = nullptr;
+    SplitContainer* root = first->splitHorizontal(0.5f, &second);
+    installRoot(&tabs, root);
+
+    check::that(second != nullptr, "the split reports the pane it created");
+    check::that(second == root->child2(), "which is the second child");
+    check::that(root->findMarkedPane() == second, "and that pane is marked");
+    check::that(!first->terminal()->isPaneFocused(), "the pane split away from is not");
+
+    /* Splitting the new pane again marks the newest one. */
+    SplitContainer* third = nullptr;
+    check::that(second->splitVertical(0.5f, &third) == root, "the root is unchanged");
+    settle();
+    check::that(root->findMarkedPane() == third, "the newest pane is marked");
+
+    /* Closing it marks a live pane -- never the one just destroyed. */
+    check::that(third->closePane() == root, "closing reports the same root");
+    settle();
+    SplitContainer* marked = root->findMarkedPane();
+    check::that(marked != nullptr, "a pane is still marked after a close");
+    check::that(marked == second, "and it is the promoted sibling");
+    check::equal(root->countLeaves(), 2, "two panes remain");
+}
+
 void testDirectionalNavigation(SplitContainer* root) {
     check::section("directional navigation");
 
@@ -135,6 +281,10 @@ int main(int argc, char** argv) {
     tabs->addTab(root, QStringLiteral("t"));
     tabs->show();
     settle();
+
+    testFocusMarkerTracksSurgery();
+    testNestedSplitKeepsGeometry();
+    testClosingRestoresTheSiblingsShare();
 
     testSplitKeepsBothPanes(tabs, root);
     testNestedSplit(root);

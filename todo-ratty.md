@@ -217,6 +217,31 @@ Recorded because the causes are instructive; full write-ups in
       returned without inserting anything, leaving the tab widget with no page.
       Testing `SplitContainer` on its own could not see this; the suite now
       drives `MainWindow` with real key events.
+- [x] **A third pane crushed the other two into a 100 px strip.** `replaceChild()`
+      read back the parent splitter's sizes to preserve its ratio, but the pane
+      being split had already been detached -- so the splitter held one widget,
+      reported one size, and the `size() == 2` guard skipped `setSizes()`
+      entirely. A widget `QSplitter` inserts with no size of its own is clamped
+      to its minimum, which is exactly `TerminalWidget`'s 200x100. The tree was
+      correct throughout, which is why only a geometry assertion could catch it.
+- [x] **Splitting did not focus the new pane, and closing focused nothing.** Both
+      halves were the same mistake: the tree surgery set Qt focus, and then
+      `installTabRoot()` reparented the tree into the tab widget's stacked
+      layout, which clears it. Surgery now moves only RaTTY's own focus marker,
+      which survives reparenting, and `MainWindow` applies Qt focus afterwards.
+      Closing consults a focus history so the caret returns to the pane the user
+      came from, not to the promoted sibling's leftmost leaf.
+- [x] **`~` could not be typed at all, and neither could any accent.** `~` is a
+      dead key on the Spanish layout (Option+n-tilde on macOS, AltGr+n-tilde on
+      Linux): the key event carries no text, and the platform input method
+      delivers the composed result as a `QInputMethodEvent` -- to a widget that
+      has set `WA_InputMethodEnabled`, which `TerminalWidget` had not. The
+      composition was dropped, along with every accent and every input method.
+- [x] **Option and AltGr were treated as Meta.** The part of the layout's third
+      level that is *not* a dead key (`|`, `@`, `[`, `]`, `€`) arrives as text
+      with `Qt::AltModifier` set, and was ESC-prefixed as if it were a Meta key.
+      Told apart now by comparing the character against `key()`, which Qt
+      reports with no modifiers applied.
 - [x] **`hasChildExited()` consumed the exit status.** It called `waitpid` from a
       `const` method on every poll, so cleanup could no longer reap.
 - [x] **`TERM` was never set**, so a shell launched outside a terminal fell back
@@ -352,6 +377,12 @@ The buffer works; these are the parts deliberately left out of it.
 ### UI
 - [ ] Persist window geometry 🔍
 - [ ] Drag a splitter and have the pty resize live (works, but unthrottled)
+- [ ] Draw the input-method preedit string under the cursor. It is accepted and
+      composed correctly, but an in-progress composition is invisible until it
+      commits, so a CJK candidate window has nothing to sit against
+- [ ] Word- and line-editing keys assume an emacs-mode line editor. A `vi`-mode
+      shell, or one that binds the xterm forms itself, would rather have
+      `CSI 1;3D` than `ESC b`; there is no way to ask for it
 - [ ] Move panes between tabs; detach a pane into a new window
 - [ ] URL detection and click-to-open
 - [ ] Visual bell as an alternative to the audible one

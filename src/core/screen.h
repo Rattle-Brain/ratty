@@ -148,6 +148,22 @@ public:
      * offset this is exactly at(). */
     const Cell& viewAt(int row, int col) const;
 
+    /*
+     * The same row as viewAt(), handed over whole.
+     *
+     * For a caller that walks a row left to right -- which is what the renderer
+     * does, every frame, over every cell -- resolving the history/live split and
+     * the row indirection once per row rather than once per cell is the
+     * difference between two function calls plus four bounds checks per cell and
+     * a pointer increment.
+     *
+     * `length` is how many cells the returned pointer actually covers. A history
+     * row captured at a narrower width is shorter than the screen; the columns
+     * past it are blank, exactly as viewAt() reports them. nullptr for a row
+     * outside the grid.
+     */
+    const Cell* viewRow(int row, int& length) const;
+
     /* Every mutation bumps this, so the view can skip repainting an
      * unchanged grid. */
     uint64_t revision() const { return revision_; }

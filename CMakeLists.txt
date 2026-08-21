@@ -17,6 +17,20 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+# Link-time optimization for release builds. It matters here because the hot
+# paths are small functions spread across translation units -- Screen::print and
+# the cell accessors the renderer calls per cell -- which the compiler can only
+# inline once it can see across object files. Probed rather than assumed, and
+# left off for debug builds where the link time is not worth paying.
+include(CheckIPOSupported)
+check_ipo_supported(RESULT RATTY_HAS_LTO OUTPUT RATTY_LTO_ERROR)
+if(RATTY_HAS_LTO)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
+else()
+    message(STATUS "Link-time optimization unavailable: ${RATTY_LTO_ERROR}")
+endif()
+
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets)
 find_package(Freetype REQUIRED)
 # Configuration is YAML; see src/config/config.h for why.

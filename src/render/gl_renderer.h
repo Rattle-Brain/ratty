@@ -32,6 +32,10 @@
 #include <memory>
 #include <vector>
 
+/* The two shader programs, shared across a context share group; defined in the
+ * implementation, where the reason for sharing them is explained. */
+struct SharedPrograms;
+
 class GLRenderer {
 public:
     GLRenderer();
@@ -52,8 +56,8 @@ public:
      */
     bool setFont(const QStringList& families, const QStringList& fallbacks,
                  double pixelSize);
-    const FontMetrics& fontMetrics() const { return fonts_.metrics(); }
-    bool hasFont() const { return fonts_.isValid(); }
+    const FontMetrics& fontMetrics() const;
+    bool hasFont() const { return fonts_ && fonts_->isValid(); }
 
     /* framebufferWidth/Height are in physical pixels. */
     void beginFrame(int framebufferWidth, int framebufferHeight, const QColor& clearColor);
@@ -97,6 +101,9 @@ private:
         float r, g, b, a;
     };
 
+    /* Take a reference to this share group's programs, compiling them if this
+     * is the first renderer in the group. */
+    bool acquirePrograms(QOpenGLContext* context);
     bool compileShader(QOpenGLShaderProgram& program, const QString& vertexPath,
                        const QString& fragmentPath, const char* label);
     void appendRect(std::vector<RectVertex>& target, int x, int y, int width, int height,
@@ -108,15 +115,23 @@ private:
     QOpenGLFunctions* gl_ = nullptr;
     bool initialized_ = false;
 
-    FontManager fonts_;
+    /*
+     * Shared with every other renderer showing the same font at the same size,
+     * which in a split window is all of them. Faces and metrics are not GL
+     * objects, so there is nothing per-context about them; the atlas below is
+     * the only part that has to be per-renderer.
+     */
+    std::shared_ptr<FontManager> fonts_;
     std::unique_ptr<GlyphAtlas> atlas_;
-    /* The preference list the current faces were loaded for, so a pure size
-     * change can skip re-resolving fonts. */
-    QStringList loadedRequest_;
-    QStringList loadedFallbacks_;
 
-    std::unique_ptr<QOpenGLShaderProgram> textShader_;
-    std::unique_ptr<QOpenGLShaderProgram> rectShader_;
+    /*
+     * Programs, shared across the context group -- see the note in the
+     * implementation. `programs_` is the ownership handle; the two raw pointers
+     * are just the members below it reaching into it.
+     */
+    std::shared_ptr<SharedPrograms> programs_;
+    QOpenGLShaderProgram* textShader_ = nullptr;
+    QOpenGLShaderProgram* rectShader_ = nullptr;
 
     QOpenGLBuffer textVBO_{QOpenGLBuffer::VertexBuffer};
     QOpenGLBuffer rectVBO_{QOpenGLBuffer::VertexBuffer};

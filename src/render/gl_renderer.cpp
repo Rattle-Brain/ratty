@@ -8,6 +8,7 @@
 #include <QOpenGLContext>
 #include <algorithm>
 #include <cstddef>
+#include <unordered_map>
 
 namespace {
 
@@ -28,6 +29,36 @@ QByteArray readShaderSource(const QString& path) {
         return QByteArray();
     }
     return file.readAll();
+}
+
+/*
+ * The two shader programs, shared by every renderer whose context belongs to the
+ * same share group.
+ *
+ * Compiling and linking them costs about 30 ms -- which, once the font chain
+ * became shareable, was the entire remaining cost of bringing up a new pane.
+ * Program objects live in the *share group* rather than in one context, so with
+ * Qt::AA_ShareOpenGLContexts on (see main()) one compile serves the whole
+ * window.
+ *
+ * Held weakly here and strongly by each renderer, which is what gets the
+ * destruction order right: the last renderer to let go is the one that deletes
+ * them, and it does so from releaseGLResources(), where a context of the group
+ * is current. A cache holding the last reference would instead free them at
+ * some arbitrary later moment with no context at all.
+ */
+} // namespace
+
+struct SharedPrograms {
+    std::shared_ptr<QOpenGLShaderProgram> text;
+    std::shared_ptr<QOpenGLShaderProgram> rect;
+};
+
+namespace {
+
+std::unordered_map<QOpenGLContextGroup*, std::weak_ptr<SharedPrograms>>& programCache() {
+    static std::unordered_map<QOpenGLContextGroup*, std::weak_ptr<SharedPrograms>> cache;
+    return cache;
 }
 
 } // namespace
@@ -54,22 +85,7 @@ bool GLRenderer::initialize() {
         return false;
     }
 
-    textShader_ = std::make_unique<QOpenGLShaderProgram>();
-    if (!compileShader(*textShader_, QStringLiteral(":/shaders/shaders/text.vert"),
-                       QStringLiteral(":/shaders/shaders/text.frag"), "text")) {
-        return false;
-    }
-    rectShader_ = std::make_unique<QOpenGLShaderProgram>();
-    if (!compileShader(*rectShader_, QStringLiteral(":/shaders/shaders/rect.vert"),
-                       QStringLiteral(":/shaders/shaders/rect.frag"), "rect")) {
-        return false;
-    }
-
-    /* Bind the atlas sampler to texture unit 0 once; nothing else uses a
-     * texture, so the binding never changes. */
-    textShader_->bind();
-    textShader_->setUniformValue("u_texture", 0);
-    textShader_->release();
+    if (!acquirePrograms(context)) return false;
 
     textVAO_.create();
     textVAO_.bind();
@@ -109,6 +125,46 @@ bool GLRenderer::initialize() {
     return true;
 }
 
+bool GLRenderer::acquirePrograms(QOpenGLContext* context) {
+    QOpenGLContextGroup* group = context->shareGroup();
+
+    auto& cache = programCache();
+    if (const auto it = cache.find(group); it != cache.end()) {
+        if (std::shared_ptr<SharedPrograms> existing = it->second.lock()) {
+            programs_ = std::move(existing);
+            textShader_ = programs_->text.get();
+            rectShader_ = programs_->rect.get();
+            return true;
+        }
+        cache.erase(it);
+    }
+
+    auto programs = std::make_shared<SharedPrograms>();
+    programs->text = std::make_shared<QOpenGLShaderProgram>();
+    if (!compileShader(*programs->text, QStringLiteral(":/shaders/shaders/text.vert"),
+                       QStringLiteral(":/shaders/shaders/text.frag"), "text")) {
+        return false;
+    }
+    programs->rect = std::make_shared<QOpenGLShaderProgram>();
+    if (!compileShader(*programs->rect, QStringLiteral(":/shaders/shaders/rect.vert"),
+                       QStringLiteral(":/shaders/shaders/rect.frag"), "rect")) {
+        return false;
+    }
+
+    /* Bind the atlas sampler to texture unit 0 once; nothing else uses a
+     * texture, so the binding never changes. Uniform state lives in the program
+     * object, so sharing the program shares this too. */
+    programs->text->bind();
+    programs->text->setUniformValue("u_texture", 0);
+    programs->text->release();
+
+    cache[group] = programs;
+    programs_ = std::move(programs);
+    textShader_ = programs_->text.get();
+    rectShader_ = programs_->rect.get();
+    return true;
+}
+
 bool GLRenderer::compileShader(QOpenGLShaderProgram& program, const QString& vertexPath,
                                const QString& fragmentPath, const char* label) {
     const QByteArray vertexSource = readShaderSource(vertexPath);
@@ -134,6 +190,11 @@ bool GLRenderer::compileShader(QOpenGLShaderProgram& program, const QString& ver
     return true;
 }
 
+const FontMetrics& GLRenderer::fontMetrics() const {
+    static const FontMetrics none;
+    return fonts_ ? fonts_->metrics() : none;
+}
+
 bool GLRenderer::setFont(const QStringList& families, const QStringList& fallbacks,
                          double pixelSize) {
     if (pixelSize <= 0.0) return false;
@@ -145,26 +206,20 @@ bool GLRenderer::setFont(const QStringList& families, const QStringList& fallbac
         return result;
     };
 
-    /* A pure size change keeps the faces and only re-scales them. */
-    const bool sameRequest = (families == loadedRequest_)
-                          && (fallbacks == loadedFallbacks_)
-                          && fonts_.isValid();
+    std::shared_ptr<FontManager> fonts =
+        FontManager::shared(toStdVector(families), toStdVector(fallbacks), pixelSize);
+    if (!fonts || !fonts->isValid()) return false;
 
-    bool ok = false;
-    if (sameRequest) {
-        ok = fonts_.setPixelSize(pixelSize);
-    } else {
-        fonts_.setFallbackFamilies(toStdVector(fallbacks));
-        ok = fonts_.loadFamily(toStdVector(families), pixelSize);
-        if (ok) {
-            loadedRequest_ = families;
-            loadedFallbacks_ = fallbacks;
-        }
-    }
-    if (!ok) return false;
+    /*
+     * Handing back the very same chain means the rasterization is unchanged, so
+     * every glyph already in the atlas is still correct -- a shared chain is
+     * keyed by its pixel size and is never resized while anyone holds it. Only
+     * a genuinely different chain invalidates the cache.
+     */
+    const bool unchanged = (fonts == fonts_);
+    fonts_ = std::move(fonts);
 
-    /* Cached glyphs were rasterized at the old size. */
-    if (atlas_) atlas_->clear();
+    if (!unchanged && atlas_) atlas_->clear();
     atlasGeneration_ = atlas_ ? atlas_->generation() : 0;
     return true;
 }
@@ -256,9 +311,9 @@ void GLRenderer::strokeOverlay(int x, int y, int width, int height, int thicknes
 void GLRenderer::drawGlyph(char32_t codepoint, FontStyle style,
                            GlyphPresentation presentation, int penX, int baselineY,
                            const QColor& color) {
-    if (!initialized_ || !atlas_ || !fonts_.isValid() || color.alpha() == 0) return;
+    if (!initialized_ || !atlas_ || !fonts_ || !fonts_->isValid() || color.alpha() == 0) return;
 
-    const CachedGlyph* glyph = atlas_->glyph(codepoint, style, presentation, fonts_);
+    const CachedGlyph* glyph = atlas_->glyph(codepoint, style, presentation, *fonts_);
 
     if (atlas_->generation() != atlasGeneration_) {
         /*

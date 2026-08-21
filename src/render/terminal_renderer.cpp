@@ -44,24 +44,54 @@ TerminalRenderer::Layout TerminalRenderer::computeLayout(const FontMetrics& metr
 }
 
 void TerminalRenderer::paint(GLRenderer& renderer, const Screen& screen, const Palette& palette,
-                             const Layout& layout, const Options& options) const {
+                             const Layout& layout, const Options& options) {
     if (!layout.isValid()) return;
 
-    /* Submission order does not matter -- GLRenderer keeps the layers apart --
-     * but reads best bottom-up. */
-    paintBackgrounds(renderer, screen, palette, layout);
-    paintGlyphs(renderer, screen, palette, layout);
+    paintGrid(renderer, screen, palette, layout);
     paintCursor(renderer, screen, palette, layout, options);
 }
 
-void TerminalRenderer::paintBackgrounds(GLRenderer& renderer, const Screen& screen,
-                                        const Palette& palette, const Layout& layout) const {
+void TerminalRenderer::paintGrid(GLRenderer& renderer, const Screen& screen,
+                                 const Palette& palette, const Layout& layout) {
+    static const Cell blank{};
+
     const QColor defaultBackground = palette.defaultBackground();
     const int rows = std::min(layout.rows, screen.rows());
     const int cols = std::min(layout.cols, screen.cols());
+    if (rows <= 0 || cols <= 0) return;
+
+    /*
+     * One pass over the grid, not two.
+     *
+     * Backgrounds and glyphs used to be separate traversals, which meant every
+     * cell was read twice and -- more expensively -- resolved through the
+     * palette twice, once for a background colour that the glyph pass threw
+     * away and once for a foreground colour the background pass had thrown away.
+     * On a large window that is tens of thousands of redundant resolutions per
+     * frame. Resolving each cell once into a per-row scratch buffer costs a few
+     * kilobytes and halves the work.
+     *
+     * The draw order is unchanged, and has to be: within a row the background
+     * runs are submitted before that row's underlines and strikethroughs, so
+     * the decorations still land on top of the fills. Rows are submitted in
+     * order too, and since two rows never share a pixel it does not matter that
+     * row N's decorations now precede row N+1's fills.
+     */
+    rowColors_.resize(static_cast<size_t>(cols));
 
     for (int row = 0; row < rows; ++row) {
+        int rowLength = 0;
+        const Cell* cells = screen.viewRow(row, rowLength);
+
         const int y = layout.originY + row * layout.cellHeight;
+        const int baselineY = y + layout.baseline;
+
+        for (int col = 0; col < cols; ++col) {
+            const Cell& cell = (cells && col < rowLength) ? cells[col] : blank;
+            CellColors& resolved = rowColors_[static_cast<size_t>(col)];
+            resolved.cell = &cell;
+            palette.resolveCell(cell, resolved.fg, resolved.bg);
+        }
 
         /*
          * Merge horizontally adjacent cells that share a background into a
@@ -83,10 +113,7 @@ void TerminalRenderer::paintBackgrounds(GLRenderer& renderer, const Screen& scre
         };
 
         for (int col = 0; col < cols; ++col) {
-            QColor fg;
-            QColor bg;
-            palette.resolveCell(screen.viewAt(row, col), fg, bg);
-
+            const QColor& bg = rowColors_[static_cast<size_t>(col)].bg;
             const bool needsFill = (bg != defaultBackground);
 
             if (runActive && needsFill && bg == runColor) {
@@ -102,31 +129,14 @@ void TerminalRenderer::paintBackgrounds(GLRenderer& renderer, const Screen& scre
             }
         }
         flushRun(cols);
-    }
-}
-
-void TerminalRenderer::paintGlyphs(GLRenderer& renderer, const Screen& screen,
-                                   const Palette& palette, const Layout& layout) const {
-    const int rows = std::min(layout.rows, screen.rows());
-    const int cols = std::min(layout.cols, screen.cols());
-
-    for (int row = 0; row < rows; ++row) {
-        const int cellTop = layout.originY + row * layout.cellHeight;
-        const int baselineY = cellTop + layout.baseline;
 
         for (int col = 0; col < cols; ++col) {
-            /* viewAt(), not at(): with the view scrolled back these rows come
-             * from the scrollback, while the cursor and everything the
-             * application writes still belong to the live grid. */
-            const Cell& cell = screen.viewAt(row, col);
+            const CellColors& resolved = rowColors_[static_cast<size_t>(col)];
+            const Cell& cell = *resolved.cell;
 
             /* The trailing half of a wide character carries no glyph of its
              * own; drawing it would double-strike the left half. */
             if (cell.hasFlag(CellFlagWideTrailer)) continue;
-
-            QColor fg;
-            QColor bg;
-            palette.resolveCell(cell, fg, bg);
 
             const int cellLeft = layout.originX + col * layout.cellWidth;
 
@@ -139,9 +149,8 @@ void TerminalRenderer::paintGlyphs(GLRenderer& renderer, const Screen& screen,
              */
             if (!cell.isBlank() && !isSpaceSeparator(cell.ch)) {
                 /*
-                 * Bold and italic now pick a real font style. Previously every
-                 * cell was drawn with the regular face and bold was faked by
-                 * lightening the colour, so bold text was merely brighter.
+                 * Bold and italic pick a real font style rather than faking
+                 * bold by lightening the colour.
                  */
                 const FontStyle style = fontStyleFor(cell.hasFlag(CellFlagBold),
                                                      cell.hasFlag(CellFlagItalic));
@@ -153,21 +162,24 @@ void TerminalRenderer::paintGlyphs(GLRenderer& renderer, const Screen& screen,
                 const GlyphPresentation presentation =
                     cell.isEmojiPresentation() ? GlyphPresentation::Emoji
                                                : GlyphPresentation::Text;
-                renderer.drawGlyph(cell.ch, style, presentation, cellLeft, baselineY, fg);
+                renderer.drawGlyph(cell.ch, style, presentation, cellLeft, baselineY,
+                                   resolved.fg);
             }
 
-            /* Decorations go in the background layer, submitted after the cell
-             * fills, so they sit above the background and below the glyph. */
+            /* Decorations go in the background layer, submitted after this
+             * row's cell fills, so they sit above the background and below the
+             * glyph. */
             if (cell.hasFlag(CellFlagUnderline)) {
                 const int thickness = std::max(1, layout.cellHeight / 16);
-                const int y = std::min(baselineY + std::max(1, layout.cellHeight / 12),
-                                       cellTop + layout.cellHeight - thickness);
-                renderer.fillBackground(cellLeft, y, layout.cellWidth, thickness, fg);
+                const int underlineY = std::min(baselineY + std::max(1, layout.cellHeight / 12),
+                                                y + layout.cellHeight - thickness);
+                renderer.fillBackground(cellLeft, underlineY, layout.cellWidth, thickness,
+                                        resolved.fg);
             }
             if (cell.hasFlag(CellFlagStrike)) {
                 const int thickness = std::max(1, layout.cellHeight / 16);
                 renderer.fillBackground(cellLeft, baselineY - layout.cellHeight / 4,
-                                        layout.cellWidth, thickness, fg);
+                                        layout.cellWidth, thickness, resolved.fg);
             }
         }
     }

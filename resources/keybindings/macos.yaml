@@ -37,8 +37,8 @@ keybindings:
   # --- splits -------------------------------------------------------------
   # split_vertical   divides top / bottom  (the new pane appears below)
   # split_horizontal divides left / right  (the new pane appears beside)
-  ctrl+shift+w: split_vertical
-  ctrl+shift+v: split_horizontal
+  ctrl+shift+v: split_vertical
+  ctrl+shift+w: split_horizontal
   ctrl+shift+c: close_split
 
   ctrl+shift+h: focus_left

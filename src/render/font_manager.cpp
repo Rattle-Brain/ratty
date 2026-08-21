@@ -100,6 +100,25 @@ bool isPlaceholderFamily(const std::string& family) {
 }
 
 /*
+ * Answers already had from fontconfig, for the lifetime of the process.
+ *
+ * Every lookup below is a `fc-match` *subprocess*, at roughly 30 ms a time, and
+ * the same handful of questions get asked over and over: each pane builds its
+ * own font chain, and each chain asks for the primary family in four styles,
+ * the platform monospace, and six candidate emoji families. A four-way split
+ * came to 157 spawns and several hundred milliseconds of pure process
+ * overhead. The installed font set does not change while RaTTY is running, so
+ * the answer to a repeated question is the answer already given.
+ *
+ * Guarded by nothing: font loading happens on the GUI thread only, which is
+ * also the only thread allowed to touch the FT faces these results produce.
+ */
+std::unordered_map<std::string, FontFile>& fontconfigMemo() {
+    static std::unordered_map<std::string, FontFile> memo;
+    return memo;
+}
+
+/*
  * Ask fontconfig for the file, face index and *resolved* family.
  *
  * `extra` appends further pattern elements, e.g. ":spacing=100" to demand a
@@ -114,6 +133,19 @@ FontFile queryFontconfig(const std::string& family, FontStyle style,
                                QString::fromLatin1(kStyleQuery[style]));
     pattern += extra;
 
+    const std::string memoKey = pattern.toStdString();
+    auto& memo = fontconfigMemo();
+    if (const auto it = memo.find(memoKey); it != memo.end()) {
+        return it->second;
+    }
+
+    /* A failed lookup is cached too: a family that is not installed stays not
+     * installed, and re-asking is the expensive case (fc-match still has to
+     * search before it can substitute). */
+    const auto remember = [&memo, &memoKey](const FontFile& file) -> const FontFile& {
+        return memo.emplace(memoKey, file).first->second;
+    };
+
     QProcess process;
     process.start(QStringLiteral("fc-match"),
                   {QStringLiteral("-f"), QStringLiteral("%{file}\t%{index}\t%{family}"),
@@ -121,19 +153,19 @@ FontFile queryFontconfig(const std::string& family, FontStyle style,
 
     if (!process.waitForFinished(kFontconfigTimeoutMs)
         || process.exitStatus() != QProcess::NormalExit) {
-        return result;
+        return remember(result);
     }
 
     const QString output = QString::fromUtf8(process.readAllStandardOutput()).trimmed();
-    if (output.isEmpty()) return result;
+    if (output.isEmpty()) return remember(result);
 
     const QStringList parts = output.split(QLatin1Char('\t'));
-    if (parts.isEmpty() || parts[0].isEmpty()) return result;
+    if (parts.isEmpty() || parts[0].isEmpty()) return remember(result);
 
     result.path = parts[0].toStdString();
     if (parts.size() > 1) result.faceIndex = parts[1].toInt();
     if (parts.size() > 2) result.family = parts[2].toStdString();
-    return result;
+    return remember(result);
 }
 
 /*
@@ -235,6 +267,19 @@ void FontManager::setFallbackFamilies(const std::vector<std::string>& families) 
 
 std::string FontManager::defaultMonospaceFamily() {
     /*
+     * Cached: the fallback path below walks every installed family and asks the
+     * font engine whether each is fixed-pitch, which is far too expensive to
+     * repeat once per pane -- and the system's monospaced font does not change
+     * under us.
+     */
+    static const std::string cached = [] {
+        return computeDefaultMonospaceFamily();
+    }();
+    return cached;
+}
+
+std::string FontManager::computeDefaultMonospaceFamily() {
+    /*
      * Take the family straight off the QFont. Passing it through QFontInfo
      * resolves it against the font engine, which on macOS answers
      * ".AppleSystemUIFont" -- a proportional UI font. Feeding that to fontconfig
@@ -288,6 +333,17 @@ FontFile FontManager::resolveExactFamily(const std::string& family, FontStyle st
 }
 
 std::vector<FontFile> FontManager::discoverFontsFor(char32_t codepoint) {
+    /*
+     * Cached per code point, and shared by every pane. `fc-list` scans the whole
+     * font set, so this is the most expensive question asked here; without the
+     * cache a second pane rendering the same unusual character pays for it all
+     * over again.
+     */
+    static std::unordered_map<char32_t, std::vector<FontFile>> memo;
+    if (const auto it = memo.find(codepoint); it != memo.end()) {
+        return it->second;
+    }
+
     std::vector<FontFile> found;
 
     /*
@@ -306,7 +362,7 @@ std::vector<FontFile> FontManager::discoverFontsFor(char32_t codepoint) {
                    QStringLiteral(":charset=%1").arg(static_cast<uint>(codepoint), 0, 16)});
     if (!process.waitForFinished(kFontconfigTimeoutMs)) {
         process.kill();
-        return found;
+        return memo.emplace(codepoint, std::move(found)).first->second;
     }
 
     /* Monospaced candidates first, so a fallback's advance matches the grid. */
@@ -332,7 +388,7 @@ std::vector<FontFile> FontManager::discoverFontsFor(char32_t codepoint) {
 
     found.insert(found.end(), std::make_move_iterator(proportional.begin()),
                  std::make_move_iterator(proportional.end()));
-    return found;
+    return memo.emplace(codepoint, std::move(found)).first->second;
 }
 
 /* ------------------------------------------------------------- loading */
@@ -543,6 +599,70 @@ bool FontManager::loadFamily(const std::vector<std::string>& preferences, double
 
     computeMetrics();
     return metrics_.isValid();
+}
+
+/* ------------------------------------------------------- shared instances */
+
+namespace {
+
+struct SharedFontChain {
+    std::vector<std::string> families;
+    std::vector<std::string> fallbacks;
+    std::shared_ptr<FontManager> manager;
+};
+
+std::vector<SharedFontChain>& sharedFontChains() {
+    static std::vector<SharedFontChain> chains;
+    return chains;
+}
+
+} // namespace
+
+std::shared_ptr<FontManager> FontManager::shared(const std::vector<std::string>& families,
+                                                 const std::vector<std::string>& fallbacks,
+                                                 double pixelSize) {
+    if (pixelSize <= 0.0) return nullptr;
+
+    auto& chains = sharedFontChains();
+
+    const auto sameRequest = [&](const SharedFontChain& chain) {
+        return chain.families == families && chain.fallbacks == fallbacks
+            && chain.manager && chain.manager->isValid();
+    };
+
+    /* The common case: another pane already wants exactly this. */
+    for (const SharedFontChain& chain : chains) {
+        if (sameRequest(chain)
+            && std::abs(chain.manager->pixelSize() - pixelSize) < 0.01) {
+            return chain.manager;
+        }
+    }
+
+    /*
+     * The same chain at a different size, held by nobody: re-scale it in place
+     * rather than reloading the faces. This is the font-zoom path -- resizing
+     * an open face is a metrics recomputation, where a reload is eight
+     * FT_New_Face calls.
+     */
+    for (SharedFontChain& chain : chains) {
+        if (sameRequest(chain) && chain.manager.use_count() == 1
+            && chain.manager->setPixelSize(pixelSize)) {
+            return chain.manager;
+        }
+    }
+
+    auto manager = std::make_shared<FontManager>();
+    manager->setFallbackFamilies(fallbacks);
+    if (!manager->loadFamily(families, pixelSize)) return nullptr;
+
+    /* Anything left unheld is a chain no pane came back for -- a size stepped
+     * past on the way to this one, most likely. Dropping it here bounds the
+     * cache without needing a policy. */
+    std::erase_if(chains, [](const SharedFontChain& chain) {
+        return !chain.manager || chain.manager.use_count() == 1;
+    });
+    chains.push_back({families, fallbacks, manager});
+    return manager;
 }
 
 bool FontManager::setPixelSize(double pixelSize) {

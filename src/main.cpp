@@ -38,6 +38,24 @@ int main(int argc, char* argv[]) {
      */
     QCoreApplication::setAttribute(Qt::AA_MacDontSwapCtrlAndMeta, true);
 
+    /*
+     * Share one GL context between every pane, and the reason is latency rather
+     * than memory.
+     *
+     * QOpenGLWidget destroys and recreates its context whenever it is
+     * reparented -- which is exactly what splitting a pane does -- *unless*
+     * contexts are shared: Qt's own handler for the internal window-change
+     * event skips the teardown when this attribute is set. Without it, every
+     * split ran initializeGL() again on both the new pane and the one being
+     * split, and each of those rebuilt the renderer, re-resolved the whole font
+     * chain through fc-match and repopulated the glyph atlas from nothing. That
+     * was ~450 ms of blocking work per split, most of it spent waiting on
+     * fontconfig subprocesses, and it is what made opening a split feel slow.
+     *
+     * With the context preserved, a split is pure widget surgery.
+     */
+    QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts, true);
+
     QApplication app(argc, argv);
 
     QCoreApplication::setOrganizationName(QStringLiteral("Ratty"));

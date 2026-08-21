@@ -19,6 +19,7 @@
 #include <QObject>
 #include <QString>
 #include <memory>
+#include <vector>
 
 class QSocketNotifier;
 
@@ -114,6 +115,9 @@ private:
 
     /* Sized to swallow a burst of shell output in one pass; the notifier fires
      * again if more is pending. */
+    /* Reused across reads; see the note in drainPty(). */
+    std::vector<char> readBuffer_;
+
     static constexpr int ReadChunkSize = 64 * 1024;
     static constexpr int MaxReadsPerEvent = 32;
 };

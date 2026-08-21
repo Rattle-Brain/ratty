@@ -17,6 +17,7 @@
 #include "../core/palette.h"
 #include "../core/screen.h"
 #include "gl_renderer.h"
+#include <vector>
 
 class TerminalRenderer {
 public:
@@ -51,16 +52,27 @@ public:
     static Layout computeLayout(const FontMetrics& metrics, int pixelWidth, int pixelHeight,
                                 int padding = 0);
 
+    /* Not const: the per-row scratch buffer below is reused across frames
+     * rather than reallocated on every one. */
     void paint(GLRenderer& renderer, const Screen& screen, const Palette& palette,
-               const Layout& layout, const Options& options) const;
+               const Layout& layout, const Options& options);
 
 private:
-    void paintBackgrounds(GLRenderer& renderer, const Screen& screen, const Palette& palette,
-                          const Layout& layout) const;
-    void paintGlyphs(GLRenderer& renderer, const Screen& screen, const Palette& palette,
-                     const Layout& layout) const;
+    /* Backgrounds, glyphs and decorations, in one pass over the grid. */
+    void paintGrid(GLRenderer& renderer, const Screen& screen, const Palette& palette,
+                   const Layout& layout);
     void paintCursor(GLRenderer& renderer, const Screen& screen, const Palette& palette,
                      const Layout& layout, const Options& options) const;
+
+    /* One row's worth of resolved colours, so the palette is consulted once per
+     * cell instead of once per cell per layer. Kept as a member purely to reuse
+     * its allocation between frames. */
+    struct CellColors {
+        const Cell* cell = nullptr;
+        QColor fg;
+        QColor bg;
+    };
+    std::vector<CellColors> rowColors_;
 };
 
 #endif /* RENDER_TERMINAL_RENDERER_H */

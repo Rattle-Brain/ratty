@@ -16,6 +16,8 @@
 #include <algorithm>
 #include <cstdlib>
 #include <string>
+#include <cmath>
+#include <memory>
 #include <vector>
 
 namespace {
@@ -546,6 +548,40 @@ void testFontMetricsScaleWithPixelSize() {
 
 } // namespace
 
+/*
+ * Two panes showing the same font at the same size have no reason to own
+ * separate copies of it: opening the faces and discovering the fallback chain is
+ * the expensive part of bringing up a pane, and it depends on nothing but the
+ * request. Sharing is what makes a split cheap, so it is worth pinning down.
+ */
+void testSharedFontChainsAreReused() {
+    check::section("font chains are shared between identical requests");
+
+    const std::vector<std::string> none;
+
+    std::shared_ptr<FontManager> first = FontManager::shared(none, none, 20.0);
+    if (!first) {
+        check::that(true, "skipped - no font available on this machine");
+        return;
+    }
+
+    std::shared_ptr<FontManager> again = FontManager::shared(none, none, 20.0);
+    check::that(again == first, "the same request hands back the very same chain");
+    check::that(first->metrics().isValid(), "and it carries usable metrics");
+
+    std::shared_ptr<FontManager> larger = FontManager::shared(none, none, 34.0);
+    check::that(larger && larger != first,
+                "a different pixel size is a different chain");
+    if (larger) {
+        check::that(larger->metrics().cellHeight > first->metrics().cellHeight,
+                    "sized as asked, not as the first request was");
+        /* The chain still held by `first` must not have been resized under it --
+         * that is the whole point of keying on the size. */
+        check::equal(static_cast<int>(std::lround(first->pixelSize())), 20,
+                     "and the original chain keeps its own size");
+    }
+}
+
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
 
@@ -559,5 +595,6 @@ int main(int argc, char** argv) {
     testPresentationSelectsTheRightFont();
     testFontPreferenceOrder();
     testFontMetricsScaleWithPixelSize();
+    testSharedFontChainsAreReused();
     return check::report("test_render");
 }

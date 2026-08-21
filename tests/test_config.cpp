@@ -225,7 +225,7 @@ keybindings:
                 "an unmentioned action kept its default key");
     check::that(actionFor(meta, Qt::Key_C) == ACTION_COPY, "and so did copy");
     check::that(actionFor(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_W)
-                    == ACTION_SPLIT_VERTICAL,
+                    == ACTION_SPLIT_HORIZONTAL,
                 "and so did the split bindings");
     check::that(actionFor(Qt::ControlModifier, Qt::Key_C) == ACTION_NONE,
                 "plain Ctrl+C is still the shell's");
@@ -328,13 +328,13 @@ keybindings:
 
     check::that(actionFor(ctrlShift, Qt::Key_G) == ACTION_SPLIT_VERTICAL,
                 "the new key performs the action");
-    check::that(actionFor(ctrlShift, Qt::Key_W) == ACTION_NONE,
+    check::that(actionFor(ctrlShift, Qt::Key_V) == ACTION_NONE,
                 "the default key for that action was released");
 
     /* Every other action keeps its defaults. */
     check::that(actionFor(meta, Qt::Key_T) == ACTION_NEW_TAB, "cmd+t untouched");
-    check::that(actionFor(ctrlShift, Qt::Key_V) == ACTION_SPLIT_HORIZONTAL,
-                "ctrl+shift+v untouched");
+    check::that(actionFor(ctrlShift, Qt::Key_W) == ACTION_SPLIT_HORIZONTAL,
+                "ctrl+shift+w untouched");
     check::that(actionFor(ctrlShift, Qt::Key_C) == ACTION_CLOSE_SPLIT,
                 "ctrl+shift+c untouched");
     check::that(actionFor(meta, Qt::Key_C) == ACTION_COPY, "cmd+c untouched");
@@ -349,7 +349,7 @@ keybindings:
 )");
     check::that(actionFor(ctrlShift, Qt::Key_G) == ACTION_SPLIT_VERTICAL, "first new key works");
     check::that(actionFor(meta, Qt::Key_G) == ACTION_SPLIT_VERTICAL, "second new key works");
-    check::that(actionFor(ctrlShift, Qt::Key_W) == ACTION_NONE,
+    check::that(actionFor(ctrlShift, Qt::Key_V) == ACTION_NONE,
                 "the inherited key is still released");
 
     /* Reassigning a key takes it from whatever it used to do. */

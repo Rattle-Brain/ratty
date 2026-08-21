@@ -11,7 +11,9 @@
 #define UI_MAIN_WINDOW_H
 
 #include "../config/config.h"
+#include <QList>
 #include <QMainWindow>
+#include <QPointer>
 
 class QTabWidget;
 class SplitContainer;
@@ -40,6 +42,8 @@ protected:
 private slots:
     void onPaneSessionEnded(SplitContainer* pane);
     void onPaneTitleChanged(const QString& title);
+    void onPaneFocused(SplitContainer* pane);
+    void onCurrentTabChanged(int index);
 
 private:
     void setupUi();
@@ -72,8 +76,39 @@ private:
     /* Its terminal, which is what most actions actually want. */
     TerminalWidget* focusedTerminal() const;
 
+    /*
+     * Focus `pane` deliberately: the single path for RaTTY choosing a pane, as
+     * opposed to Qt handing focus out during a reparenting. Only what goes
+     * through here, or a click, reaches the focus history.
+     */
+    void giveFocusTo(SplitContainer* pane);
+    /* Move `pane` to the front of the focus history. */
+    void rememberFocus(SplitContainer* pane);
+    /* Drop `pane` from it, before closing it. */
+    void forgetPane(const SplitContainer* pane);
+    /*
+     * Give keyboard focus to the pane in `root` that should have it: the most
+     * recently focused one still alive, failing that the tree's marked pane,
+     * failing that its first leaf.
+     *
+     * Every path that rearranges a tree ends here, because Qt focus does not
+     * survive the reparenting those paths do.
+     */
+    void restoreFocusIn(SplitContainer* root);
+
     QTabWidget* tabWidget_ = nullptr;
     TabBar* tabBar_ = nullptr;
+
+    /*
+     * Panes in the order they last held focus, most recent first. This is what
+     * lets closing a split hand focus back to the pane the user came from
+     * instead of to whichever leaf happens to sit leftmost in the tree.
+     *
+     * QPointers because a pane dies without telling this list: closing a split,
+     * a shell exiting and closing a tab all destroy panes. Dead entries are
+     * pruned on the way past rather than tracked.
+     */
+    QList<QPointer<SplitContainer>> focusHistory_;
 };
 
 #endif /* UI_MAIN_WINDOW_H */

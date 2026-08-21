@@ -115,7 +115,16 @@ void TerminalSession::onReadyRead() {
 void TerminalSession::drainPty() {
     if (!pty_ || finished_) return;
 
-    std::vector<char> buffer(ReadChunkSize);
+    /*
+     * The buffer is a member, not a local. At 64 KiB, allocating and
+     * zero-filling it per notifier activation was the single largest cost of
+     * receiving output -- and a command producing megabytes of it activates the
+     * notifier constantly. Allocated on first use so an idle session does not
+     * hold it.
+     */
+    if (readBuffer_.size() != static_cast<size_t>(ReadChunkSize)) {
+        readBuffer_.resize(static_cast<size_t>(ReadChunkSize));
+    }
     bool changed = false;
 
     /*
@@ -125,10 +134,10 @@ void TerminalSession::drainPty() {
      * starving the UI.
      */
     for (int i = 0; i < MaxReadsPerEvent; ++i) {
-        const PTY::ReadResult result = pty_->read(buffer.data(), buffer.size());
+        const PTY::ReadResult result = pty_->read(readBuffer_.data(), readBuffer_.size());
 
         if (result.bytes > 0) {
-            emulator_.write(buffer.data(), static_cast<size_t>(result.bytes));
+            emulator_.write(readBuffer_.data(), static_cast<size_t>(result.bytes));
             changed = true;
             continue;
         }
