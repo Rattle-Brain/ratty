@@ -1,6 +1,7 @@
 # RaTTY — state of the art and roadmap
 
-Last updated for **v0.3.0**.
+Last updated after **text selection, the clipboard, scrollback reflow and
+scrollback search** landed on top of v0.3.0.
 
 This file tracks what works, what is broken, and what comes next. Items marked
 🔍 have a design note in
@@ -18,14 +19,23 @@ OpenGL to be tested headlessly.
 
 Scrollback and mouse reporting landed in v0.3.0, along with configurable start
 directories, a configuration reload that needs no restart, and per-pane dimming.
-The one thing a user still notices as missing is **text selection**.
+Since then the last big gap has closed: text can be **selected** with the mouse
+and copied, the scrollback is **rewrapped** on a width change instead of being
+truncated, and it can be **searched**. All three rest on one new piece of
+information — a bit recording that a row ran into the right margin rather than
+ending in a newline — which is what tells a soft wrap from a hard line break
+apart.
+
+What is left is smaller and more particular: text shaping, so a joined emoji
+draws as one glyph rather than its base; and a keybinding set for Linux that was
+written by transliterating the macOS one and deserves a rethink of its own.
 
 ```
 Foundations ████████████████████ done
 VT emulation ███████████████████░ shells, most TUIs, mouse-driven ones included
 Rendering    ████████████████████ done (sharp, HiDPI-correct, emoji, box drawing)
-UI shell     ████████████████░░░░ tabs + splits work; no selection
-Polish       ██████████████░░░░░░ scrollback and mouse done; no selection
+UI shell     ███████████████████░ tabs, splits, selection, search
+Polish       █████████████████░░░ scrollback, mouse, clipboard done; shaping missing
 ```
 
 ---
@@ -78,6 +88,28 @@ Polish       ██████████████░░░░░░ scroll
       definition, which is a behaviour change: it used to clear the display too);
       `RIS` discards them
 - [x] Any output and any keystroke snap the view back to the live screen
+- [x] **Wrap seam** (`CellFlagWrapped`): a row that ran into the right margin is
+      marked as continuing on the next one, so a soft wrap can be told from a
+      hard line break. Carried in the cell at the last column, which is what
+      makes it survive the compressed scrollback, a resize and O(1) scrolling for
+      free. It is what reflow, search and copying a wrapped command line all
+      needed, and what none of them could be written without
+- [x] **Reflow on resize**: a width change takes the buffer apart into logical
+      lines and lays them out again, history included, so a narrower window
+      rewraps old text rather than truncating it and a wider one joins the pieces
+      back up. Rows that ended in a newline are never joined, so a table drawn by
+      a TUI stays a table; the alternate screen is excluded outright, since what
+      is on it is an application's own layout. Streamed rather than materialised
+      twice: a full 10 000-line history reflows in about 10 ms and costs one
+      logical line of scratch space
+- [x] **Stable line numbers**: a line is named by a number that counts from the
+      first line ever captured, so a selection anchor or a search result stays on
+      its text while output scrolls and while the history evicts underneath it.
+      An absolute row index cannot do that, and a view row certainly cannot
+- [x] `OSC 52` clipboard access, in both directions, each gated by configuration.
+      Writing is on -- it is how an editor's yank reaches the local clipboard over
+      ssh -- and reading is off, because it lets anything that can write to the
+      terminal exfiltrate whatever was last copied
 - [x] **Mouse reporting**: `?9` (X10), `?1000` (click), `?1002` (drag), `?1003`
       (any motion), with `?1005`/`?1006`/`?1015` coordinate encodings, `?1004`
       focus in/out and `?1007` alternate scroll. Disabling a mode only takes
@@ -136,6 +168,26 @@ Polish       ██████████████░░░░░░ scroll
       as, plus a Shift-insensitive fallback for layouts where the digits are the
       shifted symbols
 - [x] Cursor styles (block / hollow / underline / bar); blink only when focused
+- [x] **Text selection** with the mouse: press / drag / release, double-click for
+      a word (path- and URL-shaped, followed across a wrap seam), triple-click for
+      a whole logical line, `alt`+drag for a rectangle. A drag held past the top
+      or bottom edge keeps scrolling. Highlighted with the theme's
+      `selection_background` in the *background* layer, under the glyphs, so the
+      selected text keeps its full contrast
+- [x] Selection reads as text with the trailer half of a double-width character
+      skipped, padding to the window edge dropped, and rows joined across a wrap
+      seam -- so a command line that wrapped comes back as the one line a shell
+      will accept. The scrollback is selectable, and a selection survives both
+      scrolling and a screenful of output
+- [x] `cmd`/`super`+`c` copies; `clipboard.copy_on_select` puts a finished
+      selection on the clipboard as well; the primary selection is always set
+      where the platform has one, which is what middle-click pastes
+- [x] **Scrollback search**: a prompt drawn over the bottom row, incremental,
+      every match tinted and the current one brighter, `Return`/`Shift+Return` to
+      step back and forth, `Escape` to close with the match left selected. Matches
+      run across a wrap seam but never across a real line break
+- [x] **Scroll-position indicator** on the right edge while the view is scrolled
+      back, so it is visible that what is on screen is not live
 - [x] Mouse wheel scrolls the scrollback, `Shift+PageUp`/`PageDown` move a page,
       `cmd`/`super`+`k` clears it; fractional trackpad notches accumulate
 - [x] The wheel drives a pager on the alternate screen through cursor keys, so
@@ -158,7 +210,13 @@ Polish       ██████████████░░░░░░ scroll
 - [x] Colours staged per layer and merged built-in -> theme -> user, so a theme
       plus a per-colour override works in either file order
 - [x] `"none"` unbinds a default keybinding
-- [x] Headless test suites (terminal / mouse / input / splits) with `ctest`
+- [x] `scrollback: indicator` and `clipboard: copy_on_select / osc52_write /
+      osc52_read` settings
+- [x] Headless test suites (terminal / history / reflow / selection / search /
+      mouse / input / splits) with `ctest`, plus GL-backed ones for the parts that
+      only exist once a pane has a context (`test_select_gl` drives press, drag,
+      release, double and triple click, an `alt` drag and the search prompt, and
+      reads the result back off the clipboard)
 - [x] Warning-clean under `-Wall -Wextra -Wpedantic`
 - [x] No pinned compiler path in `CMakeLists.txt`
 - [x] Empty placeholder translation units removed
@@ -316,28 +374,37 @@ Recorded because the causes are instructive; full write-ups in
 
 Roughly in the order that gives the most user-visible benefit per unit of work.
 
-### 1. Text selection and clipboard 🔍
-Now the last big gap. The mouse plumbing it needs already exists: the widget
-hit-tests a position to a cell, and knows when the application does *not* want
-the mouse.
+### 1. Rethink the default keybindings for Linux 🔍
+The Linux set was written by transliterating the macOS one — `cmd` became
+`super` and nothing else was reconsidered — and it shows. On Linux the habits
+are different, and a few of the current choices are actively wrong there:
 
-- [ ] Selection range in `TerminalWidget`; mouse press/drag/release
-- [ ] Word (double-click) and line (triple-click) selection
-- [ ] Rectangular selection with a modifier
-- [ ] Render using the overlay layer and `Palette::selectionBackground`
-      (both already exist)
-- [ ] Grid→string conversion handling wide characters and trailing blanks,
-      reading through `Screen::viewAt()` so the scrollback is selectable
-- [ ] `Ctrl+Shift+C`; optional copy-on-select; primary selection on X11
-- [ ] `OSC 52` clipboard access
+- [ ] `ctrl+shift+c` is `close_split`, which on Linux is the near-universal
+      **copy** shortcut. Copy currently lives on `super+c` instead. That was left
+      alone rather than quietly moved, because closing a pane is muscle memory
+      too — but as it stands the one binding a Linux user will reach for without
+      thinking closes their pane
+- [ ] `ctrl+shift+v` is `split_vertical`, which is the same problem for the same
+      reason: on Linux that is **paste**
+- [ ] `super+<letter>` is the window manager's territory on most desktops
+      (GNOME takes `super`, `super+l`, the digits, and more), so a set built on
+      `super` is fighting whatever is running. `ctrl+shift+<letter>` is the
+      convention for a terminal's own actions
+- [ ] Decide whether the two files should stay *equivalent* at all. The test that
+      asserts they resolve identically is what has kept them in step — and is
+      also what makes fixing the above a two-file change with a test to update.
+      Diverging deliberately is fine; diverging by accident is not
+- [ ] Whatever is chosen, keep the invariant that no shell control key
+      (`Ctrl+C`/`D`/`U`/`W`/`R`/`Z`/`L`/`A`/`E`, `Tab`) is ever taken for an
+      application action, which `tests/test_input.cpp` asserts
 
-### 2. Scrollback follow-ups 🔍
-The buffer works; these are the parts deliberately left out of it.
-
-- [ ] Reflow history rows on resize, which needs a "this row is a continuation"
-      bit that `Cell` does not carry today
-- [ ] Search within the scrollback -- blocked on the same missing bit
-- [ ] A scroll-position indicator, so it is visible that the view is not live
+### 2. Text shaping (HarfBuzz) 🔍
+The largest remaining visible gap, and the one several smaller items are waiting
+behind: a joined emoji, a flag, a keycap and a skin-tone variant each occupy the
+right number of columns and draw their *base* glyph. Combining marks are absorbed
+correctly but not composed. Selection copies what the cell holds, which is the
+base code point — so retaining the full grapheme cluster per cell (below) is
+part of the same piece of work.
 
 ---
 
@@ -345,13 +412,12 @@ The buffer works; these are the parts deliberately left out of it.
 
 ### Terminal emulation
 - [ ] Combining marks composed onto their base 🔍 — absorbed correctly today, but
-      drawing `e` + U+0301 as `é` needs shaping
-- [ ] Text shaping (HarfBuzz) 🔍 — would render joined emoji, flags, keycaps and
-      skin-tone variants as their real combined glyphs, and enable ligatures
+      drawing `e` + U+0301 as `é` needs shaping (see *Next up*)
 - [ ] Generate the `Emoji_Presentation` / `Extended_Pictographic` tables from
       `emoji-data.txt` rather than transcribing them 🔍
 - [ ] Retain the full grapheme cluster per cell, not just its base code point —
-      needed before text selection can copy an emoji sequence intact
+      now visible rather than theoretical: copying a joined emoji yields its base
+      code point, because that is all the cell holds
 - [ ] DEC line-drawing charset (`ESC ( 0`) — currently accepted and ignored
 - [ ] Tab stops: `HTS`, `TBC` (tabs are hard-coded to every 8 columns)
 - [ ] Origin mode (`DECOM`), left/right margins (`DECLRMM`)
@@ -360,7 +426,7 @@ The buffer works; these are the parts deliberately left out of it.
       need
 - [ ] Overline (SGR 53), underline styles and colours (`4:3`, `58`)
 - [ ] `OSC 8` hyperlinks; `OSC 13`–`19` (highlight/pointer colours); `OSC 133`
-      prompt marks; `OSC 52` clipboard
+      prompt marks
 
 ### Rendering
 - [ ] Scale a fallback glyph that is wider than its cell. A CJK font's
@@ -371,14 +437,19 @@ The buffer works; these are the parts deliberately left out of it.
 - [ ] Powerline separators drawn geometrically too (box drawing already is), so
       they tile regardless of which font supplies them
 - [ ] Cursor-cell text redrawn in the background colour, for an opaque block
-      cursor instead of a translucent one
+      cursor instead of a translucent one — the same second pass would let a
+      selection restate its foreground colour rather than relying on the theme's
+      selection background having enough contrast against the text under it
 - [ ] Background image / true window transparency
 - [ ] Ligatures via HarfBuzz (deliberately low priority for a grid terminal)
 - [ ] Sixel and kitty graphics protocols
 
 ### UI
 - [ ] Persist window geometry 🔍
-- [ ] Drag a splitter and have the pty resize live (works, but unthrottled)
+- [ ] Drag a splitter and have the pty resize live (works, but unthrottled) —
+      now worth more than it was, since a width change rewraps the whole
+      scrollback: about 10 ms for a full 10 000-line history, paid per resize
+      event rather than per drag
 - [ ] Draw the input-method preedit string under the cursor. It is accepted and
       composed correctly, but an in-progress composition is invisible until it
       commits, so a CJK candidate window has nothing to sit against
@@ -386,7 +457,13 @@ The buffer works; these are the parts deliberately left out of it.
       shell, or one that binds the xterm forms itself, would rather have
       `CSI 1;3D` than `ESC b`; there is no way to ask for it
 - [ ] Move panes between tabs; detach a pane into a new window
-- [ ] URL detection and click-to-open
+- [ ] URL detection and click-to-open — double-click already selects a URL whole,
+      since word selection keeps the punctuation one is made of
+- [ ] Search: a regular-expression mode, and case folding beyond ASCII
+- [ ] Shift+click to extend an existing selection. Shift is spoken for as the
+      mouse-grab override, so this needs a second thought rather than a binding
+- [ ] Select-all, and a keybinding to select the output of the last command
+      (which needs `OSC 133` prompt marks first)
 - [ ] Visual bell as an alternative to the audible one
 - [ ] Tab context menu: rename, duplicate, close others
 - [ ] A "+" affordance on the tab bar for opening a tab by mouse

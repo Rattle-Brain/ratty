@@ -29,6 +29,23 @@ The `Pen` is the current graphic rendition — the colours and flags that newly
 printed characters inherit. SGR sequences mutate the pen; they never touch the
 grid.
 
+Two of the flags are *structural* rather than renditions, and nothing draws
+either of them:
+
+| Flag | On which cell | Means |
+|---|---|---|
+| `CellFlagWideTrailer` | the second column of a double-width character | placeholder: occupies a column, carries no glyph of its own |
+| `CellFlagWrapped` | the cell in the **last** column of a row | the text ran into the right margin and continues on the next row |
+
+`CellFlagWrapped` is the seam, and it is what tells a soft wrap from a hard line
+break apart. Without it a resize cannot rewrap old text, a search cannot match
+across the join, and copying a command line that wrapped yields two lines no
+shell will accept. It lives in a cell rather than in a per-row table so that it
+travels with the row for free: the scrollback encoding already carries flags,
+resize already copies cells, and scrolling rotates row *indices* rather than
+content. Anything that rewrites or erases that cell clears it, which is the right
+answer — erasing the end of a line does break the wrap.
+
 ## `Screen`
 
 Pure terminal state: no parsing, no Qt widgets, no rendering.
@@ -80,11 +97,11 @@ was its own allocation, closing the tab did not give it back to the OS.
 
 - **Most of a row is trailing blank.** A shell line is rarely as wide as the
   window. Those cells are dropped, which is free: `Screen` already reports
-  columns past a captured row's width as blank, because history is not reflowed
-  and a row is stored at the width it had. A *default* blank is therefore
+  columns past a stored row's width as blank, so a *default* blank is
   indistinguishable from "not stored". Trailing cells carrying a non-default
   background — the coloured bars a TUI draws — are not default blanks, and
-  survive.
+  survive. Neither is the seam of a wrapped row, which is how a soft line break
+  gets through the scrollback intact.
 - **Colours change far more slowly than characters do.** Almost every row is one
   single run of attributes, so they are run-length encoded while characters are
   kept per cell, narrowed to the smallest fixed width that covers the row: one
@@ -118,13 +135,11 @@ limit to zero. A full-screen application repaints rather than scrolls, so there
 is nothing there worth keeping, and mixing it into the shell's history is how
 other terminals end up with `vim` sessions embedded in their scrollback.
 
-**History is not reflowed on resize.** Rows are stored at the width they had when
-captured, so a narrower window shows old lines truncated rather than rewrapped.
-Reflowing needs a record of which rows were continuations of a logical line,
-which `Cell` does not carry; the alternative — rewrapping on the stored cells
-alone — mangles TUI output that was never a paragraph. Rows dropped off the top
-by a vertical shrink *are* pushed into the history, since from the user's point of
-view they scrolled away.
+**A width change rewraps everything.** Rows dropped off the top by a vertical
+shrink are pushed into the history, since from the user's point of view they
+scrolled away — and a change of *width* triggers `Screen::reflow()`, which is
+described in its own section below. A height-only change takes the cheap path and
+does none of that work.
 
 `ED 3` erases the saved lines and nothing else, which is xterm's definition;
 applications that want both send `ED 2` first (`tput clear` is
@@ -134,6 +149,95 @@ The view snaps back to the live screen on any output (`TerminalEmulator::write`)
 and on any keystroke (`TerminalWidget::keyPressEvent`). Both are necessary: text
 arriving out of sight, or an echo of what was just typed landing off-screen,
 reads as a hung terminal.
+
+### Reflow
+
+A resize that changes the **width** rebuilds the buffer. `Screen::reflow()` walks
+history and live screen in order, joins consecutive rows wherever the seam says
+they are one logical line, and lays each logical line out again at the new width:
+
+```
+80 columns                        40 columns
+  echo aaaa…aaaa bbbb…bbbb ⏎ (seam)  echo aaaa…aaaa ⏎ (seam)
+  cccc                               bbbb…bbbb cccc
+```
+
+Four things about it are deliberate:
+
+**Only real seams are joined.** A row that ended in a newline stays a line of its
+own, whatever its length. That is the whole reason the seam is tracked: rewrapping
+from the stored cells alone would run a table drawn by a TUI together into a
+paragraph, and the result would be unreadable rather than merely reformatted.
+
+**It streams.** Rows come out of the history in order, each finished logical line
+is rewrapped and re-encoded straight away, and only the last screenful is expanded
+back into cells at the end. The peak cost is one logical line of scratch space
+rather than a second uncompressed copy of the scrollback — which at 10 000 rows
+would be tens of megabytes. Measured, a full 10 000-line history reflows in about
+10 ms; an unchanged width costs nothing at all.
+
+**The cursor is tracked by its offset within its logical line**, because that is
+the only thing about it a rewrap leaves alone — which row and column it lands on
+is exactly what changes. The live screen is then the last `rows` rows of the
+result, so a prompt at the bottom stays at the bottom, unless rewrapping pushed
+the cursor above that window, in which case the window follows the cursor rather
+than scrolling it out of sight.
+
+**The alternate screen is excluded.** `TerminalEmulator` clears its reflow flag,
+for the same reason it gives it no history: what is on it is a full-screen
+application's own layout, drawn for the size the application was told about.
+Joining htop's rows into paragraphs would be nonsense; the application redraws
+instead.
+
+A double-width character is never split across the new margin — the column it
+cannot fit in is left blank, exactly as `Screen::print()` does when it meets the
+same case.
+
+### Stable line numbers
+
+A selection anchor and a search result have to name a piece of text for longer
+than an instant, and neither a view row nor an absolute row index can:
+
+| Coordinate | Breaks when |
+|---|---|
+| view row | anything scrolls — the text moves up the screen |
+| absolute row (`history[0]` = oldest kept) | the history evicts its oldest line, shifting every index |
+| **stable line number** | only when the text itself is dropped |
+
+A stable line number counts from the first line the screen ever captured, so
+`discardedLines_` advances on every eviction and the numbering does not. The
+accessors are `firstLine()`, `screenTopLine()`, `viewTopLine()`, `lastLine()` and
+`lineData(line, length)`; `viewAt()` and `viewRow()` are now thin wrappers over
+`lineData()`, which is the single place the history/live split is resolved.
+
+Two consequences worth knowing:
+
+- A number naming text that has since been dropped resolves to `nullptr` rather
+  than to whatever took its place. Callers get nothing, which is the honest
+  answer.
+- A **reflow renumbers past the end of the old buffer**. Every number issued
+  before the resize named text at the old width, and that text has just been
+  re-cut into different rows; advancing the origin means such a number cannot
+  quietly come to mean a line it never meant. `TerminalWidget` drops its selection
+  on a width change and re-runs an open search for exactly that reason.
+
+### Searching the scrollback
+
+`searchScrollback()` ([`core/search.h`](../src/core/search.h)) walks the buffer one
+*logical* line at a time — the same joining reflow does — and returns matches as
+`SelectionRange`s, so the code that draws and copies a selection draws and copies
+a match with no special case.
+
+Per logical line it builds the text and, alongside it, the position each character
+occupies. The two are separate because a double-width character is one character
+in the text and two columns on the screen, and a match has to be reported in
+columns: that is what makes a highlight cover both halves of a CJK character and
+what lets a CJK needle match at all.
+
+Case folding is ASCII-only and matching is literal — see
+[known gaps](known-gaps.md). The match count is capped, and a search that hits the
+cap says so (`SearchResults::truncated`, shown as a `+` in the prompt) rather than
+reporting a total it does not have.
 
 ### Mouse reporting
 
@@ -211,7 +315,7 @@ Supported sequences:
 | Cursor shape | DECSCUSR (`CSI n SP q`) |
 | Reports | DSR 5, DSR 6 (CPR), DA1 |
 | ESC | IND, NEL, RI, DECSC/DECRC (`7`/`8`), RIS (`c`), charset selection (accepted, ignored) |
-| OSC | 0/2 (window title), 4 and 104 (palette entries), 10/11/12 and 110/111/112 (default fg, bg, cursor) — all of them settable *and* queryable; others parsed and dropped |
+| OSC | 0/2 (window title), 4 and 104 (palette entries), 10/11/12 and 110/111/112 (default fg, bg, cursor) — all of them settable *and* queryable — and 52 (clipboard); others parsed and dropped |
 
 Replies (`DSR`, `DA1`) go out through a `ReplySink` callback that
 `TerminalSession` wires back to the pty. Title changes and the bell use the same
@@ -292,6 +396,45 @@ their mode — a bar while inserting, a block otherwise. The request wins over t
 user's configured `cursor.style` while it is in effect; `CSI 0 SP q` hands
 control back. Note that the space *intermediate* is what identifies the
 sequence: `CSI 5 q` without it is something else entirely.
+
+## `OSC 52`: the clipboard
+
+```
+OSC 52 ; Pc ; <base64>   put text on the selection Pc names
+OSC 52 ; Pc ; ?          ask what is on it
+```
+
+`Pc` is a selection name — `c` for the clipboard, `p` or `s` for the primary
+selection; empty means the clipboard. Only the first name is acted on, as in every
+terminal that implements this: the alternative is one escape sequence scattering
+text across several selections.
+
+This is how a program on the far side of an ssh connection copies to the *local*
+clipboard, and the reason `tmux save-buffer` and an editor's yank can reach it at
+all. Base64 lives in [`core/base64.h`](../src/core/base64.h) — the only place
+RaTTY needs it — and decoding is tolerant of missing padding and embedded
+newlines, because real senders differ, but refuses anything that is not base64
+rather than pasting rubbish.
+
+**Both directions are sinks, and both are policy.** `TerminalEmulator` holds a
+writer and a reader callback and does nothing at all when one is not installed —
+which is precisely how a terminal without OSC 52 support behaves. `TerminalSession`
+turns them into Qt-facing handlers and `TerminalWidget` installs only the ones the
+configuration allows:
+
+| Direction | Default | Why |
+|---|---|---|
+| write (`clipboard.osc52_write`) | on | the useful case; the worst it can do is replace what is on the clipboard |
+| read (`clipboard.osc52_read`) | **off** | anything that can write to the terminal could otherwise exfiltrate whatever was last copied, passwords included |
+
+The reader is a `bool(char, std::string&)`: returning false declines, and an
+unanswered query is indistinguishable from a terminal that never supported the
+sequence, which is what a well-behaved application already handles.
+
+One parser detail follows from this: the OSC string bound is 64 KiB rather than
+the 4 KiB a title needs, because an OSC 52 payload is a whole selection. Past the
+bound the tail is dropped, the base64 fails to decode, and the request is
+ignored — the right outcome for a clipboard that did not arrive whole.
 
 ## `TerminalSession`
 

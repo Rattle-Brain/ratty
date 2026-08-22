@@ -220,9 +220,10 @@ application asked for the mouse (?1000/?1002/?1003)
   and Shift is not held
   and the view is not scrolled back      -> report it (core/mouse.h)
 otherwise
+  left press / drag / release            -> select text
   wheel, primary screen                  -> move the scrollback view
   wheel, alternate screen                -> cursor keys, if ?1007 is on
-  middle click                           -> paste
+  middle click                           -> paste the primary selection
 ```
 
 Three of those conditions earn their place:
@@ -248,6 +249,127 @@ application repaints instead of scrolling, so there is no scrollback to move and
 the wheel would simply do nothing — which reads as a broken terminal in `less`.
 Translating a notch into cursor keys is what every other terminal does, and
 `DECRST 1007` lets an application opt out.
+
+---
+
+## Selection
+
+The model is [`core/selection.h`](../src/core/selection.h) and knows nothing about
+the mouse: everything difficult about a terminal selection is a question about the
+*buffer* — where a word ends, how a multi-row selection follows the text round the
+end of a row, whether two rows are one wrapped line, what happens to the padding
+between the last character and the window edge — and all of it is far easier to
+pin down headlessly than by dragging across a window. `tests/test_selection.cpp`
+does exactly that; `tests/test_select_gl.cpp` then drives the real thing with real
+mouse events and reads the result back off the clipboard.
+
+The widget's half is the state machine over it:
+
+| Gesture | Mode |
+|---|---|
+| drag | character |
+| double-click | word |
+| triple-click | whole logical line, wrapped rows included |
+| `Alt`+drag | rectangle |
+| click without moving | clears the selection |
+
+Points worth knowing:
+
+**Clicks are counted here, not by Qt.** Qt reports a double click as its own event
+type but has no notion of a third, and a terminal needs one. `countClick()` counts
+against the platform's own double-click interval and the cell the previous click
+landed on, and cycles 1 → 2 → 3 → 1, so a fourth click is a plain click again.
+`mouseDoubleClickEvent()` routes into the same place as a press.
+
+**`Alt` is the rectangular modifier**, not `Ctrl` or `Shift`. Shift is spoken for:
+it is what bypasses an application's mouse grab, so it is held for most selections
+made *inside* a TUI and cannot also mean "rectangle". `Ctrl`+click is the context
+menu on macOS. That is also why Shift+click does not extend a selection yet.
+
+**A word is generous about punctuation.** Letters and digits, anything outside
+ASCII that is not a space, and the characters that appear *inside* what a terminal
+user double-clicks: `/ . - _ ~ : @ + = % # & ? * $ \ ^`. What is left out is what
+ends a word at a shell: quotes, brackets, the pipe, the comma, the semicolon. So
+`/usr/local/bin/thing` and `--flag=on` are each one word, and a URL comes out
+whole. A double-click on a blank selects the run of blanks, so the gesture never
+does nothing.
+
+**A selection is held in [stable line numbers](terminal-emulation.md#stable-line-numbers)**,
+not view rows, so it stays on its text while the view scrolls and while output
+arrives. It is dropped on a keystroke that reaches the shell (the text is about to
+move), on a width change (reflow re-cuts the rows), when the scrollback is
+cleared, and when the alternate screen goes up or comes down — the two screens
+number their lines independently, so a selection made on one could otherwise
+highlight unrelated text on the other.
+
+**Copying** turns the range into text with the trailer half of a double-width
+character skipped, padding to the window edge dropped, and rows joined across a
+wrap seam — so a wrapped command line comes back as the one line a shell will
+accept. A block selection never joins rows; taking a column out of a table is the
+whole point of it.
+
+**Where it goes.** The primary selection is set by the act of selecting, wherever
+the platform has one, because that is what middle-click pastes. The clipboard is
+only ever written deliberately — by `copy`, or by `clipboard.copy_on_select` — on
+the grounds that it holds something the user meant to keep.
+
+### Why the selection is painted in the *background* layer
+
+The obvious place for a highlight is the overlay layer, above the glyphs. It is
+the wrong one. A theme states `selection_background` as an opaque background
+colour, and an opaque quad drawn over the text hides the text it is highlighting;
+a translucent one veils it.
+
+Painted into the background layer *after* the grid's own cell fills, the selection
+covers those fills and the glyphs — a layer above — are drawn on top of it at full
+contrast. That is the same result every other terminal gets by repainting the
+selected text, at the cost of one quad per row instead of a second pass over the
+cells. Search highlights do use the overlay, because they are a different thing: a
+tint that marks text without replacing its background, so several matches on
+screen at once stay readable.
+
+## The search prompt
+
+`cmd+f` / `super+f` opens an incremental search over the scrollback. It is drawn
+by `TerminalRenderer`, not built from widgets, and it **takes the bottom row of
+the grid** rather than resizing it.
+
+Both halves of that are deliberate. There is nowhere to put a widget: the pane is
+covered by the shared `TerminalCanvas`, a native child window, so anything laid
+out over the pane would be hidden by the very surface the terminal draws on. And
+the grid is not resized because the shell must not see the window change size
+because someone opened a search box — `SIGWINCH` in the middle of a search would
+be a surprising thing to send.
+
+```
+   340        <- "34" tinted: an ordinary match
+   341
+   349        <- "34" brighter: the current match, and the selection
+   350
+/34     14/14 <- the prompt, over the bottom row of the grid
+```
+
+- typing refines the query; `Backspace` and `Ctrl+U` edit it
+- the newest match is selected first, on the grounds that what is being looked
+  for in a scrollback is usually what happened most recently
+- `Return` steps back through the buffer and `Shift+Return` forward again, which
+  is the direction a scrollback search goes; the arrow keys do the same
+- `Escape` closes the prompt and leaves the current match **selected**, so it can
+  be copied
+- the query survives closing, so `find_next` resumes it
+
+While the prompt is open it owns the keyboard — but only after the keybindings
+have had first refusal, so a shortcut still works mid-search. The current match is
+also the selection, which is what makes it copyable and is why the two highlight
+styles have to be distinguishable.
+
+## The scroll-position indicator
+
+A slim thumb down the right edge while the view is scrolled back, sized and
+positioned as the view's share of the whole buffer. It is not a scrollbar: there
+is nothing to drag, and the point is only to answer the question a static screen
+of text raises, which is whether what is on it is still live. `scrollback.indicator`
+turns it off.
 
 ---
 

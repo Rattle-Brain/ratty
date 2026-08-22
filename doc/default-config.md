@@ -197,6 +197,7 @@ the split separator is derived from.
 scrollback:
   lines: 10000
   multiplier: 3
+  indicator: true
 ```
 
 `lines` is per pane and applies to the primary screen only — the alternate screen
@@ -205,6 +206,39 @@ keeps no history, because a full-screen application repaints rather than scrolls
 
 `multiplier` is how many rows one wheel notch moves. `Shift+PageUp` and
 `Shift+PageDown` move a whole page.
+
+`indicator` draws a slim thumb on the right edge while the view is scrolled back.
+It defaults to on because a static screen of text gives no other clue that it is
+not live — the alternative is noticing that output has stopped arriving, which is
+indistinguishable from a hung command.
+
+## `clipboard`
+
+```yaml
+clipboard:
+  copy_on_select: false
+  osc52_write: true
+  osc52_read: false
+```
+
+`copy_on_select` is off because the clipboard holds something the user meant to
+keep, and selecting text is not the same as deciding to keep it. The **primary**
+selection is set on every completed selection regardless, where the platform has
+one, since that is what middle-click pastes — so the X11 habit works without
+turning this on.
+
+The `osc52_` pair is what a program on the far end of the pty may do through
+[`OSC 52`](terminal-emulation.md#osc-52-the-clipboard). The asymmetry is the point:
+
+- **write** is the useful case, and the reason it is on. It is how an editor's
+  yank or `tmux save-buffer` reaches the *local* clipboard across ssh, where no
+  other mechanism can. The worst a hostile program does with it is replace what
+  is on the clipboard.
+- **read** lets anything that can write to the terminal ask what is on the
+  clipboard and receive the answer down the pty — a password manager's last
+  paste, for instance, retrievable by a stray escape sequence in a log file.
+  That is why it is off, and why turning it on should be a deliberate answer to a
+  specific need.
 
 ## `mouse`
 

@@ -12,10 +12,10 @@
 RaTTY draws text with FreeType and OpenGL: glyphs are rasterized at physical
 pixel resolution, packed into one texture atlas, and drawn in a single batched
 pass. A whole screen of text is one draw call. It has tabs, split panes,
-scrollback, mouse support for the applications that want it, colour themes,
-truecolour, colour emoji, a bundled Nerd Fonts symbols font so a TUI's file-type
-icons render on a bare machine, and a tab bar thin enough not to insult the
-terminal it sits next to.
+scrollback, text selection, scrollback search, mouse support for the applications
+that want it, colour themes, truecolour, colour emoji, a bundled Nerd Fonts
+symbols font so a TUI's file-type icons render on a bare machine, and a tab bar
+thin enough not to insult the terminal it sits next to.
 
 Every pane in a window shares **one** GPU surface, one glyph atlas and one set of
 buffers. A split therefore costs about a megabyte of terminal state and no
@@ -23,6 +23,12 @@ graphics memory at all, where it used to cost ten; a tab you are not looking at
 is not drawn, and costs nothing. Scrollback is stored packed rather than as raw
 cells, which is worth about 16× on ordinary shell output — the default
 10 000-line history is a couple of megabytes a pane, not forty.
+
+Resize the window and old output is **rewrapped**, not truncated: every row
+records whether it ran into the right margin or ended in a newline, so a paragraph
+is re-laid-out and a table drawn by a TUI is left alone. The same one bit is what
+lets a search match across a wrapped line, and what makes copying a command line
+that wrapped give you back the one line your shell will accept.
 
 It is a rat, and it speaks TTY. The name was not agonised over.
 
@@ -70,6 +76,8 @@ font:
   size: 15
 scrollback:
   lines: 20000
+clipboard:
+  copy_on_select: true
 directories:
   new_tab: home        # home | cwd | a path
   new_split: cwd       # splits follow the pane they came from

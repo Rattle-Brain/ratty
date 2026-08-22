@@ -56,12 +56,16 @@ cd build && ctest --output-on-failure
 | `test_tabbar` | style and position parsing, chrome derivation on dark *and light* palettes, bar thinness, tab metrics, and that every style paints something |
 | `test_render` | grid padding maths, box-drawing tiling, fallback coverage of the characters a TUI draws, text-vs-emoji font selection, font preference order, and the guarantee that no resolution path yields a proportional font. Needs a colour emoji font installed (`fonts-noto-color-emoji` on Debian), or the emoji-presentation cases fail |
 | `test_history` | that the compressed scrollback encoding is lossless for every kind of cell — truecolour, indexed, every rendition flag, CJK, astral-plane emoji, a NUL code point, a full-width coloured bar — that it is never larger than the raw cells, and that `Screen` still reads history back correctly |
+| `test_reflow` | the wrap seam and rewrapping: that a seam is recorded exactly when text ran into the margin and not when a newline ended the row, that it survives the compressed history, that narrowing rewraps and widening rejoins, that rows which merely follow each other are *never* joined, that the cursor lands where its text went, that a double-width character is not split across the new margin, that the alternate screen is left alone, and that a stale line number resolves to nothing |
+| `test_selection` | what a drag covers and what comes out of it: single and multi-row spans, trailing padding, joining across a seam, block selections, double-width characters counted once, word and line expansion, selecting the scrollback, a selection surviving a screenful of output, and the highlight geometry per row |
+| `test_search` | matches in buffer order, across a seam but never across a line break, case folding, searching the history, the reported match cap, a double-width needle — plus base64 round-tripping and the `OSC 52` handshake in both directions |
 | `test_scroll_gl` | the scrollback view against a real GL context |
 | `test_canvas_input` | that mouse input survives the shared canvas: dragging a divider and clicking a pane both work through the native window stacked over them, and the canvas does not cover the tab bar. Skips itself when no context is available |
+| `test_select_gl` | selection and search as the user does them, against a real GL context and a real shell: press/drag/release, double and triple click, an `Alt` drag, a click clearing the selection, typing clearing it — each verified by reading the text back off the clipboard — then the search prompt scrolling a match into view and leaving it selected after `Escape` |
 
-Most run under `QT_QPA_PLATFORM=offscreen` and need no GPU; the three GL suites
-(`test_splits_gl`, `test_scroll_gl`, `test_canvas_input`) use the real platform
-plugin and skip themselves when no context can be created.
+Most run under `QT_QPA_PLATFORM=offscreen` and need no GPU; the four GL suites
+(`test_splits_gl`, `test_scroll_gl`, `test_canvas_input`, `test_select_gl`) use the
+real platform plugin and skip themselves when no context can be created.
 `tests/check.h` is a three-function harness, not a framework.
 
 `test_splits_gl` is the exception, and the reason it exists is worth stating

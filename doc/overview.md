@@ -21,7 +21,12 @@ This document is the "why it is shaped like this" companion to the rest of
 - Box drawing rendered geometrically, so borders tile exactly
 - A bundled Nerd Fonts symbols font, so a TUI's file-type icons render on a
   machine with no icon font installed
-- Scrollback, with the wheel, `Shift+PageUp`/`PageDown` and a configurable limit
+- Scrollback, with the wheel, `Shift+PageUp`/`PageDown` and a configurable limit —
+  rewrapped on a width change, searchable, and with a position indicator while it
+  is scrolled back
+- Text selection with the mouse (word, line and rectangular), copy and paste, the
+  primary selection where the platform has one, and `OSC 52` so a program across
+  an ssh connection can reach the local clipboard
 - Mouse reporting for applications (`?1000`/`?1002`/`?1003`, SGR and legacy
   encodings), focus events, and alternate scroll so the wheel drives a pager
 - HiDPI-correct rendering ([why that is hard](rendering.md#physical-pixels-and-why-it-matters))
@@ -33,9 +38,13 @@ This document is the "why it is shaped like this" companion to the rest of
 
 ## What does not
 
-Text selection, scrollback reflow on resize, and text shaping (so a joined emoji
-shows its base glyph). See [known gaps](known-gaps.md) for the full list and, more
-usefully, *why* each one is where it is.
+Text shaping, so a joined emoji draws its base glyph and a selection copies the
+base code point rather than the whole cluster. Scrollback search folds case for
+ASCII only and matches literal text. And the default Linux keybindings are the
+macOS ones with `cmd` spelled `super`, which puts two actions where that platform
+expects copy and paste — capability is not the problem, habit is. See
+[known gaps](known-gaps.md) for the full list and, more usefully, *why* each one is
+where it is.
 
 ## Design principles
 

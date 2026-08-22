@@ -14,9 +14,9 @@ Start with the [overview](overview.md); the rest can be read in any order.
 
 | Document | What is in it |
 |---|---|
-| [Terminal emulation](terminal-emulation.md) | The grid, the parser, the escape sequences supported, grapheme clustering |
+| [Terminal emulation](terminal-emulation.md) | The grid, the parser, the escape sequences supported, grapheme clustering, the scrollback and how it is rewrapped and searched |
 | [Rendering](rendering.md) | Fonts and fallback, the glyph atlas, HiDPI correctness, box drawing, colour emoji |
-| [Widgets, panes and the tab bar](ui.md) | The pane tree, the self-drawn tab bar, chrome colours |
+| [Widgets, panes and the tab bar](ui.md) | The pane tree, the self-drawn tab bar, chrome colours, text selection, the search prompt |
 
 ## Using it
 

@@ -12,11 +12,12 @@
  *
  *   - Most of a row is trailing blank. A shell line is rarely as wide as the
  *     window, and the tail is uniform default-coloured space. Those cells are
- *     dropped entirely: Screen already reports columns past a captured row's
- *     width as blank (history is not reflowed, so a row is stored at the width
- *     it had), and a *default* blank is indistinguishable from "not stored".
+ *     dropped entirely: Screen already reports columns past a stored row's width
+ *     as blank, and a *default* blank is indistinguishable from "not stored".
  *     Trailing cells carrying a non-default background -- the coloured bars a
- *     TUI draws -- are not default blanks and so survive.
+ *     TUI draws -- are not default blanks and so survive. Nor is the seam of a
+ *     wrapped row (CellFlagWrapped), which is what carries a soft line break
+ *     through the scrollback intact.
  *
  *   - Colours and rendition change far more slowly than characters do. Almost
  *     every row is one single run of attributes, so they are run-length encoded

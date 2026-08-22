@@ -21,7 +21,7 @@ bundled defaults must be found regardless of the working directory.
 
 The one place the rule is deliberately not literal is keybindings, where naming
 an *action* releases the keys it inherited; see
-[Action ownership](#action-ownership).
+[keybindings](keybindings.md#two-default-keybinding-files).
 
 Two settings interact, and the shipped defaults are arranged so the interaction
 stays predictable: `colors.cursor` is deliberately **absent** from the bundled
@@ -84,6 +84,12 @@ colors:
 scrollback:
   lines: 10000        # 0 turns the scrollback off
   multiplier: 3       # lines moved per wheel notch
+  indicator: true     # position marker while scrolled back
+
+clipboard:
+  copy_on_select: false
+  osc52_write: true   # applications may set the clipboard
+  osc52_read: false   # ... and may read it back
 
 mouse:
   alternate_scroll: true
@@ -131,6 +137,22 @@ keybindings:
   `Shift+PageUp`/`PageDown` have nothing to move.
 - `scrollback.multiplier` is how many rows one wheel notch moves. Fractional
   notches from a trackpad accumulate, so a slow drag still scrolls smoothly.
+- `scrollback.indicator` shows a slim thumb on the right edge while the view is
+  scrolled back, sized as the view's share of the buffer. It is not a scrollbar —
+  there is nothing to drag — and exists only to answer whether what is on screen
+  is still live.
+- `clipboard.copy_on_select` puts a finished selection on the clipboard as well as
+  on the primary selection. The primary selection is set either way where the
+  platform has one, since that is what middle-click pastes; the clipboard is
+  otherwise only written by an explicit `copy`.
+- `clipboard.osc52_write` and `clipboard.osc52_read` are what an application on the
+  far end of the pty may do through `OSC 52`. Writing is on: it is how an editor's
+  yank or `tmux save-buffer` reaches the local clipboard over ssh, and the worst it
+  can do is replace what is on it. **Reading is off**, and should stay off unless
+  something actually needs it — it lets anything that can write to the terminal
+  read back whatever was last copied, passwords included. With it off a query goes
+  unanswered, which is indistinguishable from a terminal that never supported the
+  sequence.
 - `splits.separator` is the colour of the hairline between panes. Left unset it
   is derived from the theme: the accent colour (itself defaulting to the
   palette's bright blue, which every theme defines) blended back towards the
@@ -174,7 +196,12 @@ keybindings:
   itself with `DECRST 1007`.
 - An application that asks for the mouse (`DECSET 1000`/`1002`/`1003`) receives
   clicks, drags and wheel notches instead of the terminal acting on them. Hold
-  **Shift** to bypass that and scroll — or middle-click paste — locally anyway.
+  **Shift** to bypass that and scroll, select or middle-click paste locally anyway.
+- Selection gestures are not configurable: drag selects, double-click takes a
+  word, triple-click a whole logical line, and `Alt`+drag a rectangle. `Alt` is
+  the rectangular modifier because Shift is already the mouse-grab override and
+  `Ctrl`+click is the context menu on macOS. See
+  [selection](ui.md#selection).
 - Cursor styles: `block`, `hollow`, `underline`, `bar`.
 - Binding an action to `"none"` **removes** a default binding — the only way for
   a user overlay to unbind something it did not create.

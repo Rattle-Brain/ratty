@@ -70,15 +70,25 @@ grid loop happens to emit calls.
      │                                        ▼
      │                                   MainWindow::keyPressEvent → handleAction()
      │
+     ├─ search prompt open? ── yes ─► handleSearchKey(): query, steps, escape
+     │
      └─ no ─► InputHandler::keyEventToBytes(event, applicationCursorKeys)
                     │
+                    ├─ scrollViewToBottom(), clearSelection()
                     ▼
               TerminalSession::sendInput(bytes) → PTY::write → shell
 ```
 
 The `isBound` check is what makes application shortcuts work at all. The widget
 previously accepted *every* key event, so nothing ever reached `MainWindow` and
-no keybinding in the config file could fire.
+no keybinding in the config file could fire. It comes **before** the search
+prompt deliberately: the prompt owns the keyboard while it is open, but a
+shortcut still has to work mid-search.
+
+The two steps on the way out matter for the same reason as each other. Typing
+returns the view to the live screen, or the echo of what was just typed lands out
+of sight; and it drops the selection, because the text under the highlight is
+about to move.
 
 ---
 

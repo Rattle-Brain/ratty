@@ -86,6 +86,16 @@ shell. Both halves of that are asserted.
 (left / right), with `ctrl+shift+c` closing the focused pane. The two split keys
 were the other way round until the mnemonic won: `v` for vertical.
 
+**On Linux this is a known problem, not a preference.** `ctrl+shift+c` and
+`ctrl+shift+v` are copy and paste in nearly every other terminal on that
+platform, and here they close a pane and split one. Copy and paste do work — on
+`super+c` and `super+v`, because the two default sets are the same bindings with
+`cmd` spelled `super` — but that is the macOS habit transplanted, and `super`
+belongs to the desktop on most Linux systems anyway. Rethinking the Linux set is
+the top item in [`todo-ratty.md`](../todo-ratty.md); it is listed there rather
+than quietly fixed because closing a pane is muscle memory too, and because it
+means deciding whether the two files should stay equivalent at all.
+
 Opening a split focuses the pane it created, and closing one returns the caret to
 the pane it was opened from rather than to whichever leaf sits nearest. Neither
 is a keybinding concern as such — see
@@ -158,6 +168,46 @@ otherwise arrive as `CSI 5 ; 2 ~` and be interpreted by whatever is running.
 
 Any keystroke that produces terminal input returns the view to the live screen
 first. Scrolling back and then typing must not leave the echo out of sight.
+
+### Selection and the clipboard
+
+`copy` is on `cmd+c` (`super+c` on Linux) and `paste` on `cmd+v` / `super+v`.
+Neither is a terminal input key on either platform once
+`AA_MacDontSwapCtrlAndMeta` is set, which is what makes them available at all:
+`ctrl+c` remains the interrupt, as it must.
+
+Selecting is done with the mouse rather than the keyboard — drag, double-click for
+a word, triple-click for a line, `Alt`+drag for a rectangle — and none of it is a
+bindable action, so there is nothing here to configure. `copy` with nothing
+selected does nothing rather than complaining; it is bound to a key, and a key
+that sometimes objects is worse than one that sometimes does nothing.
+
+Middle-click pastes the primary selection where the platform has one, which is
+also what a completed selection is written to. See
+[selection](ui.md#selection) for the gestures and
+[`clipboard`](default-config.md#clipboard) for the two `OSC 52` switches.
+
+Typing returns the view to the live screen *and* drops the selection: the text is
+about to move, and a highlight left behind on it reads as a bug. Keybindings are
+consulted before that happens, so `copy` never clears what it is copying.
+
+### Searching the scrollback
+
+| Action | Default | Does |
+| --- | --- | --- |
+| `search` | `cmd+f` / `super+f` | opens the prompt over the bottom row |
+| `find_next` | `cmd+g` / `super+g` | steps towards newer output |
+| `find_previous` | `cmd+shift+g` / `super+shift+g` | steps towards older output |
+
+Inside the prompt the keys are its own: typing refines the query, `Backspace` and
+`Ctrl+U` edit it, `Return` steps back through the buffer and `Shift+Return`
+forward, the arrows do the same, and `Escape` closes it leaving the current match
+selected so it can be copied. Bindings still fire while it is open, because they
+are checked first.
+
+`find_next` with no query open starts a search, and a query survives closing the
+prompt — so `cmd+g` after `Escape` resumes the last one rather than starting from
+nothing.
 
 ### Reloading the configuration
 

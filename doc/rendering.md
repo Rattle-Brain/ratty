@@ -356,14 +356,22 @@ Batched 2D drawing with three explicit layers:
 
 | Layer | API | Contents |
 |---|---|---|
-| 1 | `fillBackground()` | cell backgrounds, underlines, strikethrough |
-| 2 | `drawGlyph()` | glyphs |
-| 3 | `fillOverlay()`, `strokeOverlay()` | cursor, selection, focus indicators |
+| 1 | `fillBackground()` | cell backgrounds, the selection, underlines, strikethrough, the search prompt's bar |
+| 2 | `drawGlyph()` | glyphs, including the search prompt's text |
+| 3 | `fillOverlay()`, `strokeOverlay()` | cursor, search-match tints, the scroll indicator, pane dimming |
 
 `endFrame()` flushes them bottom-up. Draw order is therefore a property of the
 API rather than of the order in which the grid loop happens to submit calls —
 which is the permanent fix for cell backgrounds painting over their own
 characters.
+
+Within a layer, order *is* submission order, and two things rely on it: a
+selection quad is submitted after the grid's own cell fills, so it covers them
+while the glyphs a layer above still draw at full contrast; and the search
+prompt's bar goes in layer 1 with its text in layer 2, which is why the prompt
+takes a grid row rather than sitting on top of one. A translucent tint over
+finished text — a search match, the cursor, an unfocused pane's veil — is what
+layer 3 is for. See [selection](ui.md#why-the-selection-is-painted-in-the-background-layer).
 
 `drawGlyph()` takes a code point, not a `QString`. The old `drawText(QString, …)`
 was called once per cell from the grid loop, allocating a one-character `QString`
