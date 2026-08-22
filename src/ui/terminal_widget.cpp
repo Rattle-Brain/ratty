@@ -148,6 +148,18 @@ void TerminalWidget::ensureSession() {
 
     if (!session_->isValid()) {
         qCritical() << "TerminalWidget: could not start a shell";
+    } else {
+        /*
+         * Stated once per pane, next to the Config and FontManager lines, because
+         * it is the first thing worth knowing when a window opens with nothing in
+         * it: whether a shell was started at all, and what grid it was told about.
+         * A pane that never shows a prompt is either a shell that did not start, a
+         * shell that started and said nothing, or a grid it cannot be drawn in --
+         * and this tells the three apart without a debugger.
+         */
+        qInfo().nospace() << "TerminalSession: shell pid " << session_->shellPid()
+                          << " on a " << session_->cols() << "x" << session_->rows()
+                          << " grid";
     }
 
     applyClipboardPolicy();

@@ -15,6 +15,7 @@
 #include "check.h"
 #include "core/terminal_emulator.h"
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -279,6 +280,43 @@ void testStableLineNumbers() {
                 "a reflow renumbers past the end of the old buffer");
 }
 
+void testStartUpShape() {
+    check::section("the shape a terminal has at start-up");
+
+    /*
+     * What a tiling compositor does to a new window: the shell has printed one
+     * prompt, the cursor is parked after it, every other row is blank -- and then
+     * the window is resized, in both dimensions, before anything else happens.
+     * A release build gets there in that order; a slower one may resize first and
+     * have nothing to rewrap, which is exactly the kind of difference that turns
+     * a reflow bug into "it works in a debug build".
+     */
+    TerminalEmulator term(24, 80);
+    feed(term, "user@host ~ % ");
+
+    const int promptCol = term.screen().cursorCol();
+    check::equal(promptCol, 14, "the cursor is parked after the prompt");
+
+    for (const auto& size : {std::pair<int, int>{24, 120}, {24, 60},
+                             {30, 100}, {12, 40}, {24, 80}}) {
+        term.resize(size.first, size.second);
+        const Screen& screen = term.screen();
+
+        check::equal(lineText(screen, screen.screenTopLine()),
+                     std::string("user@host ~ %"),
+                     "the prompt is still the first line at "
+                         + std::to_string(size.second) + " columns");
+        check::equal(screen.cursorRow(), 0, "on the top row");
+        check::equal(screen.cursorCol(), promptCol, "with the cursor still after it");
+        check::equal(term.historySize(), 0, "and nothing was pushed into the history");
+    }
+
+    /* And the shell can still write to it afterwards. */
+    feed(term, "ls\r\n");
+    check::equal(rowText(term.screen(), 0), std::string("user@host ~ % ls"),
+                 "and output after the resize lands in the right place");
+}
+
 void testHeightOnlyResizeKeepsWorking() {
     check::section("a height change still moves rows into the history");
 
@@ -303,6 +341,7 @@ int main() {
     testWideCharactersAreNotSplit();
     testAlternateScreenIsNotRewrapped();
     testStableLineNumbers();
+    testStartUpShape();
     testHeightOnlyResizeKeepsWorking();
     return check::report("test_reflow");
 }

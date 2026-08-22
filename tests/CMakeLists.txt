@@ -25,6 +25,7 @@ function(ratty_add_test name)
 endfunction()
 
 ratty_add_test(test_terminal)
+ratty_add_test(test_pty)
 ratty_add_test(test_history)
 ratty_add_test(test_reflow)
 ratty_add_test(test_selection)

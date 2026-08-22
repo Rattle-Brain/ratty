@@ -83,9 +83,29 @@ public:
 
 private:
     void cleanup();
-    /* Runs in the forked child; never returns. */
-    [[noreturn]] void execChild(const std::string& shell,
-                                const std::string& workingDirectory);
+
+    /*
+     * Everything the child execs, built *entirely* by the parent before the
+     * fork. Every member points into storage the parent owns and the child only
+     * reads; see the note in execChild() for why not one byte of this may be
+     * assembled on the other side of the fork.
+     */
+    struct ChildImage {
+        const char* shell = nullptr;
+        /* argv for a login shell ("-zsh") and for a plain one ("zsh"). */
+        char* const* loginArgv = nullptr;
+        char* const* plainArgv = nullptr;
+        /* The complete environment, TERM and friends already in it. */
+        char* const* envp = nullptr;
+        /* Where to chdir first, or null to stay where we are. */
+        const char* workingDirectory = nullptr;
+    };
+
+    /*
+     * Runs in the forked child and never returns. Calls nothing that is not
+     * async-signal-safe -- which is the whole reason ChildImage exists.
+     */
+    [[noreturn]] static void execChild(const ChildImage& image);
 
     int master_fd_ = -1;
     pid_t child_pid_ = -1;

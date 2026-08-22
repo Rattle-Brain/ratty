@@ -13,6 +13,14 @@
 #include <signal.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
+#include <vector>
+
+/* environ, for building the child's environment before the fork. */
+#if defined(__APPLE__)
+  #include <crt_externs.h>
+#else
+extern char** environ;
+#endif
 
 /* workingDirectory() asks the operating system where the shell is, and the two
  * platforms answer through completely different interfaces. */
@@ -40,6 +48,59 @@ std::string baseName(const std::string& path) {
     return slash == std::string::npos ? path : path.substr(slash + 1);
 }
 
+char** currentEnviron() {
+#if defined(__APPLE__)
+    /* The linker only guarantees `environ` to an executable; this works from
+     * anywhere, which includes the static library the tests link. */
+    return *_NSGetEnviron();
+#else
+    return environ;
+#endif
+}
+
+/* True when `entry` is "NAME=..." for one of the names we are replacing. */
+bool namedBy(const char* entry, const char* name) {
+    const size_t length = std::strlen(name);
+    return std::strncmp(entry, name, length) == 0 && entry[length] == '=';
+}
+
+/*
+ * The child's environment, assembled in the *parent*.
+ *
+ * setenv() and unsetenv() are not async-signal-safe -- they can reallocate the
+ * environment block -- so the child gets a finished one through execve()
+ * instead of editing its own. Four names are dropped and two added:
+ *
+ *   TERM, COLORTERM  set, so the shell knows what it is talking to
+ *   LINES, COLUMNS   dropped: a stale value would lie about our geometry, and
+ *                    the pty's winsize is authoritative
+ *   PWD              dropped: some shells trust an inherited PWD over getcwd(),
+ *                    and a stale one makes the prompt disagree with the
+ *                    directory the shell is actually in
+ */
+std::vector<std::string> buildChildEnvironment() {
+    static const char* const dropped[] = {"TERM", "COLORTERM", "LINES", "COLUMNS", "PWD"};
+
+    std::vector<std::string> entries;
+    for (char** entry = currentEnviron(); entry && *entry; ++entry) {
+        bool skip = false;
+        for (const char* name : dropped) {
+            if (namedBy(*entry, name)) { skip = true; break; }
+        }
+        if (!skip) entries.emplace_back(*entry);
+    }
+
+    entries.emplace_back(std::string("TERM=") + kTerm);
+    entries.emplace_back(std::string("COLORTERM=") + kColorTerm);
+    return entries;
+}
+
+/* Report from the child without stdio, which is not async-signal-safe. */
+void writeChildError(const char* message) {
+    const ssize_t ignored = ::write(STDERR_FILENO, message, std::strlen(message));
+    (void)ignored;
+}
+
 } // namespace
 
 std::string PTY::getUserShell() {
@@ -54,43 +115,47 @@ std::string PTY::getUserShell() {
     return "/bin/sh";
 }
 
-void PTY::execChild(const std::string& shell, const std::string& workingDirectory) {
-    /*
-     * Start a *login* shell (argv[0] prefixed with '-'), which is what
-     * Terminal.app and kitty do on macOS: without it ~/.zprofile never runs and
-     * PATH ends up missing Homebrew and friends.
-     */
-    const std::string argv0 = "-" + baseName(shell);
-
+/*
+ * The child, between fork and exec.
+ *
+ * Everything in here is async-signal-safe, and it has to be. RaTTY is a
+ * multi-threaded process -- Qt, the Wayland client, fontconfig and the GL driver
+ * all bring threads of their own -- and fork() copies only the calling thread.
+ * Any lock another thread happened to be holding at that instant is copied
+ * *held*, with no owner left alive to release it, so the child deadlocks the
+ * first time it wants that lock.
+ *
+ * The malloc arena lock is the one that matters, because almost everything takes
+ * it. A single std::string built on this side of the fork is enough: the child
+ * hangs before reaching exec, the pty master stays open, and the parent sees a
+ * perfectly valid session with a shell that never says anything. What the user
+ * sees is a window with a cursor in it and no prompt -- and because it is a
+ * race, it depends on optimization level, on the compositor, and on how much
+ * font work happened to be in flight. That was a real bug, not a hypothetical:
+ * see doc/notable-bugs.md.
+ *
+ * So: no allocation, no stdio, no setenv, nothing that takes a lock. Every
+ * string the child needs was built by the parent and is reachable through
+ * `image`; the only calls below are the ones POSIX lists as safe to make from a
+ * signal handler.
+ */
+void PTY::execChild(const ChildImage& image) {
     /*
      * Before exec, so the shell's own startup files see it and `pwd` agrees.
      * A failure is deliberately not fatal: the directory may have been removed
      * since it was configured or since the pane we inherited it from last
      * looked, and starting somewhere is better than a pane that never opens.
      */
-    if (!workingDirectory.empty() && chdir(workingDirectory.c_str()) != 0) {
-        /* The parent's stderr is the pty master, so this is not printed into
-         * the user's shell; PWD is corrected below regardless. */
-        perror("chdir");
+    if (image.workingDirectory && chdir(image.workingDirectory) != 0) {
+        /* The child's stderr is the pty slave, so this lands in the user's own
+         * terminal window rather than nowhere. */
+        writeChildError("ratty: could not enter the configured directory\r\n");
     }
-    /*
-     * Some shells trust an inherited PWD over getcwd(), and a stale one makes
-     * the prompt disagree with the actual directory. Unsetting it makes the
-     * shell work it out for itself.
-     */
-    unsetenv("PWD");
 
     setsid();
 #ifdef TIOCSCTTY
     ioctl(STDIN_FILENO, TIOCSCTTY, 0);
 #endif
-
-    setenv("TERM", kTerm, 1);
-    setenv("COLORTERM", kColorTerm, 1);
-    /* Stale values inherited from the parent would lie about our geometry;
-     * the pty's winsize is authoritative. */
-    unsetenv("LINES");
-    unsetenv("COLUMNS");
 
     /* Qt installs handlers and may block signals; the shell must start clean. */
     sigset_t empty;
@@ -99,12 +164,26 @@ void PTY::execChild(const std::string& shell, const std::string& workingDirector
     signal(SIGCHLD, SIG_DFL);
     signal(SIGPIPE, SIG_DFL);
 
-    execl(shell.c_str(), argv0.c_str(), static_cast<char*>(nullptr));
+    /*
+     * A *login* shell (argv[0] prefixed with '-'), which is what Terminal.app
+     * and kitty do: without it ~/.zprofile never runs and PATH ends up missing
+     * Homebrew and friends.
+     */
+    execve(image.shell, const_cast<char* const*>(image.loginArgv),
+           const_cast<char* const*>(image.envp));
 
-    /* execl only returns on failure. Fall back to a plain interactive shell,
+    /* execve only returns on failure. Fall back to a plain interactive shell,
      * then to /bin/sh, before giving up. */
-    execl(shell.c_str(), baseName(shell).c_str(), static_cast<char*>(nullptr));
-    execl("/bin/sh", "-sh", static_cast<char*>(nullptr));
+    execve(image.shell, const_cast<char* const*>(image.plainArgv),
+           const_cast<char* const*>(image.envp));
+
+    /* Stack storage, so this costs no allocation either. */
+    char shell[] = "/bin/sh";
+    char argv0[] = "-sh";
+    char* argv[] = {argv0, nullptr};
+    execve(shell, argv, const_cast<char* const*>(image.envp));
+
+    writeChildError("ratty: could not start a shell\r\n");
     _exit(127);
 }
 
@@ -119,7 +198,33 @@ PTY::PTY(int rows, int cols, const std::string& workingDirectory)
         .ws_ypixel = 0
     };
 
+    /*
+     * Everything the child will need, built here -- while there is still a whole
+     * process to build it in. See execChild() for what goes wrong when any of
+     * this happens on the other side of the fork.
+     */
     const std::string shell = getUserShell();
+    const std::string loginName = "-" + baseName(shell);
+    const std::string plainName = baseName(shell);
+
+    const std::vector<std::string> environment = buildChildEnvironment();
+    std::vector<char*> envp;
+    envp.reserve(environment.size() + 1);
+    for (const std::string& entry : environment) {
+        envp.push_back(const_cast<char*>(entry.c_str()));
+    }
+    envp.push_back(nullptr);
+
+    char* loginArgv[] = {const_cast<char*>(loginName.c_str()), nullptr};
+    char* plainArgv[] = {const_cast<char*>(plainName.c_str()), nullptr};
+
+    ChildImage image;
+    image.shell = shell.c_str();
+    image.loginArgv = loginArgv;
+    image.plainArgv = plainArgv;
+    image.envp = envp.data();
+    image.workingDirectory = workingDirectory.empty() ? nullptr
+                                                      : workingDirectory.c_str();
 
     child_pid_ = forkpty(&master_fd_, nullptr, nullptr, &ws);
 
@@ -131,7 +236,7 @@ PTY::PTY(int rows, int cols, const std::string& workingDirectory)
     }
 
     if (child_pid_ == 0) {
-        execChild(shell, workingDirectory);
+        execChild(image);
     }
 
     /* Parent: non-blocking master for the event loop, and close-on-exec so

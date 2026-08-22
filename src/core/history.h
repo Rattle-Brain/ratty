@@ -40,6 +40,7 @@
 #include "cell.h"
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 
 /*
@@ -85,12 +86,31 @@ public:
 
 private:
     /*
-     * Runs first, then the characters. Runs are 2-byte aligned and the block
-     * comes from new[], so the run array is always suitably aligned; the
-     * character bytes that follow are read and written a byte at a time.
+     * Runs first, then the characters, in one block of bytes.
+     *
+     * The runs are copied in and out rather than reached through a cast to
+     * `AttrRun*`. That cast is what this used to do, and it is undefined
+     * behaviour: the block holds `uint8_t` objects, no `AttrRun` was ever
+     * constructed in it, and a compiler is entitled to assume that byte writes
+     * and `AttrRun` reads cannot touch the same memory. Nothing went visibly
+     * wrong with it -- until reflow started round-tripping the *live screen*
+     * through this encoding, which put a whole class of "works in a debug build"
+     * failure one optimizer decision away. `memcpy` of a trivially copyable
+     * 12-byte struct compiles to the same handful of loads and stores and is
+     * simply correct.
      */
-    const AttrRun* runs() const { return reinterpret_cast<const AttrRun*>(blob_.get()); }
-    AttrRun* runs() { return reinterpret_cast<AttrRun*>(blob_.get()); }
+    void storeRun(uint32_t index, const AttrRun& run) {
+        std::memcpy(blob_.get() + static_cast<size_t>(index) * sizeof(AttrRun),
+                    &run, sizeof(AttrRun));
+    }
+    AttrRun loadRun(uint32_t index) const {
+        AttrRun run{};
+        std::memcpy(&run, blob_.get() + static_cast<size_t>(index) * sizeof(AttrRun),
+                    sizeof(AttrRun));
+        return run;
+    }
+    /* The character bytes are read and written a byte at a time, which needs no
+     * such care: `uint8_t` may alias anything. */
     const uint8_t* text() const { return blob_.get() + runBytes(); }
     uint8_t* text() { return blob_.get() + runBytes(); }
     size_t runBytes() const { return static_cast<size_t>(runCount_) * sizeof(AttrRun); }

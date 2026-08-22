@@ -70,7 +70,6 @@ void HistoryLine::encode(const Cell* cells, int count) {
     bytesPerChar_ = bytesPerChar;
 
     /* Emit the runs. */
-    AttrRun* run = runs();
     uint32_t emitted = 0;
     int start = 0;
     for (int i = 1; i <= width; ++i) {
@@ -86,10 +85,12 @@ void HistoryLine::encode(const Cell* cells, int count) {
         }
         if (!boundary) continue;
 
-        run[emitted].count = static_cast<uint16_t>(i - start);
-        run[emitted].flags = cells[start].flags;
-        run[emitted].fg = cells[start].fg;
-        run[emitted].bg = cells[start].bg;
+        AttrRun run;
+        run.count = static_cast<uint16_t>(i - start);
+        run.flags = cells[start].flags;
+        run.fg = cells[start].fg;
+        run.bg = cells[start].bg;
+        storeRun(emitted, run);
         ++emitted;
         start = i;
     }
@@ -120,14 +121,14 @@ void HistoryLine::decode(Cell* out) const {
     if (!out || width_ == 0) return;
 
     /* Attributes, run by run. */
-    const AttrRun* run = runs();
     uint32_t col = 0;
     for (uint32_t r = 0; r < runCount_; ++r) {
-        const uint32_t end = std::min<uint32_t>(col + run[r].count, width_);
+        const AttrRun run = loadRun(r);
+        const uint32_t end = std::min<uint32_t>(col + run.count, width_);
         for (; col < end; ++col) {
-            out[col].fg = run[r].fg;
-            out[col].bg = run[r].bg;
-            out[col].flags = run[r].flags;
+            out[col].fg = run.fg;
+            out[col].bg = run.bg;
+            out[col].flags = run.flags;
         }
     }
 
