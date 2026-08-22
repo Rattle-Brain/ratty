@@ -26,13 +26,16 @@ endfunction()
 
 ratty_add_test(test_terminal)
 ratty_add_test(test_history)
+ratty_add_test(test_reflow)
+ratty_add_test(test_selection)
+ratty_add_test(test_search)
 ratty_add_test(test_mouse)
 ratty_add_test(test_input)
 ratty_add_test(test_splits)
 
 # These need a real GL context, so they run on the platform plugin rather than
 # offscreen and skip themselves when no context is available.
-foreach(gl_test test_splits_gl test_scroll_gl test_canvas_input)
+foreach(gl_test test_splits_gl test_scroll_gl test_canvas_input test_select_gl)
     add_executable(${gl_test} ${gl_test}.cpp check.h ${RATTY_RESOURCES_ABS})
     target_link_libraries(${gl_test} PRIVATE ratty_lib)
     add_test(NAME ${gl_test} COMMAND ${gl_test})

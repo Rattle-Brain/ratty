@@ -7,6 +7,7 @@
 #include "../config/config.h"
 #include <QApplication>
 #include <QClipboard>
+#include <QCursor>
 #include <QDebug>
 #include <QEvent>
 #include <QtGlobal>
@@ -60,6 +61,17 @@ TerminalWidget::TerminalWidget(QWidget* parent, const QString& startDirectory)
     blinkTimer_ = new QTimer(this);
     blinkTimer_->setInterval(CursorBlinkMs);
     connect(blinkTimer_, &QTimer::timeout, this, &TerminalWidget::onBlinkTick);
+
+    /*
+     * A drag held past the top or bottom edge keeps scrolling, which needs a
+     * timer: the pointer is not moving, so there are no more mouse events to
+     * hang it off.
+     */
+    autoScrollTimer_ = new QTimer(this);
+    autoScrollTimer_->setInterval(AutoScrollMs);
+    connect(autoScrollTimer_, &QTimer::timeout, this, &TerminalWidget::onAutoScrollTick);
+
+    clickTimer_.start();
 }
 
 TerminalWidget::~TerminalWidget() {
@@ -138,6 +150,7 @@ void TerminalWidget::ensureSession() {
         qCritical() << "TerminalWidget: could not start a shell";
     }
 
+    applyClipboardPolicy();
     restartBlink();
 }
 
@@ -214,6 +227,10 @@ void TerminalWidget::applyConfiguration() {
         session_->setScrollbackLines(config.scrollbackLines());
         session_->setAlternateScroll(config.alternateScroll());
         session_->setBasePalette(config.palette());
+        /* Whether an application may reach the clipboard is a setting, so a
+         * reload has to be able to withdraw the permission as well as grant
+         * it. */
+        applyClipboardPolicy();
     }
 
     /*
@@ -240,8 +257,26 @@ void TerminalWidget::updateGeometryForFont() {
                                              paddingPixels());
     if (!layout_.isValid()) return;
 
-    if (session_) {
-        session_->resize(layout_.rows, layout_.cols);
+    if (!session_) return;
+
+    const int previousRows = session_->rows();
+    const int previousCols = session_->cols();
+    session_->resize(layout_.rows, layout_.cols);
+
+    if (session_->rows() != previousRows || session_->cols() != previousCols) {
+        /*
+         * A width change rewraps the buffer, so the line numbers a selection or
+         * a search match are held in no longer name the text they named -- see
+         * Screen::reflow(). The selection goes; a search that is open is simply
+         * run again against the new layout.
+         */
+        clearSelection();
+        if (searchActive_) {
+            refreshSearch();
+        } else {
+            searchMatches_.clear();
+            searchIndex_ = -1;
+        }
     }
 }
 
@@ -351,6 +386,17 @@ void TerminalWidget::renderInto(GLRenderer& renderer, int left, int bottom,
         options.cursorPhaseOn = cursorPhaseOn_;
         options.cursorStyle = effectiveCursorStyle();
 
+        if (!selection_.isEmpty()) options.selection = &selection_;
+        if (searchActive_) {
+            options.statusLine = &statusLine_;
+            if (!searchMatches_.empty()) {
+                options.matches = &searchMatches_;
+                options.currentMatch = searchIndex_;
+            }
+        }
+        options.scrollIndicator = Config::instance().scrollIndicator()
+                               && session_->scrolledBack();
+
         gridRenderer_.paint(renderer, session_->screen(), palette, layout_, options);
     }
 
@@ -389,6 +435,17 @@ CursorStyle TerminalWidget::effectiveCursorStyle() const {
 }
 
 void TerminalWidget::onScreenChanged() {
+    /* An application putting the alternate screen up or taking it down changes
+     * which buffer -- and so which line numbering -- a selection would refer
+     * to; see alternateScreenActive_. */
+    if (session_ && session_->alternateScreenActive() != alternateScreenActive_) {
+        alternateScreenActive_ = session_->alternateScreenActive();
+        selection_.clear();
+        searchMatches_.clear();
+        searchIndex_ = -1;
+        if (searchActive_) endSearch();
+    }
+
     /*
      * Output resets the blink phase so the cursor is solid while text is
      * arriving; that is both conventional and avoids a cursor that appears to
@@ -445,6 +502,15 @@ void TerminalWidget::keyPressEvent(QKeyEvent* event) {
         return;
     }
 
+    /*
+     * With the search prompt open the keyboard belongs to it -- but only after
+     * the bindings above, so a shortcut still works while searching.
+     */
+    if (searchActive_ && handleSearchKey(event)) {
+        event->accept();
+        return;
+    }
+
     if (!session_ || !session_->isValid()) {
         QWidget::keyPressEvent(event);
         return;
@@ -463,6 +529,10 @@ void TerminalWidget::keyPressEvent(QKeyEvent* event) {
      * responding.
      */
     if (session_->scrollViewToBottom()) requestRepaint();
+
+    /* Typing invalidates a selection the way it does in every terminal: the
+     * text is about to move, and a highlight left behind on it reads as a bug. */
+    clearSelection();
 
     session_->sendInput(bytes);
     event->accept();
@@ -562,21 +632,51 @@ void TerminalWidget::mousePressEvent(QMouseEvent* event) {
         return;
     }
 
-    /* Middle click pastes the primary selection on X11; on platforms without
-     * one Qt returns the clipboard, which is close enough to be useful. */
     if (event->button() == Qt::MiddleButton) {
-        paste();
+        /*
+         * Middle click pastes the primary selection where the platform has one
+         * -- which is X11's convention and what a selection made here has just
+         * been put on -- and the clipboard everywhere else.
+         */
+        const QClipboard* clipboard = QApplication::clipboard();
+        if (clipboard && session_ && session_->isValid()) {
+            session_->sendPaste(clipboard->text(clipboard->supportsSelection()
+                                                    ? QClipboard::Selection
+                                                    : QClipboard::Clipboard));
+        }
+        return;
     }
+
+    if (event->button() != Qt::LeftButton) return;
+
+    beginSelection(event->position(), countClick(event->position()), event->modifiers());
+}
+
+void TerminalWidget::mouseDoubleClickEvent(QMouseEvent* event) {
+    /* Qt's second click, counted by countClick() like any other press. */
+    mousePressEvent(event);
 }
 
 void TerminalWidget::mouseReleaseEvent(QMouseEvent* event) {
     event->accept();
+
+    if (dragging_ && event->button() == Qt::LeftButton) {
+        finishSelection();
+        return;
+    }
+
     reportMouse(MouseAction::Release, mouseButtonFor(event->button()),
                 event->position(), event->modifiers());
 }
 
 void TerminalWidget::mouseMoveEvent(QMouseEvent* event) {
     event->accept();
+
+    if (dragging_) {
+        updateAutoScroll(event->position());
+        extendSelection(event->position());
+        return;
+    }
 
     if (!applicationWantsMouse(event->modifiers())) return;
 
@@ -692,6 +792,11 @@ void TerminalWidget::scrollToBottom() {
 void TerminalWidget::clearScrollback() {
     if (!session_) return;
     session_->clearScrollback();
+    /* The lines a selection or a match named have just been thrown away. */
+    selection_.clear();
+    searchMatches_.clear();
+    searchIndex_ = -1;
+    if (searchActive_) refreshSearch();
     requestRepaint();
 }
 
@@ -788,9 +893,374 @@ QString TerminalWidget::workingDirectory() const {
     return session_ ? session_->workingDirectory() : QString();
 }
 
+/* ---------------------------------------------------------------- selection */
+
+bool TerminalWidget::selectionPointAt(const QPointF& position, SelectionPoint& point) const {
+    if (!session_) return false;
+
+    int row = 0;
+    int col = 0;
+    if (!cellAt(position, row, col)) return false;
+
+    /* cellAt() answers in view rows; a selection is held in the buffer's own
+     * line numbers, so that it stays on its text as the view moves. */
+    point.line = session_->screen().viewTopLine() + row;
+    point.col = col;
+    return true;
+}
+
+int TerminalWidget::countClick(const QPointF& position) {
+    int row = 0;
+    int col = 0;
+    if (!cellAt(position, row, col)) return 1;
+
+    /*
+     * Qt reports a double click but has no notion of a third, and a terminal
+     * needs one -- so the counting is done here, against the platform's own
+     * double-click interval and the cell the previous click landed on. Past
+     * three it starts again at one, so a fourth click is a plain click.
+     */
+    const bool sameCell = row == lastClickRow_ && col == lastClickCol_;
+    const bool inTime = clickTimer_.isValid()
+                     && clickTimer_.elapsed() <= QApplication::doubleClickInterval();
+    clickCount_ = (sameCell && inTime) ? clickCount_ % 3 + 1 : 1;
+
+    lastClickRow_ = row;
+    lastClickCol_ = col;
+    clickTimer_.restart();
+    return clickCount_;
+}
+
+void TerminalWidget::beginSelection(const QPointF& position, int clickCount,
+                                    Qt::KeyboardModifiers modifiers) {
+    SelectionPoint point;
+    if (!selectionPointAt(position, point)) return;
+
+    /*
+     * Alt is the rectangular modifier, not Ctrl or Shift. Shift is spoken for:
+     * it is what bypasses an application's mouse grab, so it is held for most
+     * selections made inside a TUI and cannot mean anything else. Ctrl+click is
+     * the platform's context menu on macOS.
+     */
+    SelectionMode mode = SelectionMode::Character;
+    if (modifiers & Qt::AltModifier)   mode = SelectionMode::Block;
+    else if (clickCount == 2)          mode = SelectionMode::Word;
+    else if (clickCount >= 3)          mode = SelectionMode::Line;
+
+    dragging_ = true;
+    selection_.begin(session_->screen(), point, mode);
+    requestRepaint();
+}
+
+void TerminalWidget::extendSelection(const QPointF& position) {
+    SelectionPoint point;
+    if (!selectionPointAt(position, point)) return;
+    selection_.extend(session_->screen(), point);
+    requestRepaint();
+}
+
+void TerminalWidget::finishSelection() {
+    dragging_ = false;
+    autoScrollDirection_ = 0;
+    if (autoScrollTimer_) autoScrollTimer_->stop();
+    selection_.finishDrag();
+
+    /*
+     * A click that never moved is a click, not a selection: it clears whatever
+     * was selected rather than leaving a one-character highlight behind. A word
+     * or line selection is deliberate even without movement, and a rectangular
+     * one is asked for explicitly, so both stand.
+     */
+    if (selection_.mode() == SelectionMode::Character
+        && selection_.range().start == selection_.range().end) {
+        clearSelection();
+        return;
+    }
+
+    publishSelection(Config::instance().copyOnSelect());
+    requestRepaint();
+}
+
+void TerminalWidget::clearSelection() {
+    if (selection_.isEmpty()) return;
+    selection_.clear();
+    requestRepaint();
+}
+
+void TerminalWidget::publishSelection(bool toClipboard) {
+    if (!session_ || selection_.isEmpty()) return;
+
+    const std::u32string text = selection_.text(session_->screen());
+    if (text.empty()) return;
+
+    QClipboard* clipboard = QApplication::clipboard();
+    if (!clipboard) return;
+
+    const QString value = QString::fromUcs4(text.data(),
+                                            static_cast<qsizetype>(text.size()));
+
+    /*
+     * The primary selection is set by the act of selecting, which is what makes
+     * middle-click paste work; the clipboard is only touched deliberately, by a
+     * copy or by copy-on-select, because it is where the user keeps something
+     * they mean to keep.
+     */
+    if (clipboard->supportsSelection()) {
+        clipboard->setText(value, QClipboard::Selection);
+    }
+    if (toClipboard) {
+        clipboard->setText(value, QClipboard::Clipboard);
+    }
+}
+
+void TerminalWidget::updateAutoScroll(const QPointF& position) {
+    /* Positive is towards the past, matching scrollLines(). */
+    int direction = 0;
+    if (position.y() < 0)               direction = 1;
+    else if (position.y() > height())   direction = -1;
+
+    if (direction == autoScrollDirection_) return;
+    autoScrollDirection_ = direction;
+    if (!autoScrollTimer_) return;
+
+    if (direction == 0) autoScrollTimer_->stop();
+    else                autoScrollTimer_->start();
+}
+
+void TerminalWidget::onAutoScrollTick() {
+    if (!dragging_ || autoScrollDirection_ == 0) {
+        if (autoScrollTimer_) autoScrollTimer_->stop();
+        return;
+    }
+
+    scrollLines(autoScrollDirection_ * AutoScrollLines);
+    /* The pointer has not moved, but the line under it has, so the far end of
+     * the selection has to be taken again. */
+    extendSelection(mapFromGlobal(QCursor::pos()));
+}
+
+void TerminalWidget::applyClipboardPolicy() {
+    if (!session_) return;
+
+    const Config& config = Config::instance();
+    TerminalSession::ClipboardSetter setter;
+    TerminalSession::ClipboardGetter getter;
+
+    if (config.clipboardWriteAllowed()) {
+        setter = [](const QString& text, bool primary) {
+            QClipboard* clipboard = QApplication::clipboard();
+            if (!clipboard) return;
+            const bool usePrimary = primary && clipboard->supportsSelection();
+            clipboard->setText(text, usePrimary ? QClipboard::Selection
+                                                : QClipboard::Clipboard);
+        };
+    }
+    if (config.clipboardReadAllowed()) {
+        getter = [](bool primary) -> QString {
+            const QClipboard* clipboard = QApplication::clipboard();
+            if (!clipboard) return QString();
+            const bool usePrimary = primary && clipboard->supportsSelection();
+            return clipboard->text(usePrimary ? QClipboard::Selection
+                                              : QClipboard::Clipboard);
+        };
+    }
+
+    session_->setClipboardHandlers(std::move(setter), std::move(getter));
+}
+
 void TerminalWidget::copySelection() {
-    /* Text selection is not implemented yet; see todo-ratty.md. */
-    qInfo() << "TerminalWidget: copy requested, but text selection is not implemented";
+    if (selection_.isEmpty()) return;
+    publishSelection(/*toClipboard=*/true);
+}
+
+/* ------------------------------------------------------------------- search */
+
+void TerminalWidget::beginSearch() {
+    if (!session_) return;
+
+    searchActive_ = true;
+    /* A fresh prompt starts empty; the previous query is kept only for
+     * find_next, which is how a closed search can be resumed. */
+    searchQuery_.clear();
+    refreshSearch();
+}
+
+void TerminalWidget::endSearch() {
+    if (!searchActive_) return;
+
+    searchActive_ = false;
+    statusLine_.clear();
+    /*
+     * The current match stays selected and the query is remembered: closing the
+     * prompt to copy what was found, or to step on with find_next, are both
+     * things the user does next.
+     */
+    requestRepaint();
+}
+
+void TerminalWidget::refreshSearch() {
+    searchMatches_.clear();
+    searchIndex_ = -1;
+    searchTruncated_ = false;
+
+    if (session_ && !searchQuery_.empty()) {
+        const SearchResults results = searchScrollback(session_->screen(), searchQuery_);
+        searchMatches_ = results.matches;
+        searchTruncated_ = results.truncated;
+        if (!searchMatches_.empty()) {
+            /* Start at the newest match: what is being looked for in a
+             * scrollback is usually what happened most recently. */
+            showMatch(static_cast<int>(searchMatches_.size()) - 1);
+        }
+    }
+
+    updateStatusLine();
+    requestRepaint();
+}
+
+void TerminalWidget::showMatch(int index) {
+    if (!session_ || index < 0 || index >= static_cast<int>(searchMatches_.size())) return;
+
+    searchIndex_ = index;
+    const SelectionRange& match = searchMatches_[static_cast<size_t>(index)];
+    /* Selecting the match is what makes it copyable, and highlights it as the
+     * one in hand. */
+    selection_.set(match);
+
+    /* A third of the way down, so there is context both above and below it. */
+    const int rows = layout_.isValid() ? layout_.rows : DefaultRows;
+    session_->scrollViewToLine(match.start.line, rows / 3);
+
+    updateStatusLine();
+    requestRepaint();
+}
+
+void TerminalWidget::stepMatch(int delta) {
+    if (searchMatches_.empty() || delta == 0) return;
+
+    const int count = static_cast<int>(searchMatches_.size());
+    int index = searchIndex_ < 0 ? (delta < 0 ? count - 1 : 0) : searchIndex_ + delta;
+    /* Wrapping, so stepping off one end starts again at the other. */
+    index = ((index % count) + count) % count;
+    showMatch(index);
+}
+
+void TerminalWidget::findNext() {
+    if (searchQuery_.empty()) {
+        beginSearch();
+        return;
+    }
+    /* A search that was closed, or invalidated by a resize, is run again rather
+     * than stepping through a stale list. */
+    if (searchMatches_.empty()) {
+        refreshSearch();
+        return;
+    }
+    stepMatch(1);
+}
+
+void TerminalWidget::findPrevious() {
+    if (searchQuery_.empty()) {
+        beginSearch();
+        return;
+    }
+    if (searchMatches_.empty()) {
+        refreshSearch();
+        return;
+    }
+    stepMatch(-1);
+}
+
+void TerminalWidget::updateStatusLine() {
+    if (!searchActive_) {
+        statusLine_.clear();
+        return;
+    }
+
+    std::u32string line = U"/";
+    line += searchQuery_;
+
+    /* The count, or why there is none. */
+    std::string suffix;
+    if (searchQuery_.empty()) {
+        suffix = "type to search";
+    } else if (searchMatches_.empty()) {
+        suffix = "no match";
+    } else {
+        suffix = std::to_string(searchIndex_ + 1) + "/"
+               + std::to_string(searchMatches_.size());
+        /* A cap that was hit is stated rather than passed off as a total. */
+        if (searchTruncated_) suffix += "+";
+    }
+
+    std::u32string right;
+    for (const char c : suffix) right += static_cast<char32_t>(c);
+
+    /*
+     * The count sits at the right margin and the query at the left. When a long
+     * query reaches the count, the query wins: what has been typed matters more
+     * than how much it matched.
+     */
+    const int cols = layout_.isValid() ? layout_.cols : DefaultCols;
+    const size_t width = static_cast<size_t>(std::max(0, cols));
+    if (line.size() + right.size() + 1 <= width) {
+        line.resize(width - right.size(), U' ');
+        line += right;
+    }
+
+    statusLine_ = line;
+}
+
+bool TerminalWidget::handleSearchKey(QKeyEvent* event) {
+    switch (event->key()) {
+    case Qt::Key_Escape:
+        endSearch();
+        return true;
+    case Qt::Key_Return:
+    case Qt::Key_Enter:
+        /* Return steps back through the buffer, Shift+Return forward again --
+         * the direction a scrollback search goes. */
+        stepMatch((event->modifiers() & Qt::ShiftModifier) ? 1 : -1);
+        return true;
+    case Qt::Key_Up:
+        stepMatch(-1);
+        return true;
+    case Qt::Key_Down:
+        stepMatch(1);
+        return true;
+    case Qt::Key_Backspace:
+        if (!searchQuery_.empty()) {
+            searchQuery_.pop_back();
+            refreshSearch();
+        }
+        return true;
+    case Qt::Key_U:
+        /* Ctrl+U clears the line, as it does at a shell prompt. */
+        if (event->modifiers() & Qt::ControlModifier) {
+            searchQuery_.clear();
+            refreshSearch();
+            return true;
+        }
+        break;
+    default:
+        break;
+    }
+
+    /*
+     * Anything printable extends the query; anything else is swallowed. The
+     * search owns the keyboard while it is open -- Escape is the way out, and
+     * the keybindings were given first refusal before this was called.
+     */
+    const std::u32string typed = event->text().toStdU32String();
+    bool changed = false;
+    for (const char32_t ch : typed) {
+        if (ch >= 0x20 && ch != 0x7F) {
+            searchQuery_ += ch;
+            changed = true;
+        }
+    }
+    if (changed) refreshSearch();
+    return true;
 }
 
 void TerminalWidget::paste() {

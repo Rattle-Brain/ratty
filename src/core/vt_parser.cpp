@@ -6,6 +6,15 @@
 
 namespace {
 
+/*
+ * How much of an OSC string body is kept. A title needs a few dozen characters;
+ * the bound exists for OSC 52, whose payload is a base64 clipboard and can be
+ * an entire selection. Past this the tail is dropped -- a truncated base64
+ * payload fails to decode and is ignored, which is the right outcome for a
+ * clipboard that did not arrive whole.
+ */
+constexpr size_t kMaxOscLength = 64 * 1024;
+
 constexpr char32_t kEsc = 0x1B;
 constexpr char32_t kCan = 0x18;   // CAN - abort the current sequence
 constexpr char32_t kSub = 0x1A;   // SUB - as CAN, but should display an error glyph
@@ -265,7 +274,7 @@ void VTParser::advance(char32_t ch) {
             oscBuffer_.clear();
             return;
         }
-        if (state_ == State::OscString && oscBuffer_.size() < 4096) {
+        if (state_ == State::OscString && oscBuffer_.size() < kMaxOscLength) {
             oscBuffer_.push_back(ch);
         }
         return;

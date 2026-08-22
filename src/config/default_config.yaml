@@ -42,6 +42,12 @@ tab_bar:
 scrollback:
   lines: 10000                # 0 disables the scrollback
   multiplier: 3               # rows per wheel notch, 1 - 100
+  indicator: true             # show where the view is when scrolled back
+
+clipboard:
+  copy_on_select: false       # a finished selection also goes to the clipboard
+  osc52_write: true           # applications may put text on the clipboard
+  osc52_read: false           # ... and may read it back (a real hazard; see the docs)
 
 mouse:
   alternate_scroll: true

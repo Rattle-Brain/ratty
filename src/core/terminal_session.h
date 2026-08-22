@@ -18,6 +18,7 @@
 #include <QByteArray>
 #include <QObject>
 #include <QString>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -72,6 +73,9 @@ public:
     bool scrollViewBy(int lines);
     bool scrollViewToBottom();
     bool scrollViewToTop();
+    /* Show a stable line number, a third of the way down or wherever
+     * `preferredRow` asks: how a search match is brought into view. */
+    bool scrollViewToLine(int64_t line, int preferredRow);
     void clearScrollback();
 
     bool alternateScreenActive() const { return emulator_.alternateScreenActive(); }
@@ -101,6 +105,20 @@ public:
 
     /* CSI I / CSI O, when the application enabled DECSET 1004. */
     void sendFocusEvent(bool focused);
+
+    /*
+     * OSC 52 clipboard access, wired to the platform clipboard by the UI layer.
+     *
+     * Handed over as callbacks rather than done here because reaching the
+     * clipboard is the UI's job -- and because *whether* a program on the far
+     * end of a pty may touch it is policy, which the configuration decides. A
+     * null handler is how that policy says no: writing is then dropped and a
+     * query goes unanswered, which is what a terminal without OSC 52 does.
+     * Reading is the dangerous direction, and is off unless asked for.
+     */
+    using ClipboardSetter = std::function<void(const QString& text, bool primary)>;
+    using ClipboardGetter = std::function<QString(bool primary)>;
+    void setClipboardHandlers(ClipboardSetter setter, ClipboardGetter getter);
 
     /* Send key input / pasted text to the shell. */
     void sendInput(const QByteArray& bytes);

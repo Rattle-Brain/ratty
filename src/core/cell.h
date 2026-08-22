@@ -66,6 +66,25 @@ enum CellFlag : uint16_t {
      * forms of a dual-form code point are indistinguishable.
      */
     CellFlagEmojiPresentation = 1 << 9,
+    /*
+     * This row continues on the next one: the text ran into the right margin
+     * and was wrapped there, rather than ending in a newline. Carried by the
+     * cell in the *last column*, which is the only cell that can be the seam.
+     *
+     * Structural rather than a rendition, like CellFlagWideTrailer, and the one
+     * piece of information that told a soft wrap from a hard newline apart --
+     * without it a resize cannot rewrap old lines, a search cannot match across
+     * the seam, and copying a wrapped command line yields two lines that no
+     * shell will accept. Nothing draws it.
+     *
+     * It lives in a cell rather than in a per-row table so that it travels with
+     * the row for free: the scrollback encoding already carries flags, resize
+     * already copies cells, and scrolling rotates row indices rather than
+     * content. It is cleared by anything that rewrites or erases that cell,
+     * which is the right answer -- erasing the end of a line does break the
+     * wrap.
+     */
+    CellFlagWrapped = 1 << 10,
 };
 
 /*
@@ -110,6 +129,20 @@ struct Cell {
 
     /* True when the cell would paint nothing but its background. */
     bool isBlank() const { return ch == U' ' || ch == 0; }
+
+    /*
+     * True when the cell carries no information at all, so that storing it is
+     * pointless: it is exactly what a row's untouched tail looks like, and what
+     * both the scrollback encoding and the resize reflow drop from the end of a
+     * row.
+     *
+     * `ch == U' '` rather than isBlank(), which also accepts a zero code point.
+     * A zero is rare but it is not the same character, and dropping it would
+     * make the scrollback encoding lossy for no useful gain.
+     */
+    bool isDefaultBlank() const {
+        return ch == U' ' && flags == CellFlagNone && fg.isDefault() && bg.isDefault();
+    }
 };
 
 #endif /* CORE_CELL_H */

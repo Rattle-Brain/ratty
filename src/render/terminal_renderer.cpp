@@ -47,16 +47,28 @@ void TerminalRenderer::paint(GLRenderer& renderer, const Screen& screen, const P
                              const Layout& layout, const Options& options) {
     if (!layout.isValid()) return;
 
-    paintGrid(renderer, screen, palette, layout);
-    paintCursor(renderer, screen, palette, layout, options);
+    /* A status line takes the bottom row, so the grid gives one up rather than
+     * being painted underneath it. */
+    const int rows = options.statusLine ? std::max(0, layout.rows - 1) : layout.rows;
+
+    paintGrid(renderer, screen, palette, layout, rows);
+    paintHighlights(renderer, screen, palette, layout, options, rows);
+    paintCursor(renderer, screen, palette, layout, options, rows);
+    if (options.scrollIndicator) {
+        paintScrollIndicator(renderer, screen, palette, layout);
+    }
+    if (options.statusLine) {
+        paintStatusLine(renderer, palette, layout, *options.statusLine);
+    }
 }
 
 void TerminalRenderer::paintGrid(GLRenderer& renderer, const Screen& screen,
-                                 const Palette& palette, const Layout& layout) {
+                                 const Palette& palette, const Layout& layout,
+                                 int rowLimit) {
     static const Cell blank{};
 
     const QColor defaultBackground = palette.defaultBackground();
-    const int rows = std::min(layout.rows, screen.rows());
+    const int rows = std::min(std::min(layout.rows, rowLimit), screen.rows());
     const int cols = std::min(layout.cols, screen.cols());
     if (rows <= 0 || cols <= 0) return;
 
@@ -185,9 +197,177 @@ void TerminalRenderer::paintGrid(GLRenderer& renderer, const Screen& screen,
     }
 }
 
+/* ------------------------------------------------------------- highlights */
+
+namespace {
+
+/*
+ * A search highlight is a tint over finished text: the match keeps its own
+ * colours and is marked rather than repainted, so several matches on screen at
+ * once stay readable. Hence the overlay layer, and hence the alpha -- a theme
+ * states its colours opaque, since they are meant to be backgrounds.
+ */
+QColor translucent(QColor color, int alpha) {
+    if (color.alpha() == 255) color.setAlpha(alpha);
+    return color;
+}
+
+constexpr int kMatchAlpha = 80;
+constexpr int kCurrentMatchAlpha = 150;
+
+} // namespace
+
+void TerminalRenderer::paintHighlights(GLRenderer& renderer, const Screen& screen,
+                                       const Palette& palette, const Layout& layout,
+                                       const Options& options, int rowLimit) const {
+    const int rows = std::min(std::min(layout.rows, rowLimit), screen.rows());
+    const int cols = std::min(layout.cols, screen.cols());
+    if (rows <= 0 || cols <= 0) return;
+
+    /* Rows are addressed by stable line number, which is what a selection and a
+     * search match are held in: the view is a window onto the buffer, and the
+     * highlight belongs to the text rather than to the row it happens to be on. */
+    const int64_t topLine = screen.viewTopLine();
+
+    /* `background` chooses the layer: a selection replaces the cell's background
+     * and a match tints over the finished text. See the note on each below. */
+    auto highlight = [&](int64_t line, int firstCol, int lastCol, const QColor& color,
+                         bool background) {
+        const int row = static_cast<int>(line - topLine);
+        if (row < 0 || row >= rows) return;
+        const int from = std::max(0, firstCol);
+        const int to = std::min(cols - 1, lastCol);
+        if (from > to) return;
+
+        const int x = layout.originX + from * layout.cellWidth;
+        const int y = layout.originY + row * layout.cellHeight;
+        const int width = (to - from + 1) * layout.cellWidth;
+        if (background) {
+            renderer.fillBackground(x, y, width, layout.cellHeight, color);
+        } else {
+            renderer.fillOverlay(x, y, width, layout.cellHeight, color);
+        }
+    };
+
+    /*
+     * The selection goes in the *background* layer, not over the glyphs.
+     *
+     * Layer order does the work: this is submitted after the grid's own cell
+     * backgrounds, so it covers them, and the glyphs are a layer above it, so
+     * the selected text is drawn on top at full contrast rather than seen
+     * through a veil. That is what lets the theme's selection colour be used as
+     * the opaque background it was written to be -- and it costs one quad per
+     * row rather than a second pass over the cells to redraw their text.
+     */
+    if (options.selection && !options.selection->isEmpty()) {
+        const QColor color = palette.selectionBackground();
+        const SelectionRange span = options.selection->range().normalized();
+        const int64_t from = std::max(span.start.line, topLine);
+        const int64_t to = std::min(span.end.line, topLine + rows - 1);
+        for (int64_t line = from; line <= to; ++line) {
+            int firstCol = 0;
+            int lastCol = 0;
+            if (!options.selection->columnsOn(line, cols, firstCol, lastCol)) continue;
+            highlight(line, firstCol, lastCol, color, /*background=*/true);
+        }
+    }
+
+    if (options.matches) {
+        const QColor matchColor = translucent(palette.entry(3), kMatchAlpha);
+        const QColor currentColor = translucent(palette.entry(11), kCurrentMatchAlpha);
+        const int64_t bottomLine = topLine + rows - 1;
+
+        for (size_t index = 0; index < options.matches->size(); ++index) {
+            const SelectionRange match = (*options.matches)[index].normalized();
+            /* The buffer can hold hundreds of thousands of lines; only the
+             * screenful in front of the user is worth walking. */
+            if (match.end.line < topLine || match.start.line > bottomLine) continue;
+
+            const bool current = static_cast<int>(index) == options.currentMatch;
+            for (int64_t line = match.start.line; line <= match.end.line; ++line) {
+                int firstCol = 0;
+                int lastCol = 0;
+                if (!rangeColumnsOn(match, SelectionMode::Character, line, cols,
+                                    firstCol, lastCol)) {
+                    continue;
+                }
+                highlight(line, firstCol, lastCol, current ? currentColor : matchColor,
+                          /*background=*/false);
+            }
+        }
+    }
+}
+
+void TerminalRenderer::paintScrollIndicator(GLRenderer& renderer, const Screen& screen,
+                                            const Palette& palette,
+                                            const Layout& layout) const {
+    const int history = screen.historySize();
+    if (history <= 0) return;
+
+    /*
+     * The thumb's size and position are the view's share of the whole buffer,
+     * so it reads as a scrollbar without being one: there is nothing to drag,
+     * only something to tell the user that what they are looking at is not the
+     * live screen.
+     */
+    const int total = history + layout.rows;
+    const int trackTop = layout.originY;
+    const int trackHeight = layout.rows * layout.cellHeight;
+    if (trackHeight <= 0 || total <= 0) return;
+
+    const int width = std::max(2, layout.cellWidth / 3);
+    const int x = layout.originX + layout.cols * layout.cellWidth - width;
+
+    const int thumbHeight = std::max(layout.cellHeight,
+                                     trackHeight * layout.rows / total);
+    const int available = std::max(0, trackHeight - thumbHeight);
+    /* viewOffset counts rows back from the live screen, so the distance from the
+     * top of the buffer is history - viewOffset. */
+    const int fromTop = history - screen.viewOffset();
+    const int thumbTop = trackTop + (history > 0 ? available * fromTop / history : available);
+
+    QColor track = palette.defaultForeground();
+    track.setAlpha(40);
+    QColor thumb = palette.defaultForeground();
+    thumb.setAlpha(150);
+
+    renderer.fillOverlay(x, trackTop, width, trackHeight, track);
+    renderer.fillOverlay(x, thumbTop, width, thumbHeight, thumb);
+}
+
+void TerminalRenderer::paintStatusLine(GLRenderer& renderer, const Palette& palette,
+                                       const Layout& layout,
+                                       const std::u32string& text) const {
+    const int row = layout.rows - 1;
+    if (row < 0) return;
+
+    const int y = layout.originY + row * layout.cellHeight;
+    const int width = layout.cols * layout.cellWidth;
+
+    /*
+     * Opaque, and in the background layer: the row it sits in was left
+     * unpainted, so there is nothing underneath to show through, and being in
+     * the background layer means the glyphs below can be ordinary text drawn on
+     * top of it rather than something the overlay layer would cover.
+     */
+    QColor background = palette.selectionBackground();
+    background.setAlpha(255);
+    renderer.fillBackground(layout.originX, y, width, layout.cellHeight, background);
+
+    const QColor foreground = palette.defaultForeground();
+    const int baselineY = y + layout.baseline;
+    const int limit = std::min(static_cast<int>(text.size()), layout.cols);
+    for (int col = 0; col < limit; ++col) {
+        const char32_t ch = text[static_cast<size_t>(col)];
+        if (ch == U' ' || ch == 0) continue;
+        renderer.drawGlyph(ch, FontStyleRegular, GlyphPresentation::Text,
+                           layout.originX + col * layout.cellWidth, baselineY, foreground);
+    }
+}
+
 void TerminalRenderer::paintCursor(GLRenderer& renderer, const Screen& screen,
                                    const Palette& palette, const Layout& layout,
-                                   const Options& options) const {
+                                   const Options& options, int rowLimit) const {
     if (!options.cursorVisible || !options.cursorPhaseOn || !screen.cursorVisible()) {
         return;
     }
@@ -199,7 +379,8 @@ void TerminalRenderer::paintCursor(GLRenderer& renderer, const Screen& screen,
      */
     const int row = screen.cursorRow() + screen.viewOffset();
     const int col = screen.cursorCol();
-    if (row < 0 || row >= layout.rows || col < 0 || col >= layout.cols) return;
+    if (row < 0 || row >= std::min(layout.rows, rowLimit)) return;
+    if (col < 0 || col >= layout.cols) return;
 
     const int x = layout.originX + col * layout.cellWidth;
     const int y = layout.originY + row * layout.cellHeight;

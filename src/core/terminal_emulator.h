@@ -73,6 +73,23 @@ public:
     void setTitleSink(TitleSink sink) { titleSink_ = std::move(sink); }
     void setBellSink(BellSink sink) { bellSink_ = std::move(sink); }
 
+    /*
+     * OSC 52 clipboard access. `which` is the selection the application named:
+     * 'c' for the clipboard, 'p' or 's' for the primary selection.
+     *
+     * Both directions are sinks rather than something this class does itself,
+     * because the platform clipboard belongs to the UI layer -- and because
+     * whether a program on the far end of a pty may touch it at all is policy.
+     * Installing no sink is how that policy says no: an unset writer drops the
+     * request, and an unset reader leaves the query unanswered, which is exactly
+     * what a terminal without OSC 52 support does. A reader returning false
+     * declines the same way.
+     */
+    using ClipboardWriter = std::function<void(char which, const std::string& utf8)>;
+    using ClipboardReader = std::function<bool(char which, std::string& utf8Out)>;
+    void setClipboardWriter(ClipboardWriter writer) { clipboardWriter_ = std::move(writer); }
+    void setClipboardReader(ClipboardReader reader) { clipboardReader_ = std::move(reader); }
+
     /* ----------------------------------------------------------- scrollback */
 
     /*
@@ -89,6 +106,9 @@ public:
     bool scrollViewBy(int lines);
     bool scrollViewToBottom();
     bool scrollViewToTop();
+    /* Bring a stable line number into view, at `preferredRow` where the buffer
+     * reaches that far: how a search result is shown. */
+    bool scrollViewToLine(int64_t line, int preferredRow);
     int viewOffset() const { return active_->viewOffset(); }
     bool scrolledBack() const { return active_->scrolledBack(); }
     void clearScrollback();
@@ -152,6 +172,8 @@ private:
     /* OSC 10/11/12 default colour control; `which` is the OSC number. */
     void handleDynamicColorOsc(int which, const std::u32string& data);
     void resetDynamicColor(int which);
+    /* OSC 52 clipboard set/query. */
+    void handleClipboardOsc(const std::u32string& data);
     /* Set or clear one tracking / encoding mode; see the implementation for why
      * clearing is conditional. */
     void setMouseTracking(MouseTracking mode, bool enable);
@@ -203,6 +225,8 @@ private:
     ReplySink reply_;
     TitleSink titleSink_;
     BellSink bellSink_;
+    ClipboardWriter clipboardWriter_;
+    ClipboardReader clipboardReader_;
 };
 
 #endif /* CORE_TERMINAL_EMULATOR_H */

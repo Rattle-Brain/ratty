@@ -20,13 +20,18 @@
 #ifndef UI_TERMINAL_WIDGET_H
 #define UI_TERMINAL_WIDGET_H
 
+#include "../core/search.h"
+#include "../core/selection.h"
 #include "../core/terminal_session.h"
 #include "../render/gl_renderer.h"
 #include "../render/terminal_renderer.h"
 #include "input_handler.h"
+#include <QElapsedTimer>
 #include <QImage>
 #include <QWidget>
 #include <memory>
+#include <string>
+#include <vector>
 
 class QTimer;
 class TerminalCanvas;
@@ -60,8 +65,32 @@ public:
     void setPaneDimmed(bool dimmed);
     bool isPaneDimmed() const { return paneDimmed_; }
 
+    /*
+     * Clipboard. copySelection() is a no-op with nothing selected rather than an
+     * error: it is bound to a key, and a key that sometimes complains is worse
+     * than one that sometimes does nothing.
+     */
     void copySelection();
     void paste();
+    bool hasSelection() const { return !selection_.isEmpty(); }
+    void clearSelection();
+
+    /*
+     * Scrollback search.
+     *
+     * The prompt is drawn by the renderer over the bottom row rather than being
+     * a widget, because a widget would need somewhere to live: the pane is
+     * covered by the shared GL canvas, so anything laid out over it would be
+     * hidden by the very surface the terminal draws on. See terminal_canvas.h.
+     *
+     * "Next" moves towards newer output and "previous" towards older, which is
+     * the direction searching a scrollback usually goes.
+     */
+    void beginSearch();
+    void endSearch();
+    bool searchActive() const { return searchActive_; }
+    void findNext();
+    void findPrevious();
 
     /*
      * Scrollback view. Positive counts move towards the past, matching
@@ -158,6 +187,13 @@ protected:
 
     void keyPressEvent(QKeyEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
+    /*
+     * Qt delivers the second click of a double-click as its own event type
+     * rather than as another press, so both go to the same place -- the click
+     * counting that tells a character, word and line selection apart is done
+     * here rather than taken from Qt, which has no notion of a third click.
+     */
+    void mouseDoubleClickEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
@@ -174,6 +210,8 @@ protected:
 private slots:
     void onScreenChanged();
     void onBlinkTick();
+    /* Keep scrolling while a drag is held outside the pane. */
+    void onAutoScrollTick();
 
 private:
     /* The window's shared GPU surface, or nullptr before it exists. */
@@ -206,6 +244,50 @@ private:
      * there is no layout yet.
      */
     bool cellAt(const QPointF& position, int& row, int& col) const;
+
+    /* ------------------------------------------------------------ selection */
+
+    /*
+     * The same cell as cellAt(), as a point in the buffer rather than on the
+     * screen: a selection is held in Screen's stable line numbers so that it
+     * stays on its text while the view scrolls and while output arrives.
+     */
+    bool selectionPointAt(const QPointF& position, SelectionPoint& point) const;
+    /*
+     * How many clicks in a row have landed on this cell, counting 1, 2, 3 and
+     * round again -- character, word, line, character, as every terminal does.
+     */
+    int countClick(const QPointF& position);
+    /* Start, extend and finish a drag. */
+    void beginSelection(const QPointF& position, int clickCount,
+                        Qt::KeyboardModifiers modifiers);
+    void extendSelection(const QPointF& position);
+    void finishSelection();
+    /*
+     * Put the selection where the platform expects it: on the primary selection
+     * always, where there is one, since that is what middle-click pastes; on the
+     * clipboard only when asked, by a copy or by copy-on-select.
+     */
+    void publishSelection(bool toClipboard);
+    /* Scroll while a drag is held above or below the pane. */
+    void updateAutoScroll(const QPointF& position);
+
+    /* --------------------------------------------------------------- search */
+
+    /* Re-run the search after the query, the buffer or the geometry changed. */
+    void refreshSearch();
+    /* Select match `index` and scroll it into view. */
+    void showMatch(int index);
+    /* Move `delta` matches through the list, wrapping. */
+    void stepMatch(int delta);
+    /* The prompt line the renderer draws. */
+    void updateStatusLine();
+    /* Search-mode keys: the query, the steps, and the way out. Returns true
+     * when the key belonged to the search. */
+    bool handleSearchKey(QKeyEvent* event);
+
+    /* Install the OSC 52 handlers the configuration allows. */
+    void applyClipboardPolicy();
 
     /*
      * The cell the cursor is on, in the logical pixels Qt reports geometry in.
@@ -253,6 +335,41 @@ private:
     /* Where this pane's shell was told to start. */
     QString startDirectory_;
 
+    /* ------------------------------------------------------------ selection */
+
+    Selection selection_;
+    /* A left-button drag is building the selection. */
+    bool dragging_ = false;
+    /* Click counting for word and line selection: when and where the last one
+     * landed, and how many have run together. */
+    QElapsedTimer clickTimer_;
+    int clickCount_ = 0;
+    int lastClickRow_ = -1;
+    int lastClickCol_ = -1;
+    /* -1 up, +1 down, 0 not scrolling; driven by a drag past the pane edge. */
+    int autoScrollDirection_ = 0;
+    QTimer* autoScrollTimer_ = nullptr;
+
+    /* --------------------------------------------------------------- search */
+
+    /*
+     * Which screen the last frame was of. The primary and the alternate screen
+     * number their lines independently, so a selection made on one can name a
+     * line on the other -- and does, on a young session whose numbering has not
+     * yet moved past the alternate screen's. Switching screens therefore drops
+     * it rather than leaving a highlight on unrelated text.
+     */
+    bool alternateScreenActive_ = false;
+
+    bool searchActive_ = false;
+    std::u32string searchQuery_;
+    std::vector<SelectionRange> searchMatches_;
+    bool searchTruncated_ = false;
+    /* Index into searchMatches_, or -1 when nothing matched. */
+    int searchIndex_ = -1;
+    /* What the renderer draws over the bottom row while searching. */
+    std::u32string statusLine_;
+
     /* Leftover wheel rotation, in eighths of a degree. */
     int wheelRemainder_ = 0;
     /* Last cell reported for motion, so a drag across one cell is not reported
@@ -263,6 +380,9 @@ private:
     static constexpr int DefaultRows = 24;
     static constexpr int DefaultCols = 80;
     static constexpr int CursorBlinkMs = 530;
+    /* How often a drag held outside the pane scrolls, and by how much. */
+    static constexpr int AutoScrollMs = 60;
+    static constexpr int AutoScrollLines = 1;
     /* One notch of a conventional mouse wheel, in Qt's angle-delta units. */
     static constexpr int WheelNotch = 120;
 };

@@ -7,21 +7,6 @@
 
 namespace {
 
-/*
- * A cell that carries no information at all, and so does not need storing: it
- * is exactly what Screen reports for a column past a captured row's width.
- *
- * `ch == U' '` rather than Cell::isBlank(), which also accepts a zero code
- * point. A zero is rare but it is not the same character, and dropping it would
- * make the encoding lossy for no useful gain.
- */
-bool isDefaultBlank(const Cell& cell) {
-    return cell.ch == U' '
-        && cell.flags == CellFlagNone
-        && cell.fg.isDefault()
-        && cell.bg.isDefault();
-}
-
 /* Runs count cells in a uint16_t, so a very wide row is split across several. */
 constexpr int MaxRunLength = 0xFFFF;
 
@@ -34,9 +19,14 @@ void HistoryLine::encode(const Cell* cells, int count) {
 
     if (!cells || count <= 0) return;
 
-    /* Drop the uniform default-coloured tail; usually most of the row. */
+    /*
+     * Drop the uniform default-coloured tail; usually most of the row. A row
+     * that was soft-wrapped keeps its last cell whatever it holds, because the
+     * wrap flag on it is not default (see Cell::isDefaultBlank), which is what
+     * makes the seam survive a trip through the scrollback.
+     */
     int width = count;
-    while (width > 0 && isDefaultBlank(cells[width - 1])) --width;
+    while (width > 0 && cells[width - 1].isDefaultBlank()) --width;
     if (width == 0) return;
 
     /* Narrowest character width that covers the row. */

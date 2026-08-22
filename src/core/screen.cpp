@@ -35,6 +35,12 @@ Cell& Screen::cellRef(int row, int col) {
     return cells_[offset];
 }
 
+void Screen::markWrapped(int row) {
+    if (row < 0 || row >= rows_ || cols_ <= 0) return;
+    Cell& seam = cellRef(row, cols_ - 1);
+    seam.flags = static_cast<uint16_t>(seam.flags | CellFlagWrapped);
+}
+
 const Cell& Screen::at(int row, int col) const {
     static const Cell blank{};
     if (row < 0 || row >= rows_ || col < 0 || col >= cols_) {
@@ -60,6 +66,9 @@ void Screen::setHistoryLimit(int lines) {
 
 void Screen::clearHistory() {
     if (history_.empty() && viewOffset_ == 0) return;
+    /* The lines are gone, so the numbers naming them must not come round
+     * again on the lines that replace them. */
+    discardedLines_ += static_cast<int64_t>(history_.size());
     history_.clear();
     invalidateDecoded();
     viewOffset_ = 0;
@@ -82,6 +91,7 @@ void Screen::pushHistory(int row) {
     if (historyLimit_ > 0 && static_cast<int>(history_.size()) >= historyLimit_) {
         HistoryLine recycled = std::move(history_.front());
         history_.pop_front();
+        ++discardedLines_;
         recycled.encode(src, cols_);
         history_.push_back(std::move(recycled));
     } else {
@@ -106,6 +116,7 @@ void Screen::trimHistory() {
     if (static_cast<int>(history_.size()) <= historyLimit_) return;
     while (static_cast<int>(history_.size()) > historyLimit_) {
         history_.pop_front();
+        ++discardedLines_;
     }
     invalidateDecoded();
 }
@@ -137,25 +148,47 @@ const Cell* Screen::decodedHistory(int absolute, int& length) const {
     return decodeScratch_.data();
 }
 
+const Cell* Screen::lineData(int64_t line, int& length) const {
+    length = 0;
+
+    /* Below the origin is text that has been dropped; the number no longer
+     * names anything. */
+    const int64_t absolute = line - discardedLines_;
+    if (absolute < 0) return nullptr;
+
+    const int history = historySize();
+    if (absolute < history) {
+        int stored = 0;
+        /* An empty captured row yields length 0, so the pointer is never
+         * dereferenced even though it may be null. */
+        const Cell* cells = decodedHistory(static_cast<int>(absolute), stored);
+        length = stored;
+        return cells;
+    }
+
+    const int64_t row = absolute - history;
+    if (row >= rows_) return nullptr;
+
+    length = cols_;
+    return cells_.data() + static_cast<size_t>(physicalRow(static_cast<int>(row)))
+                               * static_cast<size_t>(cols_);
+}
+
+bool Screen::lineWrapped(int64_t line) const {
+    int length = 0;
+    const Cell* cells = lineData(line, length);
+    return cells && length > 0 && cells[length - 1].hasFlag(CellFlagWrapped);
+}
+
 const Cell& Screen::viewAt(int row, int col) const {
     static const Cell blank{};
-    if (viewOffset_ == 0) return at(row, col);
     if (row < 0 || row >= rows_ || col < 0 || col >= cols_) return blank;
 
-    /* Index into the concatenation of history and the live screen. */
-    const int absolute = historySize() - viewOffset_ + row;
-    if (absolute >= historySize()) {
-        return at(absolute - historySize(), col);
-    }
-
     int length = 0;
-    const Cell* cells = decodedHistory(absolute, length);
-    if (col >= length) {
-        /* The window is wider than it was when this line was captured, or the
-         * row's blank tail was not stored. History is not reflowed, so the rest
-         * of the row is blank. */
-        return blank;
-    }
+    const Cell* cells = viewRow(row, length);
+    /* Past the end of a captured row -- the window is wider than it was, or the
+     * blank tail was never stored -- the row is blank. */
+    if (!cells || col >= length) return blank;
     return cells[col];
 }
 
@@ -163,24 +196,18 @@ const Cell* Screen::viewRow(int row, int& length) const {
     length = 0;
     if (row < 0 || row >= rows_) return nullptr;
 
-    if (viewOffset_ != 0) {
-        /* Index into the concatenation of history and the live screen, as
-         * viewAt() does. */
-        const int absolute = historySize() - viewOffset_ + row;
-        if (absolute < historySize()) {
-            int stored = 0;
-            const Cell* cells = decodedHistory(absolute, stored);
-            /* An empty captured row yields length 0, so the pointer is never
-             * dereferenced even though it may be null. */
-            length = std::min(cols_, stored);
-            return cells;
-        }
-        row = absolute - historySize();
-        if (row < 0 || row >= rows_) return nullptr;
-    }
+    const Cell* cells = lineData(viewTopLine() + row, length);
+    length = std::min(length, cols_);
+    return cells;
+}
 
-    length = cols_;
-    return cells_.data() + static_cast<size_t>(physicalRow(row)) * static_cast<size_t>(cols_);
+bool Screen::scrollViewToLine(int64_t line, int preferredRow) {
+    /* viewTopLine() == screenTopLine() - viewOffset_, so putting `line` at
+     * `preferredRow` means a view offset of screenTopLine() - line +
+     * preferredRow. Out-of-range values clamp, which lands the line as close to
+     * the asked-for row as the buffer allows. */
+    const int64_t offset = screenTopLine() - line + clampInt(preferredRow, 0, rows_ - 1);
+    return scrollViewTo(static_cast<int>(std::clamp<int64_t>(offset, 0, maxViewOffset())));
 }
 
 void Screen::clearRow(int row, const Pen& pen) {
@@ -213,6 +240,16 @@ void Screen::resize(int rows, int cols, const Pen& pen) {
     rows = std::max(1, rows);
     cols = std::max(1, cols);
     if (rows == rows_ && cols == cols_) return;
+
+    /*
+     * A width change is what makes old text the wrong shape, so that is what
+     * rewraps. A height change alone moves whole rows between the screen and
+     * the history and needs none of the work below.
+     */
+    if (reflowEnabled_ && cols != cols_) {
+        reflow(rows, cols, pen);
+        return;
+    }
 
     /* Snapshot the old contents in logical order, then rebuild. Content is
      * anchored to the *bottom* of the screen so that the prompt stays put when
@@ -262,11 +299,205 @@ void Screen::resize(int rows, int cols, const Pen& pen) {
     touch();
 }
 
+void Screen::reflow(int newRows, int newCols, const Pen& pen) {
+    /*
+     * Rebuild the buffer at a new width.
+     *
+     * The buffer is taken apart into *logical* lines -- rows joined at the seams
+     * CellFlagWrapped marks -- and each is laid out again at the new width. A
+     * row that ended in a newline stays a line of its own, which is the whole
+     * point of tracking the seam: rewrapping from the cells alone would run a
+     * table drawn by a TUI together into a paragraph.
+     *
+     * Done as a stream rather than by materialising the buffer twice: rows come
+     * out of the history in order, each finished logical line is rewrapped and
+     * re-encoded straight away, and only the last screenful is expanded back
+     * into cells at the end. A 10 000-line history therefore costs one logical
+     * line of scratch space instead of a second copy of the scrollback.
+     */
+    const int history = historySize();
+    const int oldRows = rows_;
+    const int oldCols = cols_;
+
+    std::deque<HistoryLine> rebuilt;
+    std::vector<Cell> logical;   // the line being accumulated
+    std::vector<Cell> emitted;   // one rewrapped row
+
+    /*
+     * The cursor is tracked by its offset within its logical line, because that
+     * is the only thing about it a rewrap leaves alone: which row and column it
+     * ends up on is exactly what changes.
+     */
+    int cursorOffsetInLine = -1;
+    int cursorNewRow = 0;
+    int cursorNewCol = 0;
+    bool cursorPlaced = false;
+
+    /* Cut the accumulated logical line into rows of the new width. */
+    auto flushLogical = [&]() {
+        const size_t size = logical.size();
+        size_t index = 0;
+        bool firstRow = true;
+
+        while (firstRow || index < size) {
+            firstRow = false;
+            emitted.clear();
+            const size_t from = index;
+
+            while (index < size && static_cast<int>(emitted.size()) < newCols) {
+                const bool wide = (index + 1 < size)
+                               && logical[index + 1].hasFlag(CellFlagWideTrailer);
+                if (wide && newCols >= 2) {
+                    if (static_cast<int>(emitted.size()) == newCols - 1) {
+                        /* A double-width glyph may not straddle the margin, so
+                         * the column it will not fit in is left blank -- which
+                         * is what print() does when it meets the same case. */
+                        Cell blank;
+                        blank.erase(pen);
+                        emitted.push_back(blank);
+                        break;
+                    }
+                    emitted.push_back(logical[index]);
+                    emitted.push_back(logical[index + 1]);
+                    index += 2;
+                    continue;
+                }
+                emitted.push_back(logical[index]);
+                /* A one-column window has no room for a pair, so the trailer is
+                 * dropped rather than drawn on its own. */
+                index += wide ? 2 : 1;
+            }
+
+            /* More to come means this row ends in a seam, and a row that ends in
+             * a seam is full -- so its last cell is the last column. */
+            const bool continues = index < size;
+            if (continues && !emitted.empty()) {
+                Cell& seam = emitted.back();
+                seam.flags = static_cast<uint16_t>(seam.flags | CellFlagWrapped);
+            }
+
+            if (!cursorPlaced && cursorOffsetInLine >= 0) {
+                const size_t offset = static_cast<size_t>(cursorOffsetInLine);
+                /* Either the offset falls in this row, or the line has run out
+                 * and the cursor sat past its text -- a cursor parked beyond the
+                 * last character of its line, which is where a prompt leaves it. */
+                if ((offset >= from && offset < index) || !continues) {
+                    cursorNewRow = static_cast<int>(rebuilt.size());
+                    cursorNewCol = static_cast<int>(offset - from);
+                    cursorPlaced = true;
+                }
+            }
+
+            rebuilt.emplace_back();
+            rebuilt.back().encode(emitted.data(), static_cast<int>(emitted.size()));
+        }
+
+        logical.clear();
+        cursorOffsetInLine = -1;
+    };
+
+    for (int index = 0; index < history + oldRows; ++index) {
+        const Cell* cells = nullptr;
+        int length = 0;
+        bool wrapped = false;
+
+        if (index < history) {
+            cells = decodedHistory(index, length);
+            wrapped = length > 0 && cells[length - 1].hasFlag(CellFlagWrapped);
+        } else {
+            const int row = index - history;
+            cells = rowData(row);
+            length = oldCols;
+            wrapped = oldCols > 0 && cells[oldCols - 1].hasFlag(CellFlagWrapped);
+            /*
+             * A row that ends its line contributes no trailing blanks: they are
+             * padding at the old width rather than text, and carrying them over
+             * would leave a screenful of spaces in the middle of the rewrapped
+             * buffer. A row that ends in a seam keeps every column, blanks
+             * included -- the text really does continue after them.
+             */
+            if (!wrapped) {
+                while (length > 0 && cells[length - 1].isDefaultBlank()) --length;
+            }
+            if (row == cursorRow_) {
+                cursorOffsetInLine = static_cast<int>(logical.size()) + cursorCol_;
+            }
+        }
+
+        if (cells && length > 0) {
+            const size_t begin = logical.size();
+            logical.insert(logical.end(), cells, cells + length);
+            /* The seam belongs to the old layout; the new one sets its own. */
+            for (size_t i = begin; i < logical.size(); ++i) {
+                logical[i].flags = static_cast<uint16_t>(logical[i].flags & ~CellFlagWrapped);
+            }
+        }
+
+        if (!wrapped) flushLogical();
+    }
+    /* A buffer whose very last row was left mid-wrap still owes a line. */
+    if (!logical.empty() || cursorOffsetInLine >= 0) flushLogical();
+
+    const int total = static_cast<int>(rebuilt.size());
+    if (!cursorPlaced) {
+        cursorNewRow = std::max(0, total - 1);
+        cursorNewCol = 0;
+    }
+
+    /*
+     * The live screen is the last newRows rows, so a prompt at the bottom stays
+     * at the bottom -- unless rewrapping pushed the cursor above that window, in
+     * which case the window follows the cursor instead of scrolling it out of
+     * sight.
+     */
+    int screenStart = std::max(0, total - newRows);
+    screenStart = std::min(screenStart, cursorNewRow);
+
+    allocate(newRows, newCols);
+
+    for (int row = 0; row < newRows; ++row) {
+        clearRow(row, pen);
+        const int index = screenStart + row;
+        if (index >= total) continue;
+        Cell* target = cells_.data() + static_cast<size_t>(physicalRow(row))
+                                           * static_cast<size_t>(cols_);
+        rebuilt[static_cast<size_t>(index)].decode(target);
+    }
+
+    rebuilt.erase(rebuilt.begin() + screenStart, rebuilt.end());
+    history_ = std::move(rebuilt);
+
+    /*
+     * Renumber past the end of the old buffer. Every line number handed out
+     * before this point named text at the old width, and that text has just been
+     * re-cut into different rows; advancing the origin means such a number
+     * resolves to nothing rather than to a line it never meant.
+     */
+    discardedLines_ += static_cast<int64_t>(history) + oldRows;
+    invalidateDecoded();
+    trimHistory();
+
+    cursorRow_ = clampInt(cursorNewRow - screenStart, 0, rows_ - 1);
+    cursorCol_ = clampInt(cursorNewCol, 0, cols_ - 1);
+    pendingWrap_ = false;
+    lastPrintRow_ = -1;
+    lastPrintCol_ = -1;
+    /*
+     * The rows have been re-cut, so there is no exact answer for a view that was
+     * scrolled back; clamping keeps it scrolled back by about as much rather
+     * than snapping it to the live screen under the user.
+     */
+    viewOffset_ = clampInt(viewOffset_, 0, historySize());
+    resetScrollRegion();
+    touch();
+}
+
 void Screen::reset(const Pen& pen) {
     for (int r = 0; r < rows_; ++r) {
         clearRow(r, pen);
     }
     /* RIS discards the scrollback, as it does on a real terminal. */
+    discardedLines_ += static_cast<int64_t>(history_.size()) + rows_;
     history_.clear();
     invalidateDecoded();
     viewOffset_ = 0;
@@ -326,6 +557,9 @@ void Screen::print(char32_t ch, const Pen& pen, int charWidth, uint16_t extraFla
 
     if (pendingWrap_) {
         pendingWrap_ = false;
+        /* Record the seam before the line feed, which may push this very row
+         * into the history. */
+        markWrapped(cursorRow_);
         cursorCol_ = 0;
         lineFeed(pen);
     }
@@ -333,6 +567,7 @@ void Screen::print(char32_t ch, const Pen& pen, int charWidth, uint16_t extraFla
     /* A double-width glyph may not straddle the right margin. */
     if (charWidth == 2 && cursorCol_ == cols_ - 1) {
         cellRef(cursorRow_, cursorCol_).erase(pen);
+        markWrapped(cursorRow_);
         cursorCol_ = 0;
         lineFeed(pen);
     }

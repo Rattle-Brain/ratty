@@ -60,6 +60,8 @@ set(RATTY_SOURCES
     src/core/palette.cpp
     src/core/pty.cpp
     src/core/screen.cpp
+    src/core/search.cpp
+    src/core/selection.cpp
     src/core/terminal_emulator.cpp
     src/core/terminal_session.cpp
     src/core/vt_parser.cpp
@@ -94,6 +96,7 @@ endif()
 set(RATTY_HEADERS
     src/platform/platform.h
 
+    src/core/base64.h
     src/core/cell.h
     src/core/history.h
     src/core/unicode.h
@@ -102,6 +105,8 @@ set(RATTY_HEADERS
     src/core/palette.h
     src/core/pty.h
     src/core/screen.h
+    src/core/search.h
+    src/core/selection.h
     src/core/terminal_emulator.h
     src/core/terminal_session.h
     src/core/utf8.h

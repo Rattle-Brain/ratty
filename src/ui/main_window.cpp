@@ -408,6 +408,16 @@ bool MainWindow::handleAction(Action action) {
     case ACTION_COPY:
         if (TerminalWidget* terminal = focusedTerminal()) terminal->copySelection();
         return true;
+
+    case ACTION_SEARCH:
+        if (TerminalWidget* terminal = focusedTerminal()) terminal->beginSearch();
+        return true;
+    case ACTION_FIND_NEXT:
+        if (TerminalWidget* terminal = focusedTerminal()) terminal->findNext();
+        return true;
+    case ACTION_FIND_PREVIOUS:
+        if (TerminalWidget* terminal = focusedTerminal()) terminal->findPrevious();
+        return true;
     case ACTION_PASTE:
         if (TerminalWidget* terminal = focusedTerminal()) terminal->paste();
         return true;

@@ -21,10 +21,17 @@
  *     subwindow the application manages itself, and capturing it would fill the
  *     history with the redrawn middle of a TUI.
  *
- *     History rows are stored at the width they had when they were captured and
- *     are deliberately *not* reflowed on resize -- see doc/known-gaps.md. A
- *     narrower window therefore shows old lines truncated rather than rewrapped,
- *     which is what xterm does and what keeps `viewAt()` O(1).
+ *   - Reflow. A row that ran into the right margin is marked as wrapped (see
+ *     CellFlagWrapped), so a width change can take the buffer apart into
+ *     *logical* lines and lay them out again at the new width. Only a real seam
+ *     is joined: a row that ended in a newline stays its own line, which is what
+ *     keeps a table drawn by a TUI from being run together into a paragraph.
+ *
+ *   - Stable line numbers. An absolute row index shifts every time the oldest
+ *     history line is evicted, so it cannot name a piece of text for longer than
+ *     the buffer stays quiet. Stable line numbers count from the first line ever
+ *     captured instead, which is what lets a selection anchor and a search
+ *     result survive a screenful of output.
  *
  * Rows are held in a flat cell buffer addressed through an indirection table,
  * so scrolling rotates row indices instead of copying cell data.
@@ -35,6 +42,7 @@
 
 #include "cell.h"
 #include "history.h"
+#include <cstdint>
 #include <deque>
 #include <vector>
 
@@ -178,12 +186,74 @@ public:
      */
     const Cell* viewRow(int row, int& length) const;
 
+    /* ------------------------------------------------- stable line numbers */
+
+    /*
+     * A line number names a row of the history+screen buffer in a way that
+     * survives eviction: it counts from the first line this screen ever
+     * captured, not from the oldest one still kept. Two rows never share a
+     * number, and a number never comes to mean different text -- it stops
+     * resolving instead, once the text it named has been dropped.
+     *
+     * That is the coordinate a selection anchor and a search result are held
+     * in. In view coordinates a selection would slide up the screen with every
+     * line of output; in absolute ones it would slide as soon as the history
+     * filled up and started evicting.
+     */
+    int64_t firstLine() const { return discardedLines_; }
+    /* The line at the top of the live screen, and at the top of the view. */
+    int64_t screenTopLine() const { return discardedLines_ + historySize(); }
+    int64_t viewTopLine() const { return screenTopLine() - viewOffset_; }
+    /* The last line there is: the bottom row of the live screen. */
+    int64_t lastLine() const { return screenTopLine() + rows_ - 1; }
+
+    /*
+     * The row holding `line`, or nullptr when that line has been dropped or is
+     * past the bottom of the live screen. `length` is how many cells the
+     * pointer covers; columns past it are blank, as viewAt() reports them.
+     *
+     * Same buffer caveat as viewRow(), which is now a thin wrapper around this:
+     * a history row is decompressed into an internal buffer, so the pointer is
+     * valid only until the next call.
+     */
+    const Cell* lineData(int64_t line, int& length) const;
+
+    /*
+     * True when `line` ran into the right margin and continues on the next one,
+     * rather than having been ended by a newline. What tells a soft wrap from a
+     * hard line break apart, for reflow, for search, and for copying a wrapped
+     * command line back out as one line.
+     */
+    bool lineWrapped(int64_t line) const;
+
+    /*
+     * Scroll the view so `line` is on screen, at `preferredRow` when the buffer
+     * reaches that far. True when the view moved.
+     */
+    bool scrollViewToLine(int64_t line, int preferredRow);
+
+    /*
+     * Whether a width change rewraps the buffer. On for the primary screen; off
+     * for the alternate one, whose content is a full-screen application's own
+     * layout -- rewrapping htop's process table would be nonsense, and it keeps
+     * no history to rewrap anyway.
+     */
+    void setReflowEnabled(bool enabled) { reflowEnabled_ = enabled; }
+    bool reflowEnabled() const { return reflowEnabled_; }
+
     /* Every mutation bumps this, so the view can skip repainting an
      * unchanged grid. */
     uint64_t revision() const { return revision_; }
 
 private:
     Cell& cellRef(int row, int col);
+    /* Mark `row` as continuing on the next one; see CellFlagWrapped. */
+    void markWrapped(int row);
+    /*
+     * Rebuild the buffer at a new width, rewrapping logical lines. Called by
+     * resize() when the column count changes and reflow is enabled.
+     */
+    void reflow(int newRows, int newCols, const Pen& pen);
     /* Copy a logical row into the history, evicting the oldest if needed. */
     void pushHistory(int row);
     void trimHistory();
@@ -222,6 +292,16 @@ private:
     mutable int decodedIndex_ = -1;
     int historyLimit_ = 0;
     int viewOffset_ = 0;
+
+    /*
+     * Lines that have left the buffer, which is what stable line numbers count
+     * from. Advanced by an eviction, by clearing the history -- and by a reflow,
+     * which renumbers past the end of the old buffer so that a line number
+     * issued before the resize resolves to nothing rather than to text that has
+     * since been rewrapped.
+     */
+    int64_t discardedLines_ = 0;
+    bool reflowEnabled_ = true;
 
     int rows_;
     int cols_;

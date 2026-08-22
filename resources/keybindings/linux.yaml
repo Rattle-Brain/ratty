@@ -76,3 +76,11 @@ keybindings:
   super+k: clear_scrollback
   shift+pageup: scroll_up
   shift+pagedown: scroll_down
+
+  # --- search -------------------------------------------------------------
+  # Opens a prompt over the bottom row. Type to search, Return steps back
+  # through the matches and Shift+Return forward again, Escape closes it and
+  # leaves the current match selected.
+  super+f: search
+  super+g: find_next
+  super+shift+g: find_previous

@@ -100,6 +100,9 @@ constexpr ActionName kActionNames[] = {
     {ACTION_SCROLL_UP,           "scroll_up"},
     {ACTION_SCROLL_DOWN,         "scroll_down"},
     {ACTION_CLEAR_SCROLLBACK,    "clear_scrollback"},
+    {ACTION_SEARCH,              "search"},
+    {ACTION_FIND_NEXT,           "find_next"},
+    {ACTION_FIND_PREVIOUS,       "find_previous"},
     {ACTION_RELOAD_CONFIG,       "reload_config"},
 };
 
@@ -242,6 +245,7 @@ struct Config::Parser {
         }
         if (const YAML::Node node = root["splits"]; node && node.IsMap()) splits(node);
         if (const YAML::Node node = root["mouse"]; node && node.IsMap()) mouse(node);
+        if (const YAML::Node node = root["clipboard"]; node && node.IsMap()) clipboard(node);
         if (const YAML::Node node = root["tab_bar"]; node && node.IsMap()) tabBar(node);
         if (const YAML::Node node = root["mac_os_bindings"]; node) {
             platformBindings(node);
@@ -385,6 +389,23 @@ struct Config::Parser {
         }
         if (const auto multiplier = readInt(node, "multiplier")) {
             config.scrollMultiplier_ = std::clamp(*multiplier, 1, MAX_SCROLL_MULTIPLIER);
+        }
+        if (const auto indicator = readBool(node, "indicator")) {
+            config.scrollIndicator_ = *indicator;
+        }
+    }
+
+    /* Clipboard policy; see Config::clipboardReadAllowed() for why reading is
+     * a separate switch and off by default. */
+    void clipboard(const YAML::Node& node) {
+        if (const auto copyOnSelect = readBool(node, "copy_on_select")) {
+            config.copyOnSelect_ = *copyOnSelect;
+        }
+        if (const auto write = readBool(node, "osc52_write")) {
+            config.clipboardWrite_ = *write;
+        }
+        if (const auto read = readBool(node, "osc52_read")) {
+            config.clipboardRead_ = *read;
         }
     }
 

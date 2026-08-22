@@ -3,6 +3,7 @@
  */
 
 #include "terminal_emulator.h"
+#include "base64.h"
 #include "unicode.h"
 #include <QString>
 #include <QStringList>
@@ -28,6 +29,13 @@ TerminalEmulator::TerminalEmulator(int rows, int cols)
     primary_.setHistoryLimit(kDefaultScrollbackLines);
     /* The alternate screen deliberately keeps none; see the header. */
     alternate_.setHistoryLimit(0);
+    /*
+     * And it is not rewrapped on resize either. What is on it is a full-screen
+     * application's own layout -- htop's table, vim's windows -- laid out for
+     * the size the application was told about; joining its rows into logical
+     * lines would be nonsense. The application redraws instead.
+     */
+    alternate_.setReflowEnabled(false);
 }
 
 void TerminalEmulator::write(const char* data, size_t length) {
@@ -91,6 +99,10 @@ bool TerminalEmulator::scrollViewToBottom() {
 
 bool TerminalEmulator::scrollViewToTop() {
     return active_->scrollViewToTop();
+}
+
+bool TerminalEmulator::scrollViewToLine(int64_t line, int preferredRow) {
+    return active_->scrollViewToLine(line, preferredRow);
 }
 
 void TerminalEmulator::clearScrollback() {
@@ -470,10 +482,13 @@ void TerminalEmulator::oscDispatch(int command, const std::u32string& data) {
         resetDynamicColor(command - 100);
         break;
 
+    case 52:   // clipboard set/query
+        handleClipboardOsc(data);
+        break;
+
     default:
-        /* OSC 1 (icon name), 7 (working directory), 8 (hyperlinks), 52
-         * (clipboard) and 133 (prompt marks) are recognised by the parser and
-         * dropped here. */
+        /* OSC 1 (icon name), 7 (working directory), 8 (hyperlinks) and 133
+         * (prompt marks) are recognised by the parser and dropped here. */
         break;
     }
 }
@@ -526,6 +541,69 @@ void TerminalEmulator::handlePaletteOsc(const std::u32string& data, bool reset) 
             palette_.setEntry(index, color);
         }
     }
+}
+
+/*
+ * OSC 52 - clipboard.
+ *
+ *   OSC 52 ; Pc ; <base64>  put text on the selection Pc names
+ *   OSC 52 ; Pc ; ?         ask what is on it
+ *
+ * Pc is a list of selection names ('c' clipboard, 'p'/'s' primary); an empty
+ * one means the clipboard. Only the first name is acted on, which is what every
+ * terminal that implements this does -- the alternative is one keystroke
+ * scattering text across several selections.
+ *
+ * This is how a program on the far side of an ssh connection copies to the
+ * local clipboard, and it is the reason `tmux save-buffer` and an editor's yank
+ * can reach it at all. The reverse -- letting that program *read* the clipboard
+ * -- is a genuine hazard, which is why both directions are sinks the UI layer
+ * installs deliberately rather than something answered from here.
+ */
+void TerminalEmulator::handleClipboardOsc(const std::u32string& data) {
+    const size_t separator = data.find(U';');
+    const std::u32string selection = data.substr(0, separator == std::u32string::npos
+                                                        ? 0
+                                                        : separator);
+    const std::u32string payload = separator == std::u32string::npos
+                                       ? std::u32string()
+                                       : data.substr(separator + 1);
+
+    /* Selection names are ASCII letters; anything else is malformed. */
+    char which = 'c';
+    if (!selection.empty()) {
+        const char32_t first = selection[0];
+        if (first > 0x7F) return;
+        which = static_cast<char>(first);
+    }
+
+    if (payload == U"?") {
+        if (!clipboardReader_) return;
+        std::string text;
+        if (!clipboardReader_(which, text)) return;
+
+        std::string reply = "\x1b]52;";
+        reply += which;
+        reply += ';';
+        reply += base64Encode(text);
+        reply += "\x1b\\";   // ST
+        sendReply(reply);
+        return;
+    }
+
+    if (!clipboardWriter_) return;
+
+    /* The payload is base64, so every byte of it is ASCII. */
+    std::string encoded;
+    encoded.reserve(payload.size());
+    for (const char32_t ch : payload) {
+        if (ch > 0x7F) return;
+        encoded += static_cast<char>(ch);
+    }
+
+    std::string text;
+    if (!base64Decode(encoded, text)) return;
+    clipboardWriter_(which, text);
 }
 
 /*

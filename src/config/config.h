@@ -109,6 +109,13 @@ enum Action {
     ACTION_SCROLL_DOWN,
     ACTION_CLEAR_SCROLLBACK,
 
+    /* Scrollback search: open the prompt, then step between matches. "Next"
+     * moves towards newer output and "previous" towards older, which is the
+     * direction a search through a scrollback usually goes. */
+    ACTION_SEARCH,
+    ACTION_FIND_NEXT,
+    ACTION_FIND_PREVIOUS,
+
     /* Re-read the configuration and apply it to every open pane, so a theme,
      * font or colour change can be seen without restarting. */
     ACTION_RELOAD_CONFIG,
@@ -226,6 +233,12 @@ public:
     int scrollbackLines() const { return scrollbackLines_; }
     /* Rows moved per wheel notch. */
     int scrollMultiplier() const { return scrollMultiplier_; }
+    /*
+     * Whether a scrolled-back view shows a position indicator on the right
+     * edge. Worth having because the view scrolling away from the live screen is
+     * otherwise only visible as text that has stopped changing.
+     */
+    bool scrollIndicator() const { return scrollIndicator_; }
 
     /*
      * With the alternate screen up and no mouse reporting active, translate a
@@ -233,6 +246,24 @@ public:
      * still turn it off for itself with DECRST 1007.
      */
     bool alternateScroll() const { return alternateScroll_; }
+
+    /*
+     * Clipboard policy.
+     *
+     * `copyOnSelect` puts a finished selection straight on the clipboard, which
+     * is the X11 habit; the primary selection is set either way where the
+     * platform has one, since that is what middle-click paste reads.
+     *
+     * The OSC 52 pair is what a program on the far end of a pty may do. Writing
+     * is on: it is how an editor's yank or `tmux save-buffer` reaches the local
+     * clipboard over ssh, and the worst it can do is replace what is on it.
+     * Reading is off, and should stay off unless it is needed -- it lets
+     * anything that can write to the terminal exfiltrate whatever the user last
+     * copied, passwords included.
+     */
+    bool copyOnSelect() const { return copyOnSelect_; }
+    bool clipboardWriteAllowed() const { return clipboardWrite_; }
+    bool clipboardReadAllowed() const { return clipboardRead_; }
 
     /*
      * Splits. `dimUnfocusedSplits` fades every pane except the current one, so
@@ -379,6 +410,11 @@ private:
     int scrollbackLines_ = DEFAULT_SCROLLBACK_LINES;
     int scrollMultiplier_ = DEFAULT_SCROLL_MULTIPLIER;
     bool alternateScroll_ = true;
+    bool scrollIndicator_ = true;
+
+    bool copyOnSelect_ = false;
+    bool clipboardWrite_ = true;
+    bool clipboardRead_ = false;
 
     TabBarStyle tabBarStyle_ = TabBarStyle::Minimal;
     TabBarPosition tabBarPosition_ = TabBarPosition::Bottom;

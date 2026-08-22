@@ -75,6 +75,10 @@ bool TerminalSession::scrollViewToTop() {
     return emulator_.scrollViewToTop();
 }
 
+bool TerminalSession::scrollViewToLine(int64_t line, int preferredRow) {
+    return emulator_.scrollViewToLine(line, preferredRow);
+}
+
 void TerminalSession::clearScrollback() {
     emulator_.clearScrollback();
 }
@@ -89,6 +93,37 @@ void TerminalSession::sendMouseReport(const MouseReport& report) {
 void TerminalSession::sendFocusEvent(bool focused) {
     if (!emulator_.focusEvents()) return;
     sendInput(focused ? QByteArray("\x1b[I") : QByteArray("\x1b[O"));
+}
+
+void TerminalSession::setClipboardHandlers(ClipboardSetter setter, ClipboardGetter getter) {
+    /*
+     * The emulator names the selection the way OSC 52 spells it -- 'c' for the
+     * clipboard, 'p' or 's' for the primary selection -- and that is the only
+     * part of the protocol worth passing on; everything else about the request
+     * has already been decoded by the time it gets here.
+     */
+    if (setter) {
+        emulator_.setClipboardWriter(
+            [setter = std::move(setter)](char which, const std::string& utf8) {
+                setter(QString::fromUtf8(utf8.data(), static_cast<qsizetype>(utf8.size())),
+                       which == 'p' || which == 's');
+            });
+    } else {
+        emulator_.setClipboardWriter(nullptr);
+    }
+
+    if (getter) {
+        emulator_.setClipboardReader(
+            [getter = std::move(getter)](char which, std::string& utf8Out) {
+                const QString text = getter(which == 'p' || which == 's');
+                if (text.isNull()) return false;
+                const QByteArray encoded = text.toUtf8();
+                utf8Out.assign(encoded.constData(), static_cast<size_t>(encoded.size()));
+                return true;
+            });
+    } else {
+        emulator_.setClipboardReader(nullptr);
+    }
 }
 
 void TerminalSession::sendInput(const QByteArray& bytes) {
